@@ -1,1 +1,1 @@
-"""Platform-specific publishing integrations."""
+"""Publisher protocol, the development simulator, and platform-specific adapters."""

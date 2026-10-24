@@ -1,1 +1,0 @@
-"""Shared application data types."""

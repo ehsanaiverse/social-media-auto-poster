@@ -16,7 +16,15 @@ There is no working folder watcher, content validator, database/repository, sche
 
 ## Current status
 
-**Scaffold only.** The package and content-folder layout, dependency manifest, environment-variable template, publisher contract, and safe simulation publisher are present. Application workflows and automated tests have not yet been implemented.
+**Scaffold only (Milestone 1, Slices 0–1 complete).** What exists today:
+
+- Packaging (`pyproject.toml`) with declared dependencies.
+- An environment-variable template (`.env.example`).
+- A platform-neutral publisher protocol (`platforms/base.py`).
+- A safe simulation publisher that never contacts any platform (`platforms/simulator.py`).
+- One test module (`tests/unit/test_layout.py`) that checks the package layout imports correctly.
+
+Nothing else under `src/` has code yet: no LangGraph workflow, ingestion, or storage.
 
 Platform order:
 
@@ -28,29 +36,26 @@ Facebook and Instagram are placeholders for future work, not supported integrati
 
 ## Project layout
 
+Current layout, after the Milestone 1, Slice 1 migration. Packages marked "empty" contain only an `__init__.py` and get code in later slices:
+
 ```text
 data/                              Local platform content; ignored by Git
   LinkedIn/{incoming,archive,failed}/
   Facebook/{incoming,archive,failed}/
   Instagram/{incoming,archive,failed}/
 src/social_media_auto_poster/
-  core/                            Configuration, logging, and shared errors
-  ingestion/                       Folder monitoring, stability, pairing, validation
-  models/                          Shared post data types
-  storage/                         SQLite setup and post repository
-  publishing/                      Platform-neutral publisher contract and simulator
-  platforms/linkedin/              Reserved for LinkedIn auth, client, and publisher
-  platforms/facebook/              Reserved for a future Facebook integration
-  platforms/instagram/             Reserved for a future Instagram integration
-  workflow/                        Processing and archive orchestration
-  scheduling/                      Reserved for scheduling and recovery coordination
-tests/                             Unit, integration, and fixture locations
-scripts/                           Developer and maintenance scripts
-docs/                              Design and operational documentation
+  platforms/                       Publisher protocol (base.py) and simulator (simulator.py)
+  platforms/{linkedin,facebook,instagram}/   Empty
+  graph/                           Empty; LangGraph workflow (Slice 5)
+  ingestion/                       Empty; scanning and pairing (Slice 3)
+  services/                        Empty; hashing and archiving helpers
+  storage/                         Empty; SQLite repository (Milestone 2)
+tests/unit/                        Layout import tests
+scripts/, docs/                    Empty
 logs/                              Local application logs; ignored by Git
 ```
 
-The folders for future components are intentionally lightweight. Their implementation modules will be added with the corresponding milestones rather than filled with nonfunctional stubs. `publishing/base.py` defines a generic contract without assuming platform-specific media, permissions, or API behavior. `publishing/simulator.py` is a development-only fake and never sends content.
+`config.py` and `models.py` arrive in Slice 2 and `main.py` in Slice 6. The full target layout is in `CLAUDE.md` ("Target code layout").
 
 ## Content naming convention
 
@@ -65,22 +70,27 @@ The planned initial image extensions are `.jpg`, `.jpeg`, and `.png`. Pairing, e
 
 ## Windows setup
 
-Use Python 3.11 or newer. From PowerShell in the project root:
+Use Python 3.12 or newer; **Python 3.13 is the recommended version**. From PowerShell in the project root:
 
 ```powershell
-py -3.11 -m venv .venv
+py install 3.13                      # once, if Python 3.13 is not installed (Python Install Manager)
+py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -e .
+python -m pip install -e ".[dev]"
 ```
+
+Dependencies are declared only in `pyproject.toml`. The `[dev]` extra adds `pytest`.
 
 Verify the environment:
 
 ```powershell
 python --version
 python -m pip check
+python -m pytest
 ```
+
+`pytest` will report that no tests were collected until Milestone 1 adds them.
 
 There is no runnable application entry point yet. Once `main.py` is implemented, the intended invocation is:
 
@@ -94,12 +104,20 @@ Copy `.env.example` to `.env` when local configuration is introduced. `.env` is 
 
 SQLite is planned for durable post state and restart recovery, but no database has been created. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
 
+## Architecture decisions
+
+- **LangGraph is required** for orchestrating each post's workflow as an explicit, deterministic state graph. It does not use LLMs or autonomous agents; filesystem, validation, database, and API work live in ordinary Python modules that the graph's nodes call.
+- **SQLite first.** The application database (business records) and the LangGraph checkpoint store are kept logically separate and introduced in separate milestones. PostgreSQL is deferred until there is a concrete need.
+
+See `CLAUDE.md` for the binding project rules.
+
 ## Development milestones
 
-1. Define content validation, file stability checks, and safe pairing behavior.
-2. Implement SQLite state tracking, recovery, and duplicate prevention.
-3. Implement and validate LinkedIn authorization and publishing using official APIs; make uncertain outcomes explicit.
-4. Add scheduling, retry/recovery policy, and archive/failure handling.
-5. Plan and implement Facebook, then Instagram, as separate platform integrations.
+0. Inspect the scaffold, plan, and establish `CLAUDE.md` (done).
+1. Local simulation: typed LangGraph state, initial deterministic graph, pairing and validation, simulated publishing, tests.
+2. Durable application records: SQLite repository, job states, hashes, duplicate detection, restart reconciliation.
+3. Persistent LangGraph execution: SQLite checkpointer, resume and interruption tests.
+4. Real LinkedIn publishing through official APIs, with safeguards for ambiguous outcomes.
+5. Reliability, operational docs, PostgreSQL evaluation, and Facebook/Instagram planning.
 
 No live publishing, OAuth, or file-processing feature should be considered available until implemented and covered by appropriate tests.
