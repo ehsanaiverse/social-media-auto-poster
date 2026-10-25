@@ -12,11 +12,11 @@ A local, folder-driven Python application scaffold for preparing and publishing 
 
 ## Non-goals for this scaffold
 
-There is no working folder watcher, database/repository, scheduler, OAuth flow, or live publishing integration yet. The simulator does not contact a platform and its result is not confirmation of publication. This scaffold does not claim API access is configured.
+There is no continuous folder watcher, database/repository, scheduler, OAuth flow, or live publishing integration yet. The simulator does not contact a platform and its result is not confirmation of publication. This scaffold does not claim API access is configured.
 
 ## Current status
 
-**Scaffold only (Milestone 1, Slices 0–5 complete).** What exists today:
+**Milestone 1 (local simulation) complete, pending review.** What exists today:
 
 - Packaging (`pyproject.toml`) with declared dependencies.
 - An environment-variable template (`.env.example`).
@@ -25,13 +25,12 @@ There is no working folder watcher, database/repository, scheduler, OAuth flow, 
 - A platform-neutral publisher protocol (`platforms/base.py`).
 - A safe simulation publisher that never contacts any platform (`platforms/simulator.py`).
 - Ingestion (`ingestion/`): a one-shot scan that pairs images with captions (`scanner.py`), a file-copy stability check (`stability.py`), and content validation (`validation.py`).
-- A service that moves a post's two files together into `archive/` or `failed/` (`services/archive.py`). Nothing calls it yet.
-- A read-only command-line `scan` (`main.py`); see "Scan the incoming folder" below.
-- Unit tests under `tests/unit/`.
+- A service that moves a post's two files together into `archive/` or `failed/` (`services/archive.py`).
+- A LangGraph workflow (`graph/`) that takes one post through stability → validation → simulated publish → record, moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`.
+- Two commands (`main.py`): `run` processes every complete post once, and `scan` is a read-only report. See "How to use" below.
+- Unit and integration tests under `tests/`. Decisions are recorded in `docs/decisions.md`.
 
-- A LangGraph workflow (`graph/`) that takes one post through stability → validation → simulated publish → record, moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`. It is tested but not yet started by any command.
-
-There is no storage (database) or `run` command yet.
+There is no database yet, so nothing remembers past runs (Milestone 2).
 
 Platform order:
 
@@ -57,14 +56,15 @@ src/social_media_auto_poster/
   platforms/{linkedin,facebook,instagram}/   Empty
   graph/                           LangGraph workflow: state.py, nodes.py, workflow.py
   ingestion/                       Scanning/pairing, stability check, validation
-  services/                        Moving posts to archive/failed (archive.py); hashing later
+  services/                        Moving posts to archive/failed (archive.py), single-run lock (run_lock.py)
   storage/                         Empty; SQLite repository (Milestone 2)
-tests/unit/                        Unit tests for every module above
-scripts/, docs/                    Empty
+tests/unit/, tests/integration/    Unit tests; full-graph and end-to-end run tests
+docs/decisions.md                  Decision records
+scripts/                           Empty
 logs/                              Local application logs; ignored by Git
 ```
 
-`main.py` currently provides the read-only `scan` command; `run` arrives in Slice 6. The full target layout is in `CLAUDE.md` ("Target code layout").
+`main.py` provides the `run` and `scan` commands. The full target layout is in `CLAUDE.md` ("Target code layout").
 
 ## Content naming convention
 
@@ -98,9 +98,48 @@ python -m pip check
 python -m pytest
 ```
 
-## Scan the incoming folder (read-only)
+## How to use (Milestone 1: simulation only)
 
-The only command so far is `scan`. It reports what the tool would pick up and never moves or publishes anything:
+1. Put an image and a caption with the same name in `data\LinkedIn\incoming\`, e.g. `product-launch.jpg` + `product-launch.txt` (UTF-8 text; `.jpg`, `.jpeg`, or `.png`).
+2. Optional preview, changes nothing: `python -m social_media_auto_poster.main scan`
+3. Process: `python -m social_media_auto_poster.main run`
+
+Example `run` output:
+
+```text
+Processing LinkedIn incoming: D:\social-media-auto-poster\data\LinkedIn\incoming
+
+JOBS (3)
+  animated         FAILED                      moved to LinkedIn\failed\20261025T153102Z_animated
+                     - unsupported image type '.gif' (allowed: .jpg, .jpeg, .png)
+  product-launch   SIMULATED (not published)   files stay in incoming/
+  team             SIMULATED (not published)   files stay in incoming/
+
+PENDING (1) - waiting for a partner file
+  lonely.jpg
+
+Simulation mode: nothing was sent to LinkedIn.
+```
+
+What happens to each post:
+
+| Result | Meaning | Files |
+| --- | --- | --- |
+| `SIMULATED (not published)` | Valid; publishing was simulated. **Nothing is sent to LinkedIn in Milestone 1.** | Stay in `incoming/`; simulated again on the next run until Milestone 2 adds duplicate detection |
+| `FAILED` | Invalid (or a definite publish failure) | Moved to `failed\<UTC time>_<name>\` with `error-report.txt` explaining why |
+| `NEEDS_REVIEW` | Publish outcome unknown (cannot happen with the simulator) | Moved to `failed\...`; check LinkedIn before re-posting |
+| `WAITING (still copying)` | A file is still being written | Untouched; retried next run |
+| `PENDING` / `AMBIGUOUS` | No partner file yet / more than one file per name | Untouched |
+
+To retry a failed post: fix it, move its image and caption back to `incoming\`, and delete the old `failed\` folder.
+
+`run` options: `--verbose` shows INFO logs in the terminal; `--interval 0` skips the 1-second change-watch wait. The full log is `logs\autoposter.log` (UTC timestamps, rotated at 1 MB, 5 backups; caption text is never logged). Only one `run` can work at a time.
+
+`run` exit codes (useful with Task Scheduler): `0` all simulated/waiting or nothing to do, `1` setup error, `2` invalid command or option, `3` at least one job `FAILED`/`NEEDS_REVIEW`/`ERROR`, `4` another run is in progress.
+
+### `scan` (read-only)
+
+`scan` reports what `run` would pick up and never moves or publishes anything:
 
 ```powershell
 python -m social_media_auto_poster.main scan                          # data\LinkedIn\incoming (respects AUTOPOSTER_DATA_DIR)
@@ -109,7 +148,7 @@ python -m social_media_auto_poster.main scan --interval 0             # instant:
 python -m social_media_auto_poster.main scan --help
 ```
 
-It lists **candidates** (image + caption pairs, each marked stable or not, and valid or `INVALID:` with reasons), **pending** files waiting for a partner, and **ambiguous** stems that need fixing by hand. Exit code 0 means the scan completed; 1 means the folder does not exist. The `run` command (validate, simulate, record) arrives in Slice 6.
+It lists **candidates** (image + caption pairs, each marked stable or not, and valid or `INVALID:` with reasons), **pending** files waiting for a partner, and **ambiguous** stems that need fixing by hand. Exit code 0 means the scan completed; 1 means the folder does not exist.
 
 ## Configuration and security
 

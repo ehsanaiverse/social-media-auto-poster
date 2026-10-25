@@ -5,6 +5,7 @@ line carries job ID, platform, stem, and status.
 """
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -48,8 +49,9 @@ def validate(state: JobState) -> Update:
     result = validate_candidate(_candidate(state))
     if result.is_valid:
         return {"status": JobStatus.VALIDATED.value}
-    logger.warning("Validation failed: %s errors=%s", _fields(state), list(result.errors))
-    return {"status": JobStatus.FAILED.value, "errors": [*state["errors"], *result.errors]}
+    update = {"status": JobStatus.FAILED.value, "errors": [*state["errors"], *result.errors]}
+    logger.warning("Validation failed: %s errors=%s", _fields({**state, **update}), list(result.errors))
+    return update
 
 
 def mark_publishing(state: JobState) -> Update:
@@ -165,5 +167,5 @@ def _candidate(state: JobState) -> PostCandidate:
     )
 
 
-def _fields(state: JobState) -> str:
+def _fields(state: Mapping[str, Any]) -> str:
     return f"job_id={state['job_id']} platform={state['platform']} stem={state['stem']} status={state['status']}"

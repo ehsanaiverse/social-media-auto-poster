@@ -49,6 +49,8 @@ LangGraph is a **required** part of this project, not an optional or future enha
 - **In Milestone 1, `SIMULATED` jobs leave their files in `incoming/`.** The archive service is still unit-tested directly against temporary directories.
 - **Never blindly retry an external publish whose outcome is ambiguous** (timeout, lost response, crash while `PUBLISHING`). Mark it `NEEDS_REVIEW` unless the platform offers a safe way to check whether it succeeded.
 - Use structured logging with job ID, platform, and state on every relevant log line.
+- **Never log caption text.** Log lines carry job ID, stem, platform, status, paths, and error messages only. The run log is `logs/autoposter.log` (`RotatingFileHandler`, 1 MB × 5 backups, UTC timestamps).
+- **Only one `run` at a time.** `run` takes an OS-level lock (`msvcrt.locking` on Windows, `fcntl.flock` elsewhere) on `<base>/autoposter.lock` before any work; if held, it prints "Another run is in progress" and exits 4. The OS releases the lock when the process exits or crashes, so a leftover lock file never blocks. `scan` does not take the lock.
 - A simulated result must always be labelled as simulated. Never log, store, or display a simulated post as published to LinkedIn.
 
 ## Input conventions
@@ -88,7 +90,9 @@ src/social_media_auto_poster/
 └── main.py            # CLI entry point
 ```
 
-The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` was added early (after Slice 3) with a read-only `scan` command only; the `run` command (validate, simulate, record) is added in Slice 6. `scan` must stay read-only: it reports stability and validation but never moves, publishes, or creates folders.
+The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` has two commands. `scan` (added early, after Slice 3) must stay read-only: it reports stability and validation but never moves, publishes, or creates folders. `run` (Slice 6) creates the data folders, takes the run lock, and runs each complete post once through the graph with the `Simulator` publisher (there is no real publisher to select in M1). It has no `--dir`: incoming, failed, and archive must come from the same settings. It is one-shot; continuous folder watching is not part of M1. One unexpected job error is logged and shown as `ERROR (unexpected)` without stopping other jobs.
+
+**`run` exit codes:** 0 completed (all simulated/waiting, or nothing to do); 1 setup error; 2 usage error (argparse); 3 completed, but at least one job ended `FAILED`, `NEEDS_REVIEW`, or `ERROR`; 4 another run is in progress.
 
 Configuration: `AUTOPOSTER_DATA_DIR` sets the content root (default `data`, relative paths resolved against the base directory, which is the current working directory). Real environment variables override `.env`. `load_settings()` reads `.env` with `dotenv_values` and never mutates `os.environ`. Explain any significant structural change before making it, and do not add empty abstractions.
 
@@ -99,7 +103,7 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | # | Milestone | Status |
 | --- | --------- | ------ |
 | 0 | Inspect, plan, establish this file | Done |
-| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability), 4 (validation + archive), 5 (LangGraph workflow) done and tested; Slice 6 (`run` command, end-to-end tests) next |
+| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | Complete, pending review: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability), 4 (validation + archive), 5 (LangGraph workflow), 6 (`run` command, end-to-end tests) done and tested. Decisions in `docs/decisions.md` |
 | 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | Not started |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |
@@ -133,6 +137,8 @@ python -m pip install -e ".[dev]"
 python -m pytest
 python -m social_media_auto_poster.main scan                 # read-only report of data\LinkedIn\incoming
 python -m social_media_auto_poster.main scan --dir <folder> --interval 0
+python -m social_media_auto_poster.main run                  # process every complete post once (simulated)
+python -m social_media_auto_poster.main run --verbose        # also show INFO logs in the terminal
 ```
 
-Only `scan` exists so far; `run` arrives in Slice 6.
+Record every significant decision in `docs/decisions.md` (date, decision, why, consequences).

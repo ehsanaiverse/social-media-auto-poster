@@ -39,6 +39,14 @@ class Settings:
     def failed_dir(self, platform: Platform) -> Path:
         return self.platform_dir(platform) / "failed"
 
+    @property
+    def log_file(self) -> Path:
+        return self.base_dir / "logs" / "autoposter.log"
+
+    @property
+    def lock_file(self) -> Path:
+        return self.base_dir / "autoposter.lock"
+
 
 def load_settings(
     base_dir: Path | None = None,

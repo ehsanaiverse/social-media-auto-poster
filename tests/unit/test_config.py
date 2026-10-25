@@ -71,3 +71,9 @@ def test_ensure_data_dirs_is_idempotent_and_keeps_files(tmp_path):
     ensure_data_dirs(settings)
 
     assert existing.read_text(encoding="utf-8") == "caption"
+
+
+def test_log_and_lock_files_live_under_base_dir(tmp_path):
+    settings = load_settings(base_dir=tmp_path, environ={DATA_DIR_VAR: "elsewhere"})
+    assert settings.log_file == tmp_path.resolve() / "logs" / "autoposter.log"
+    assert settings.lock_file == tmp_path.resolve() / "autoposter.lock"

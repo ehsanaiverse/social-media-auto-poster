@@ -33,6 +33,8 @@ ENV/
 
 # Logs
 *.log
+*.log.[0-9]*
+autoposter.lock
 /logs/*
 !/logs/.gitkeep
 
