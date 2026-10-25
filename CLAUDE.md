@@ -81,7 +81,7 @@ src/social_media_auto_poster/
 └── main.py            # CLI entry point
 ```
 
-The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` arrives in Slice 6, when it has real content.
+The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` was added early (after Slice 3) with a read-only `scan` command only; the `run` command (validate, simulate, record) is added in Slice 6. `scan` must stay read-only: it never moves, validates, publishes, or creates folders.
 
 Configuration: `AUTOPOSTER_DATA_DIR` sets the content root (default `data`, relative paths resolved against the base directory, which is the current working directory). Real environment variables override `.env`. `load_settings()` reads `.env` with `dotenv_values` and never mutates `os.environ`. Explain any significant structural change before making it, and do not add empty abstractions.
 
@@ -120,6 +120,8 @@ py -3.14 -m venv .vevn               # once
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 python -m pytest
+python -m social_media_auto_poster.main scan                 # read-only report of data\LinkedIn\incoming
+python -m social_media_auto_poster.main scan --dir <folder> --interval 0
 ```
 
-The application entry point (`python -m social_media_auto_poster.main`) does not exist until Milestone 1.
+Only `scan` exists so far; `run` arrives in Slice 6.

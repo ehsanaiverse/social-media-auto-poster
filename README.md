@@ -27,7 +27,9 @@ There is no working folder watcher, content validator, database/repository, sche
 - Ingestion (`ingestion/`): a one-shot scan that pairs images with captions (`scanner.py`) and a file-copy stability check (`stability.py`). Nothing calls them yet.
 - Unit tests under `tests/unit/`.
 
-There is no LangGraph workflow, content validation, storage, or runnable entry point yet.
+- A read-only command-line `scan` (`main.py`); see "Scan the incoming folder" below.
+
+There is no LangGraph workflow, content validation, storage, or `run` command yet.
 
 Platform order:
 
@@ -60,7 +62,7 @@ scripts/, docs/                    Empty
 logs/                              Local application logs; ignored by Git
 ```
 
-`main.py` arrives in Slice 6. The full target layout is in `CLAUDE.md` ("Target code layout").
+`main.py` currently provides the read-only `scan` command; `run` arrives in Slice 6. The full target layout is in `CLAUDE.md` ("Target code layout").
 
 ## Content naming convention
 
@@ -94,11 +96,18 @@ python -m pip check
 python -m pytest
 ```
 
-There is no runnable application entry point yet. Once `main.py` is implemented, the intended invocation is:
+## Scan the incoming folder (read-only)
+
+The only command so far is `scan`. It reports what the tool would pick up and never moves, validates, or publishes anything:
 
 ```powershell
-python -m social_media_auto_poster.main
+python -m social_media_auto_poster.main scan                          # data\LinkedIn\incoming (respects AUTOPOSTER_DATA_DIR)
+python -m social_media_auto_poster.main scan --dir C:\some\folder     # any folder
+python -m social_media_auto_poster.main scan --interval 0             # instant: checks locks, skips the change-watch wait
+python -m social_media_auto_poster.main scan --help
 ```
+
+It lists **candidates** (image + caption pairs, each marked stable or not), **pending** files waiting for a partner, and **ambiguous** stems that need fixing by hand. Exit code 0 means the scan completed; 1 means the folder does not exist. The `run` command (validate, simulate, record) arrives in Slice 6.
 
 ## Configuration and security
 
