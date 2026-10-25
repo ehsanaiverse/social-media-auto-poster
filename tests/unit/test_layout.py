@@ -10,6 +10,8 @@ from social_media_auto_poster.platforms.simulator import Simulator
 @pytest.mark.parametrize(
     "module",
     [
+        "social_media_auto_poster.config",
+        "social_media_auto_poster.models",
         "social_media_auto_poster.graph",
         "social_media_auto_poster.ingestion",
         "social_media_auto_poster.platforms.base",

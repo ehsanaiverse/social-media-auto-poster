@@ -1,19 +1,13 @@
 """A safe development publisher that never sends content to a platform."""
 
-from dataclasses import dataclass
+from social_media_auto_poster.models import PublishResult
 
-
-@dataclass(frozen=True)
-class SimulatedPublishResult:
-    """Explicitly identifies a simulated result, not a confirmed publication."""
-
-    simulated: bool = True
-    message: str = "Simulated only; no content was sent to a platform."
+SIMULATED_MESSAGE = "Simulated only; no content was sent to a platform."
 
 
 class Simulator:
-    """Return a simulation marker without inspecting or transmitting the post."""
+    """Return a simulated result without inspecting or transmitting the post."""
 
-    def publish(self, post: object, /) -> SimulatedPublishResult:
+    def publish(self, post: object, /) -> PublishResult:
         del post
-        return SimulatedPublishResult()
+        return PublishResult(simulated=True, message=SIMULATED_MESSAGE)

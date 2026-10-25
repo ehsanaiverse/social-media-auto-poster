@@ -1,4 +1,8 @@
 # Dependencies for the initial ingestion/configuration milestone.
-watchdog>=4.0,<7.0
-python-dotenv>=1.0,<2.0
-requests>=2.31,<3.0
+watchdog
+python-dotenv
+requests
+langchain
+langgraph
+langgraph-checkpoint-sqlite
+pytest

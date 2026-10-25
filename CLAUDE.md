@@ -75,7 +75,9 @@ src/social_media_auto_poster/
 └── main.py            # CLI entry point
 ```
 
-The folder structure was migrated in Milestone 1, Slice 1. `config.py` and `models.py` arrive in Slice 2 and `main.py` in Slice 6, each when it has real content. Explain any significant structural change before making it, and do not add empty abstractions.
+The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. `main.py` arrives in Slice 6, when it has real content.
+
+Configuration: `AUTOPOSTER_DATA_DIR` sets the content root (default `data`, relative paths resolved against the base directory, which is the current working directory). Real environment variables override `.env`. `load_settings()` reads `.env` with `dotenv_values` and never mutates `os.environ`. Explain any significant structural change before making it, and do not add empty abstractions.
 
 ## Development method
 
@@ -84,7 +86,7 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | # | Milestone | Status |
 | --- | --------- | ------ |
 | 0 | Inspect, plan, establish this file | Done |
-| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging) and 1 (layout migration) done; Slice 2 (models + config) next |
+| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config) done; Slice 3 (ingestion) next |
 | 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | Not started |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |

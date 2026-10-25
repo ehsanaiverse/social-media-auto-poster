@@ -16,15 +16,17 @@ There is no working folder watcher, content validator, database/repository, sche
 
 ## Current status
 
-**Scaffold only (Milestone 1, Slices 0–1 complete).** What exists today:
+**Scaffold only (Milestone 1, Slices 0–2 complete).** What exists today:
 
 - Packaging (`pyproject.toml`) with declared dependencies.
 - An environment-variable template (`.env.example`).
+- Shared models (`models.py`): `Platform`, `JobStatus` (including the terminal `SIMULATED` status), and `PublishResult`, which always records whether a result was simulated.
+- Settings (`config.py`): resolves the content folder root and can create the `data/<Platform>/{incoming,archive,failed}` folders.
 - A platform-neutral publisher protocol (`platforms/base.py`).
 - A safe simulation publisher that never contacts any platform (`platforms/simulator.py`).
-- One test module (`tests/unit/test_layout.py`) that checks the package layout imports correctly.
+- Unit tests under `tests/unit/`.
 
-Nothing else under `src/` has code yet: no LangGraph workflow, ingestion, or storage.
+There is no LangGraph workflow, ingestion, storage, or runnable entry point yet.
 
 Platform order:
 
@@ -44,18 +46,20 @@ data/                              Local platform content; ignored by Git
   Facebook/{incoming,archive,failed}/
   Instagram/{incoming,archive,failed}/
 src/social_media_auto_poster/
+  config.py                        Settings and data-folder creation
+  models.py                        Platform, JobStatus, PublishResult
   platforms/                       Publisher protocol (base.py) and simulator (simulator.py)
   platforms/{linkedin,facebook,instagram}/   Empty
   graph/                           Empty; LangGraph workflow (Slice 5)
   ingestion/                       Empty; scanning and pairing (Slice 3)
   services/                        Empty; hashing and archiving helpers
   storage/                         Empty; SQLite repository (Milestone 2)
-tests/unit/                        Layout import tests
+tests/unit/                        Unit tests for layout, models, and config
 scripts/, docs/                    Empty
 logs/                              Local application logs; ignored by Git
 ```
 
-`config.py` and `models.py` arrive in Slice 2 and `main.py` in Slice 6. The full target layout is in `CLAUDE.md` ("Target code layout").
+`main.py` arrives in Slice 6. The full target layout is in `CLAUDE.md` ("Target code layout").
 
 ## Content naming convention
 
