@@ -55,6 +55,11 @@ LangGraph is a **required** part of this project, not an optional or future enha
 - Handle explicitly: incomplete copies, missing caption, missing media, unsupported extension, empty or whitespace-only caption, undecodable caption.
 - **Unpaired files are "pending", not errors.** A lone image or lone caption with no partner is left untouched: it does not become a job and is not moved to `failed/`. It is picked up on a later scan once its partner arrives.
 - **Genuine validation errors fail immediately:** unsupported extension, empty or whitespace-only caption, caption that is not valid UTF-8.
+- **Pairing rules (`ingestion/scanner.py`):** stems and extensions match case-insensitively; the candidate's `stem` comes from the media filename. Any non-`.txt` file counts as media, so an unsupported extension is still paired and then rejected by validation instead of waiting forever.
+- **Ambiguous stems** (more than one media file or caption for one stem, with or without a partner) are reported in `ScanResult.ambiguous`, one sorted group per stem, with one warning per stem. They are left untouched, never become a job, and are not moved to `failed/`; the user must resolve them.
+- **Ignored entirely** (neither pending nor candidate): subfolders, dot-files, `~$` lock files, `Thumbs.db`, `desktop.ini`, and partial downloads (`.tmp`, `.part`, `.crdownload`).
+- **Stability (`ingestion/stability.py`):** size and `st_mtime_ns` unchanged across the interval, then the file must open for reading. Any `OSError` means "not stable yet", not an error.
+- **Slice 5 requirement:** the graph's stability node must check **both** the media file and the caption file before validation runs.
 
 ## Security
 
@@ -76,7 +81,7 @@ src/social_media_auto_poster/
 └── main.py            # CLI entry point
 ```
 
-The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. `main.py` arrives in Slice 6, when it has real content.
+The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` arrives in Slice 6, when it has real content.
 
 Configuration: `AUTOPOSTER_DATA_DIR` sets the content root (default `data`, relative paths resolved against the base directory, which is the current working directory). Real environment variables override `.env`. `load_settings()` reads `.env` with `dotenv_values` and never mutates `os.environ`. Explain any significant structural change before making it, and do not add empty abstractions.
 
@@ -87,7 +92,7 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | # | Milestone | Status |
 | --- | --------- | ------ |
 | 0 | Inspect, plan, establish this file | Done |
-| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config) done and tested; Slice 3 (ingestion) next |
+| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability) done and tested; Slice 4 (validation + archive) next |
 | 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | Not started |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |

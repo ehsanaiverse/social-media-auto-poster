@@ -48,11 +48,21 @@ class ScanResult:
     """The outcome of scanning one ``incoming/`` folder.
 
     ``pending`` holds unpaired files. They are not errors and are left
-    untouched until their partner arrives.
+    untouched until their partner arrives. ``ambiguous`` holds one group of
+    files per stem that cannot be paired unambiguously (for example two
+    images and one caption); they are also left untouched.
     """
 
     candidates: tuple[PostCandidate, ...]
     pending: tuple[Path, ...]
+    ambiguous: tuple[tuple[Path, ...], ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_tuple("candidates", self.candidates)
+        _require_tuple("pending", self.pending)
+        _require_tuple("ambiguous", self.ambiguous)
+        for group in self.ambiguous:
+            _require_tuple("each ambiguous group", group)
 
 
 @dataclass(frozen=True)
@@ -63,6 +73,7 @@ class ValidationResult:
     errors: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        _require_tuple("errors", self.errors)
         if self.is_valid and self.errors:
             raise ValueError("A valid result must not carry errors.")
         if not self.is_valid and not self.errors:
@@ -91,7 +102,8 @@ class PublishResult:
             raise ValueError("A successful result must not carry an error.")
         if not self.success and not (self.error and self.error.strip()):
             raise ValueError("A failed result requires a non-empty error.")
-        if self.success and not self.simulated and not self.platform_post_id:
+        has_post_id = bool(self.platform_post_id and self.platform_post_id.strip())
+        if self.success and not self.simulated and not has_post_id:
             raise ValueError("A real publish result requires the platform post ID that confirms it.")
 
     @property
@@ -100,3 +112,9 @@ class PublishResult:
         if not self.success:
             return JobStatus.FAILED
         return JobStatus.SIMULATED if self.simulated else JobStatus.PUBLISHED
+
+
+def _require_tuple(name: str, value: object) -> None:
+    # Frozen dataclasses only block reassignment; a list inside would still be mutable.
+    if not isinstance(value, tuple):
+        raise TypeError(f"{name} must be a tuple, not {type(value).__name__}.")

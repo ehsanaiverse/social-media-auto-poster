@@ -16,7 +16,7 @@ There is no working folder watcher, content validator, database/repository, sche
 
 ## Current status
 
-**Scaffold only (Milestone 1, Slices 0–2 complete).** What exists today:
+**Scaffold only (Milestone 1, Slices 0–3 complete).** What exists today:
 
 - Packaging (`pyproject.toml`) with declared dependencies.
 - An environment-variable template (`.env.example`).
@@ -24,9 +24,10 @@ There is no working folder watcher, content validator, database/repository, sche
 - Settings (`config.py`): resolves the content folder root and can create the `data/<Platform>/{incoming,archive,failed}` folders.
 - A platform-neutral publisher protocol (`platforms/base.py`).
 - A safe simulation publisher that never contacts any platform (`platforms/simulator.py`).
+- Ingestion (`ingestion/`): a one-shot scan that pairs images with captions (`scanner.py`) and a file-copy stability check (`stability.py`). Nothing calls them yet.
 - Unit tests under `tests/unit/`.
 
-There is no LangGraph workflow, ingestion, storage, or runnable entry point yet.
+There is no LangGraph workflow, content validation, storage, or runnable entry point yet.
 
 Platform order:
 
@@ -47,14 +48,14 @@ data/                              Local platform content; ignored by Git
   Instagram/{incoming,archive,failed}/
 src/social_media_auto_poster/
   config.py                        Settings and data-folder creation
-  models.py                        Platform, JobStatus, PublishResult
+  models.py                        Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult
   platforms/                       Publisher protocol (base.py) and simulator (simulator.py)
   platforms/{linkedin,facebook,instagram}/   Empty
   graph/                           Empty; LangGraph workflow (Slice 5)
-  ingestion/                       Empty; scanning and pairing (Slice 3)
+  ingestion/                       Scanning/pairing (scanner.py) and stability check (stability.py)
   services/                        Empty; hashing and archiving helpers
   storage/                         Empty; SQLite repository (Milestone 2)
-tests/unit/                        Unit tests for layout, models, and config
+tests/unit/                        Unit tests for layout, models, config, scanner, and stability
 scripts/, docs/                    Empty
 logs/                              Local application logs; ignored by Git
 ```
@@ -70,7 +71,7 @@ data/LinkedIn/incoming/product-launch.jpg
 data/LinkedIn/incoming/product-launch.txt
 ```
 
-The planned initial image extensions are `.jpg`, `.jpeg`, and `.png`. Pairing, extension validation, and file-copy stability checks are not implemented yet. This convention is provisional; media support will be reviewed against each platform's official API before implementation.
+The planned initial image extensions are `.jpg`, `.jpeg`, and `.png`. Pairing and the file-copy stability check exist (see `CLAUDE.md`, "Input conventions"); extension and caption validation are not implemented yet. This convention is provisional; media support will be reviewed against each platform's official API before implementation.
 
 ## Windows setup
 

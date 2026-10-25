@@ -140,3 +140,31 @@ def test_scan_result_is_immutable():
     result = ScanResult(candidates=(), pending=())
     with pytest.raises(FrozenInstanceError):
         result.pending = (Path("x.txt"),)
+
+
+def test_scan_result_ambiguous_defaults_to_empty():
+    assert ScanResult(candidates=(), pending=()).ambiguous == ()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"candidates": [], "pending": ()},
+        {"candidates": (), "pending": []},
+        {"candidates": (), "pending": (), "ambiguous": []},
+        {"candidates": (), "pending": (), "ambiguous": ([Path("a.jpg"), Path("a.png")],)},
+    ],
+)
+def test_scan_result_rejects_lists(kwargs):
+    with pytest.raises(TypeError, match="must be a tuple"):
+        ScanResult(**kwargs)
+
+
+def test_validation_result_rejects_list_of_errors():
+    with pytest.raises(TypeError, match="must be a tuple"):
+        ValidationResult(is_valid=False, errors=["empty caption"])
+
+
+def test_real_success_rejects_whitespace_post_id():
+    with pytest.raises(ValueError, match="post ID"):
+        PublishResult(success=True, simulated=False, platform_post_id="   ")
