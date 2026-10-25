@@ -1,6 +1,13 @@
 """Tests for settings loading and content-folder creation, using temporary directories only."""
 
-from social_media_auto_poster.config import DATA_DIR_VAR, ensure_data_dirs, load_settings
+from social_media_auto_poster.config import (
+    DATA_DIR_VAR,
+    LINKEDIN_CLIENT_ID_VAR,
+    LINKEDIN_CLIENT_SECRET_VAR,
+    LINKEDIN_REDIRECT_URI_VAR,
+    ensure_data_dirs,
+    load_settings,
+)
 from social_media_auto_poster.models import Platform
 
 
@@ -71,3 +78,73 @@ def test_ensure_data_dirs_is_idempotent_and_keeps_files(tmp_path):
     ensure_data_dirs(settings)
 
     assert existing.read_text(encoding="utf-8") == "caption"
+
+
+# Fake, isolated values only; never real credentials.
+FAKE_SECRET = "fake-secret-for-tests"
+
+
+def test_linkedin_settings_default_to_none(tmp_path):
+    settings = load_settings(base_dir=tmp_path, environ={})
+    assert settings.linkedin_client_id is None
+    assert settings.linkedin_client_secret is None
+    assert settings.linkedin_redirect_uri is None
+
+
+def test_blank_linkedin_values_are_none(tmp_path):
+    environ = {
+        LINKEDIN_CLIENT_ID_VAR: "",
+        LINKEDIN_CLIENT_SECRET_VAR: "   ",
+        LINKEDIN_REDIRECT_URI_VAR: "",
+    }
+    settings = load_settings(base_dir=tmp_path, environ=environ)
+    assert settings.linkedin_client_id is None
+    assert settings.linkedin_client_secret is None
+    assert settings.linkedin_redirect_uri is None
+
+
+def test_linkedin_settings_load_from_environ(tmp_path):
+    environ = {
+        LINKEDIN_CLIENT_ID_VAR: "fake-id",
+        LINKEDIN_CLIENT_SECRET_VAR: FAKE_SECRET,
+        LINKEDIN_REDIRECT_URI_VAR: "http://localhost:8000/callback",
+    }
+    settings = load_settings(base_dir=tmp_path, environ=environ)
+    assert settings.linkedin_client_id == "fake-id"
+    assert settings.linkedin_client_secret == FAKE_SECRET
+    assert settings.linkedin_redirect_uri == "http://localhost:8000/callback"
+
+
+def test_linkedin_settings_load_from_env_file(tmp_path, monkeypatch):
+    for name in (LINKEDIN_CLIENT_ID_VAR, LINKEDIN_CLIENT_SECRET_VAR, LINKEDIN_REDIRECT_URI_VAR):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".env").write_text(
+        f"{LINKEDIN_CLIENT_ID_VAR}=dotenv-id\n{LINKEDIN_CLIENT_SECRET_VAR}={FAKE_SECRET}\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(base_dir=tmp_path)
+    assert settings.linkedin_client_id == "dotenv-id"
+    assert settings.linkedin_client_secret == FAKE_SECRET
+    assert settings.linkedin_redirect_uri is None
+
+
+def test_real_environment_overrides_env_file_for_linkedin(tmp_path, monkeypatch):
+    monkeypatch.setenv(LINKEDIN_CLIENT_ID_VAR, "env-id")
+    (tmp_path / ".env").write_text(f"{LINKEDIN_CLIENT_ID_VAR}=dotenv-id\n", encoding="utf-8")
+    settings = load_settings(base_dir=tmp_path)
+    assert settings.linkedin_client_id == "env-id"
+
+
+def test_loading_env_file_does_not_modify_os_environ(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.delenv(LINKEDIN_CLIENT_SECRET_VAR, raising=False)
+    (tmp_path / ".env").write_text(f"{LINKEDIN_CLIENT_SECRET_VAR}={FAKE_SECRET}\n", encoding="utf-8")
+    load_settings(base_dir=tmp_path)
+    assert LINKEDIN_CLIENT_SECRET_VAR not in os.environ
+
+
+def test_client_secret_is_not_in_repr_or_str(tmp_path):
+    settings = load_settings(base_dir=tmp_path, environ={LINKEDIN_CLIENT_SECRET_VAR: FAKE_SECRET})
+    assert FAKE_SECRET not in repr(settings)
+    assert FAKE_SECRET not in str(settings)

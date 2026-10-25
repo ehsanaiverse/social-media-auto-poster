@@ -101,7 +101,7 @@ python -m social_media_auto_poster.main
 
 ## Configuration and security
 
-Copy `.env.example` to `.env` when local configuration is introduced. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, or logs. OAuth and API access are not configured by this scaffold. Future integrations must use official APIs and comply with their permissions and policies.
+Create your local settings with `Copy-Item .env.example .env`, then enter the LinkedIn values (`LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET`, `LINKEDIN_REDIRECT_URI`) in `.env` only. They are optional and blank values are fine: publishing is simulated and nothing contacts LinkedIn until Milestone 4. After activating the venv (`.\.vevn\Scripts\Activate.ps1`), run `python -m pytest tests/unit/test_config.py`. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, or logs. OAuth and API access are not configured by this scaffold. Future integrations must use official APIs and comply with their permissions and policies.
 
 SQLite is planned for durable post state and restart recovery, but no database has been created. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
 
