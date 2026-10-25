@@ -20,7 +20,7 @@ There is no working folder watcher, content validator, database/repository, sche
 
 - Packaging (`pyproject.toml`) with declared dependencies.
 - An environment-variable template (`.env.example`).
-- Shared models (`models.py`): `Platform`, `JobStatus` (including the terminal `SIMULATED` status), and `PublishResult`, which always records whether a result was simulated.
+- Shared models (`models.py`): `Platform`, `JobStatus` (including the terminal `SIMULATED` status), `PostCandidate`, `ScanResult`, `ValidationResult`, and `PublishResult`, which records a definite success or failure and always whether the result was simulated.
 - Settings (`config.py`): resolves the content folder root and can create the `data/<Platform>/{incoming,archive,failed}` folders.
 - A platform-neutral publisher protocol (`platforms/base.py`).
 - A safe simulation publisher that never contacts any platform (`platforms/simulator.py`).
@@ -74,12 +74,11 @@ The planned initial image extensions are `.jpg`, `.jpeg`, and `.png`. Pairing, e
 
 ## Windows setup
 
-Use Python 3.12 or newer; **Python 3.13 is the recommended version**. From PowerShell in the project root:
+Use Python 3.12 or newer; the project is developed on **Python 3.14**. From PowerShell in the project root:
 
 ```powershell
-py install 3.13                      # once, if Python 3.13 is not installed (Python Install Manager)
-py -3.13 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+py -3.14 -m venv .vevn               # once
+.\.vevn\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
@@ -93,8 +92,6 @@ python --version
 python -m pip check
 python -m pytest
 ```
-
-`pytest` will report that no tests were collected until Milestone 1 adds them.
 
 There is no runnable application entry point yet. Once `main.py` is implemented, the intended invocation is:
 

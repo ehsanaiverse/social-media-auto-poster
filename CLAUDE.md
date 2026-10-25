@@ -40,6 +40,7 @@ LangGraph is a **required** part of this project, not an optional or future enha
 - On startup, reconcile `incoming/` against stored job records so interrupted work is recovered.
 - Job states are explicit. Current set: `DISCOVERED`, `VALIDATED`, `PUBLISHING`, `PUBLISHED`, `SIMULATED`, `FAILED`, `NEEDS_REVIEW` (refine as needed and document changes here).
 - **`SIMULATED` is a terminal state.** A simulated run always ends in `SIMULATED` and never uses `PUBLISHED`. `PublishResult` carries `simulated: bool`, and `PUBLISHED` is only valid when `simulated` is `False` and the platform confirmed the post.
+- **`PublishResult` is a definite outcome** (`success`, `simulated`, `platform_post_id`, `error`), with invariants enforced in `__post_init__`: simulated → no post ID; success → no error; failure → non-empty error; real success → post ID required. Its `status` is `SIMULATED`, `PUBLISHED`, or `FAILED`. Ambiguous outcomes are never a `PublishResult`; they set `NEEDS_REVIEW`.
 - Archive files **only** after a real, confirmed `PUBLISHED` result; the graph routes to the archive node only on that result. Failed or uncertain jobs keep their files (in `failed/` or `incoming/`) with an actionable error.
 - **In Milestone 1, `SIMULATED` jobs leave their files in `incoming/`.** The archive service is still unit-tested directly against temporary directories.
 - **Never blindly retry an external publish whose outcome is ambiguous** (timeout, lost response, crash while `PUBLISHING`). Mark it `NEEDS_REVIEW` unless the platform offers a safe way to check whether it succeeded.
@@ -66,7 +67,7 @@ LangGraph is a **required** part of this project, not an optional or future enha
 ```text
 src/social_media_auto_poster/
 ├── config.py          # Settings loaded from env/.env; paths for data/ and database/
-├── models.py          # Shared dataclasses/enums (JobStatus, PostCandidate, PublishResult)
+├── models.py          # Shared dataclasses/enums (Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult)
 ├── graph/             # LangGraph only: state.py, nodes.py, workflow.py
 ├── ingestion/         # Folder scanning, file stability, media/caption pairing, validation
 ├── storage/           # SQLite repository layer (Milestone 2+)
@@ -75,7 +76,7 @@ src/social_media_auto_poster/
 └── main.py            # CLI entry point
 ```
 
-The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. `main.py` arrives in Slice 6, when it has real content.
+The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. `main.py` arrives in Slice 6, when it has real content.
 
 Configuration: `AUTOPOSTER_DATA_DIR` sets the content root (default `data`, relative paths resolved against the base directory, which is the current working directory). Real environment variables override `.env`. `load_settings()` reads `.env` with `dotenv_values` and never mutates `os.environ`. Explain any significant structural change before making it, and do not add empty abstractions.
 
@@ -86,7 +87,7 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | # | Milestone | Status |
 | --- | --------- | ------ |
 | 0 | Inspect, plan, establish this file | Done |
-| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config) done; Slice 3 (ingestion) next |
+| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config) done and tested; Slice 3 (ingestion) next |
 | 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | Not started |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |
@@ -103,14 +104,14 @@ Tests must cover, as the features appear: normal execution, validation failures,
 - Add a dependency only in the milestone that uses it. Verify the package name, current version, and Python compatibility on PyPI or the official docs before adding or pinning it. Bounds are `>=` the version actually installed and tested, `<` the next major version.
 - Current: `langgraph`, `python-dotenv` (runtime); `pytest` (dev).
 - Expected later: `watchdog` (when folder watching is added), `langgraph-checkpoint-sqlite` (M3), `requests` or similar (M4). `langchain` is **not** a dependency (see "No LLMs" above).
-- **Python version:** standardise on **Python 3.12+, preferring 3.13** (`requires-python = ">=3.12"`). `langgraph` lists classifiers through 3.13; 3.14 is not a supported target.
+- **Python version:** the developer uses **Python 3.14**; minimum is 3.12 (`requires-python = ">=3.12"`). `langgraph` officially lists classifiers only through 3.13, so re-check 3.14 compatibility whenever a dependency is added (especially `langgraph-checkpoint-sqlite` in M3). Falling back to 3.13 is the remedy if something breaks.
+- **Virtual environment:** the project venv is named `.vevn` (developer's choice).
 
 ## Commands (Windows PowerShell, from repo root)
 
 ```powershell
-py install 3.13                      # once, if Python 3.13 is not installed (Python Install Manager)
-py -3.13 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+py -3.14 -m venv .vevn               # once
+.\.vevn\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 python -m pytest

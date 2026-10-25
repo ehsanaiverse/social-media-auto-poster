@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 
 class Platform(StrEnum):
@@ -29,25 +30,73 @@ class JobStatus(StrEnum):
 
 
 @dataclass(frozen=True)
-class PublishResult:
-    """A publish attempt that returned a definite answer.
+class PostCandidate:
+    """One paired post found by ingestion: an image and a caption sharing a filename stem.
 
-    Ambiguous outcomes (timeouts, lost responses) are not represented here;
-    they lead to ``NEEDS_REVIEW`` instead. A real result always carries the
-    platform's post ID that confirms it, and a simulated result never does.
+    Paths stay ``Path`` objects here; the graph converts them to strings when
+    it builds its serializable state.
     """
 
+    platform: Platform
+    stem: str
+    media_path: Path
+    caption_path: Path
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    """The outcome of scanning one ``incoming/`` folder.
+
+    ``pending`` holds unpaired files. They are not errors and are left
+    untouched until their partner arrives.
+    """
+
+    candidates: tuple[PostCandidate, ...]
+    pending: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """Whether a candidate passed validation, and every reason it did not."""
+
+    is_valid: bool
+    errors: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.is_valid and self.errors:
+            raise ValueError("A valid result must not carry errors.")
+        if not self.is_valid and not self.errors:
+            raise ValueError("An invalid result requires at least one error.")
+
+
+@dataclass(frozen=True)
+class PublishResult:
+    """A publish attempt that returned a definite answer: success or failure.
+
+    Ambiguous outcomes (timeouts, lost responses, a crash while publishing)
+    are never represented here; they lead to ``NEEDS_REVIEW`` instead. A real
+    success always carries the platform's post ID that confirms it, and a
+    simulated result never does.
+    """
+
+    success: bool
     simulated: bool
-    message: str
     platform_post_id: str | None = None
+    error: str | None = None
 
     def __post_init__(self) -> None:
         if self.simulated and self.platform_post_id is not None:
             raise ValueError("A simulated result must not carry a platform post ID.")
-        if not self.simulated and not self.platform_post_id:
+        if self.success and self.error is not None:
+            raise ValueError("A successful result must not carry an error.")
+        if not self.success and not (self.error and self.error.strip()):
+            raise ValueError("A failed result requires a non-empty error.")
+        if self.success and not self.simulated and not self.platform_post_id:
             raise ValueError("A real publish result requires the platform post ID that confirms it.")
 
     @property
     def status(self) -> JobStatus:
         """The terminal job status this result leads to."""
+        if not self.success:
+            return JobStatus.FAILED
         return JobStatus.SIMULATED if self.simulated else JobStatus.PUBLISHED
