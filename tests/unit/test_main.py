@@ -31,7 +31,7 @@ def test_scan_reports_candidates_pending_and_ambiguous(tmp_path, capsys):
     assert "  lonely.jpg" in out
     assert "AMBIGUOUS (1)" in out
     assert "banner: banner.jpg, banner.png, banner.txt" in out
-    assert "Dry run: nothing was moved, validated, or published." in out
+    assert "Dry run: nothing was moved or published." in out
 
 
 def test_scan_defaults_to_configured_linkedin_incoming(tmp_path, monkeypatch, capsys):
@@ -106,3 +106,17 @@ def test_invalid_interval_is_a_usage_error(tmp_path, interval, capsys):
 
     assert exc.value.code == 2
     assert "--interval" in capsys.readouterr().err
+
+
+def test_scan_shows_validation_result_per_candidate(tmp_path, capsys):
+    (tmp_path / "good.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 16)
+    (tmp_path / "good.txt").write_bytes(b"Hello")
+    touch(tmp_path, "animated.gif", "animated.txt")
+
+    cli.main(["scan", "--dir", str(tmp_path), "--interval", "0"])
+
+    lines = capsys.readouterr().out.splitlines()
+    good = next(line for line in lines if "good.jpg" in line)
+    animated = next(line for line in lines if "animated.gif" in line)
+    assert good.endswith("valid")
+    assert "INVALID: unsupported image type '.gif'" in animated

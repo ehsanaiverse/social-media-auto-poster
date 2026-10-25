@@ -12,11 +12,11 @@ A local, folder-driven Python application scaffold for preparing and publishing 
 
 ## Non-goals for this scaffold
 
-There is no working folder watcher, content validator, database/repository, scheduler, OAuth flow, or live publishing integration yet. The simulator does not contact a platform and its result is not confirmation of publication. This scaffold does not claim API access is configured.
+There is no working folder watcher, database/repository, scheduler, OAuth flow, or live publishing integration yet. The simulator does not contact a platform and its result is not confirmation of publication. This scaffold does not claim API access is configured.
 
 ## Current status
 
-**Scaffold only (Milestone 1, Slices 0–3 complete).** What exists today:
+**Scaffold only (Milestone 1, Slices 0–4 complete).** What exists today:
 
 - Packaging (`pyproject.toml`) with declared dependencies.
 - An environment-variable template (`.env.example`).
@@ -24,12 +24,12 @@ There is no working folder watcher, content validator, database/repository, sche
 - Settings (`config.py`): resolves the content folder root and can create the `data/<Platform>/{incoming,archive,failed}` folders.
 - A platform-neutral publisher protocol (`platforms/base.py`).
 - A safe simulation publisher that never contacts any platform (`platforms/simulator.py`).
-- Ingestion (`ingestion/`): a one-shot scan that pairs images with captions (`scanner.py`) and a file-copy stability check (`stability.py`). Nothing calls them yet.
+- Ingestion (`ingestion/`): a one-shot scan that pairs images with captions (`scanner.py`), a file-copy stability check (`stability.py`), and content validation (`validation.py`).
+- A service that moves a post's two files together into `archive/` or `failed/` (`services/archive.py`). Nothing calls it yet.
+- A read-only command-line `scan` (`main.py`); see "Scan the incoming folder" below.
 - Unit tests under `tests/unit/`.
 
-- A read-only command-line `scan` (`main.py`); see "Scan the incoming folder" below.
-
-There is no LangGraph workflow, content validation, storage, or `run` command yet.
+There is no LangGraph workflow, storage, or `run` command yet.
 
 Platform order:
 
@@ -54,10 +54,10 @@ src/social_media_auto_poster/
   platforms/                       Publisher protocol (base.py) and simulator (simulator.py)
   platforms/{linkedin,facebook,instagram}/   Empty
   graph/                           Empty; LangGraph workflow (Slice 5)
-  ingestion/                       Scanning/pairing (scanner.py) and stability check (stability.py)
-  services/                        Empty; hashing and archiving helpers
+  ingestion/                       Scanning/pairing, stability check, validation
+  services/                        Moving posts to archive/failed (archive.py); hashing later
   storage/                         Empty; SQLite repository (Milestone 2)
-tests/unit/                        Unit tests for layout, models, config, scanner, and stability
+tests/unit/                        Unit tests for every module above
 scripts/, docs/                    Empty
 logs/                              Local application logs; ignored by Git
 ```
@@ -73,7 +73,7 @@ data/LinkedIn/incoming/product-launch.jpg
 data/LinkedIn/incoming/product-launch.txt
 ```
 
-The planned initial image extensions are `.jpg`, `.jpeg`, and `.png`. Pairing and the file-copy stability check exist (see `CLAUDE.md`, "Input conventions"); extension and caption validation are not implemented yet. This convention is provisional; media support will be reviewed against each platform's official API before implementation.
+The planned initial image extensions are `.jpg`, `.jpeg`, and `.png`. Pairing, the file-copy stability check, and validation (extension, image signature, UTF-8 non-empty caption) exist; see `CLAUDE.md`, "Input conventions". This convention is provisional; media support will be reviewed against each platform's official API before implementation.
 
 ## Windows setup
 
@@ -98,7 +98,7 @@ python -m pytest
 
 ## Scan the incoming folder (read-only)
 
-The only command so far is `scan`. It reports what the tool would pick up and never moves, validates, or publishes anything:
+The only command so far is `scan`. It reports what the tool would pick up and never moves or publishes anything:
 
 ```powershell
 python -m social_media_auto_poster.main scan                          # data\LinkedIn\incoming (respects AUTOPOSTER_DATA_DIR)
@@ -107,7 +107,7 @@ python -m social_media_auto_poster.main scan --interval 0             # instant:
 python -m social_media_auto_poster.main scan --help
 ```
 
-It lists **candidates** (image + caption pairs, each marked stable or not), **pending** files waiting for a partner, and **ambiguous** stems that need fixing by hand. Exit code 0 means the scan completed; 1 means the folder does not exist. The `run` command (validate, simulate, record) arrives in Slice 6.
+It lists **candidates** (image + caption pairs, each marked stable or not, and valid or `INVALID:` with reasons), **pending** files waiting for a partner, and **ambiguous** stems that need fixing by hand. Exit code 0 means the scan completed; 1 means the folder does not exist. The `run` command (validate, simulate, record) arrives in Slice 6.
 
 ## Configuration and security
 

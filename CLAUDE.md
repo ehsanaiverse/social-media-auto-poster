@@ -60,6 +60,9 @@ LangGraph is a **required** part of this project, not an optional or future enha
 - **Ignored entirely** (neither pending nor candidate): subfolders, dot-files, `~$` lock files, `Thumbs.db`, `desktop.ini`, and partial downloads (`.tmp`, `.part`, `.crdownload`).
 - **Stability (`ingestion/stability.py`):** size and `st_mtime_ns` unchanged across the interval, then the file must open for reading. Any `OSError` means "not stable yet", not an error.
 - **Slice 5 requirement:** the graph's stability node must check **both** the media file and the caption file before validation runs.
+- **Validation (`ingestion/validation.py`)** collects every error. Image: supported extension, not empty, and a file-signature check (JPEG `FF D8 FF`, PNG 8-byte header) whose detected type must match the extension (a PNG named `.jpg` is an error). Caption: strict UTF-8 (a BOM is accepted and stripped), not empty or whitespace-only, read capped at 64 KB (a safety guard, **not** LinkedIn's caption limit). A missing file reports only "not found" for that file. LinkedIn's real caption and image limits are not enforced until verified in M4.
+- **Decision (Slice 4): file-signature check, not Pillow.** No dependency; catches renamed and mislabeled files. It does not detect a corrupt image body or read dimensions; revisit Pillow in M4 once LinkedIn's image constraints are verified.
+- **Moving posts (`services/archive.py`):** `archive_post(candidate, dest_dir) -> Path` moves both files into a new `dest_dir/<UTC %Y%m%dT%H%M%SZ>_<stem>/` folder (`_2`, `_3`... on a clash) and returns it; used for `archive/` and `failed/`. Moves use `os.replace` and never copy: a destination on a different drive is refused before anything moves. Both files move or neither: a failed caption move puts the image back; if that rollback also fails, it logs CRITICAL and raises `ArchiveError` naming both file locations. It never decides *whether* to move; the graph does.
 
 ## Security
 
@@ -81,7 +84,7 @@ src/social_media_auto_poster/
 └── main.py            # CLI entry point
 ```
 
-The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` was added early (after Slice 3) with a read-only `scan` command only; the `run` command (validate, simulate, record) is added in Slice 6. `scan` must stay read-only: it never moves, validates, publishes, or creates folders.
+The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` was added early (after Slice 3) with a read-only `scan` command only; the `run` command (validate, simulate, record) is added in Slice 6. `scan` must stay read-only: it reports stability and validation but never moves, publishes, or creates folders.
 
 Configuration: `AUTOPOSTER_DATA_DIR` sets the content root (default `data`, relative paths resolved against the base directory, which is the current working directory). Real environment variables override `.env`. `load_settings()` reads `.env` with `dotenv_values` and never mutates `os.environ`. Explain any significant structural change before making it, and do not add empty abstractions.
 
@@ -92,7 +95,7 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | # | Milestone | Status |
 | --- | --------- | ------ |
 | 0 | Inspect, plan, establish this file | Done |
-| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability) done and tested; Slice 4 (validation + archive) next |
+| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability), 4 (validation + archive) done and tested; Slice 5 (LangGraph workflow) next |
 | 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | Not started |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |
