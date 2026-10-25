@@ -1,14 +1,16 @@
 """Platform-neutral contract implemented by platform-specific publishers."""
 
-from typing import Protocol, TypeVar
+from typing import Protocol
 
-PostT = TypeVar("PostT", contravariant=True)
-ResultT = TypeVar("ResultT", covariant=True)
+from social_media_auto_poster.models import PostCandidate, PublishResult
 
 
-class Publisher(Protocol[PostT, ResultT]):
-    """Publish a post and return an implementation-defined outcome."""
+class Publisher(Protocol):
+    """Publish one post and return a definite result.
 
-    def publish(self, post: PostT, /) -> ResultT:
-        """Submit a post; platform-specific capabilities remain implementation-defined."""
-        ...
+    Return a ``PublishResult`` only when the outcome is known. If the outcome
+    is unknown (timeout, lost response), raise instead: the workflow turns any
+    exception from ``publish`` into ``NEEDS_REVIEW`` and never retries it.
+    """
+
+    def publish(self, post: PostCandidate, /) -> PublishResult: ...

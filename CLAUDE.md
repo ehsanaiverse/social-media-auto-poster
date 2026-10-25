@@ -20,6 +20,10 @@ LangGraph is a **required** part of this project, not an optional or future enha
 - The per-post workflow is an explicit, deterministic `StateGraph`: typed state, named nodes, explicit edges, and conditional edges where routing depends on results.
 - **Discovery and pairing run in `ingestion/`, outside the graph.** Each paired post becomes one graph invocation (one graph thread per job). The graph starts at stability/validation, not discovery.
 - Planned graph stages (implemented incrementally, not all at once): stability/validation → duplicate check → prepare → publish (simulated first) → record result → archive on confirmed `PUBLISHED`; plus an error/`NEEDS_REVIEW` path that preserves the files.
+- **Implemented graph (Slice 5, `graph/workflow.py`):** `check_stability` → `validate` → `mark_publishing` → `publish` → `record_result` → (`archive` only on a real `PUBLISHED`) → END. Not stable → `record_result` (status stays `DISCOVERED`, `retry_later=True`). Invalid, `FAILED`, or `NEEDS_REVIEW` → `move_to_failed` → `record_result` → END. **Every path passes `record_result`, and a real publish is recorded before any file move** (in M2 `record_result` writes the DB). `duplicate_check` (M2) and `prepare` (M4) are not added until they have real work.
+- `mark_publishing` is a separate node so that, with checkpoints (M3), `PUBLISHING` is saved before the publish call. Any exception from `publisher.publish` → `NEEDS_REVIEW`, never retried. If archiving fails after `PUBLISHED`, the status stays `PUBLISHED` and the error is recorded. If writing `error-report.txt` fails, it is logged and the outcome is unchanged.
+- State is `graph/state.py: JobState` (a `TypedDict` of plain values; `errors` is a list). Live dependencies (publisher, settings, stability interval) go in `WorkflowContext`, passed with `invoke(..., context=...)` (`context_schema`; verified on langgraph 1.2.17). The M1 job ID is a random UUID, also used as the graph `thread_id`; M2 replaces it with the DB job ID.
+- **LangSmith tracing must stay off** (`LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` unset or false): it would send state (paths, captions) to an external service. A test enforces this.
 - Nodes are thin. Filesystem work, media validation, hashing, database access, and API calls live in ordinary Python service modules; nodes call them and return state updates.
 - **No LLMs and no autonomous agents.** Do not add `langchain` model integrations, tool-calling agents, or prompts unless a concrete, agreed requirement justifies it.
 - Keep graph state small and serializable: IDs, paths (as strings), statuses, metadata, error details. Never put image bytes or open file handles in state.
@@ -95,11 +99,15 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | # | Milestone | Status |
 | --- | --------- | ------ |
 | 0 | Inspect, plan, establish this file | Done |
-| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability), 4 (validation + archive) done and tested; Slice 5 (LangGraph workflow) next |
+| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | In progress: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability), 4 (validation + archive), 5 (LangGraph workflow) done and tested; Slice 6 (`run` command, end-to-end tests) next |
 | 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | Not started |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |
 | 5 | Reliability and expansion: logging/monitoring, operational docs, evaluate PostgreSQL, plan Facebook/Instagram adapters | Not started |
+
+### Milestone 4 requirements (recorded early)
+
+- **An exception raised before any request reaches LinkedIn is a definite `FAILED`, not `NEEDS_REVIEW`** (e.g. missing credentials, a file that cannot be read, a request that could not be built). Nothing was sent, so nothing can be live. The LinkedIn adapter must report these as a failed `PublishResult` (or a dedicated not-sent error the graph maps to `FAILED`), because the M1 graph treats every exception from `publish` as `NEEDS_REVIEW`. Only errors after a request may have reached LinkedIn (timeout, lost response, 5xx with unknown effect) are `NEEDS_REVIEW`.
 
 Every milestone delivers: the files changed, the reasoning behind key decisions, exact Windows (PowerShell) commands to install, run, and test, the expected output, automated tests, and known limitations plus the next step.
 

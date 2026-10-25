@@ -16,7 +16,7 @@ There is no working folder watcher, database/repository, scheduler, OAuth flow, 
 
 ## Current status
 
-**Scaffold only (Milestone 1, Slices 0–4 complete).** What exists today:
+**Scaffold only (Milestone 1, Slices 0–5 complete).** What exists today:
 
 - Packaging (`pyproject.toml`) with declared dependencies.
 - An environment-variable template (`.env.example`).
@@ -29,7 +29,9 @@ There is no working folder watcher, database/repository, scheduler, OAuth flow, 
 - A read-only command-line `scan` (`main.py`); see "Scan the incoming folder" below.
 - Unit tests under `tests/unit/`.
 
-There is no LangGraph workflow, storage, or `run` command yet.
+- A LangGraph workflow (`graph/`) that takes one post through stability → validation → simulated publish → record, moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`. It is tested but not yet started by any command.
+
+There is no storage (database) or `run` command yet.
 
 Platform order:
 
@@ -53,7 +55,7 @@ src/social_media_auto_poster/
   models.py                        Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult
   platforms/                       Publisher protocol (base.py) and simulator (simulator.py)
   platforms/{linkedin,facebook,instagram}/   Empty
-  graph/                           Empty; LangGraph workflow (Slice 5)
+  graph/                           LangGraph workflow: state.py, nodes.py, workflow.py
   ingestion/                       Scanning/pairing, stability check, validation
   services/                        Moving posts to archive/failed (archive.py); hashing later
   storage/                         Empty; SQLite repository (Milestone 2)
