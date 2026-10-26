@@ -168,9 +168,20 @@ class JobRepository:
         rows = self._conn.execute(f"{_SELECT} WHERE status = ? ORDER BY created_at, rowid", (status.value,)).fetchall()
         return [self._to_record(row) for row in rows]
 
-    def list_recent(self, limit: int = 20) -> list[JobRecord]:
-        """The most recently created jobs, newest first."""
-        rows = self._conn.execute(f"{_SELECT} ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)).fetchall()
+    def list_recent(self, limit: int = 20, *, status: JobStatus | None = None) -> list[JobRecord]:
+        """The most recently created jobs (optionally only one status), newest first."""
+        where, params = ("WHERE status = ?", (status.value,)) if status else ("", ())
+        rows = self._conn.execute(
+            f"{_SELECT} {where} ORDER BY created_at DESC, rowid DESC LIMIT ?", (*params, limit)
+        ).fetchall()
+        return [self._to_record(row) for row in rows]
+
+    def find_by_id_prefix(self, prefix: str) -> list[JobRecord]:
+        """Jobs whose ID starts with ``prefix`` (compared exactly, no wildcards), newest first."""
+        rows = self._conn.execute(
+            f"{_SELECT} WHERE substr(job_id, 1, ?) = ? ORDER BY created_at DESC, rowid DESC",
+            (len(prefix), prefix),
+        ).fetchall()
         return [self._to_record(row) for row in rows]
 
     def _require(self, job_id: str) -> JobRecord:

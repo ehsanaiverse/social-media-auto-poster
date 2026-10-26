@@ -1,6 +1,7 @@
 """Command-line entry point: ``python -m social_media_auto_poster.main <command>``.
 
-- ``scan``: a read-only report of what ingestion would pick up.
+- ``scan``: a read-only report of what ingestion would pick up, including duplicates.
+- ``jobs``: read-only job history from ``database/app.db``.
 - ``run``: process every complete post once through the workflow graph,
   recording each job in ``database/app.db``. Publishing is always simulated
   until Milestone 4.
@@ -25,14 +26,17 @@ from social_media_auto_poster.ingestion.stability import is_file_stable
 from social_media_auto_poster.ingestion.validation import validate_candidate
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, ScanResult
 from social_media_auto_poster.platforms.simulator import Simulator
+from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.services.reconcile import Recovery, reconcile_interrupted_jobs
 from social_media_auto_poster.services.run_lock import RunLockHeldError, single_run_lock
-from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db
-from social_media_auto_poster.storage.jobs import JobRepository
+from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
+from social_media_auto_poster.storage.jobs import JobRecord, JobRepository
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_S = 1.0
+# The publish mode of every run until Milestone 4. scan uses it too, so its duplicate check matches run's.
+RUN_MODE = PublishMode.SIMULATED
 LOG_MAX_BYTES = 1_000_000
 LOG_BACKUP_COUNT = 5
 
@@ -82,6 +86,18 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_interval_option(scan)
     scan.set_defaults(handler=_scan)
 
+    jobs = commands.add_parser(
+        "jobs",
+        help="Show job history from the job database. Read-only.",
+        description="List recent jobs, or show one job in full. Never creates or changes the database.",
+    )
+    jobs.add_argument("--last", type=_positive_int, default=20, help="How many jobs to list (default: 20).")
+    jobs.add_argument(
+        "--status", type=str.upper, choices=[s.value for s in JobStatus], help="Only jobs with this status."
+    )
+    jobs.add_argument("--id", dest="job_id", help="Show every detail of one job (an ID prefix is enough).")
+    jobs.set_defaults(handler=_jobs)
+
     run = commands.add_parser(
         "run",
         help="Process every complete post once. Publishing is simulated.",
@@ -111,8 +127,8 @@ def _add_interval_option(command: argparse.ArgumentParser) -> None:
 
 
 def _scan(args: argparse.Namespace) -> int:
-    folder = args.dir if args.dir is not None else load_settings().incoming_dir(Platform.LINKEDIN)
-    folder = folder.resolve()
+    settings = load_settings()
+    folder = (args.dir if args.dir is not None else settings.incoming_dir(Platform.LINKEDIN)).resolve()
     with _logging_to(verbose=False, log_file=None):
         try:
             result = scan_incoming(folder, Platform.LINKEDIN)
@@ -121,28 +137,70 @@ def _scan(args: argparse.Namespace) -> int:
             print(f"Create it, or set {DATA_DIR_VAR}, or pass --dir.", file=sys.stderr)
             return EXIT_SETUP_ERROR
 
-        print(f"Scanning LinkedIn incoming: {folder}")
-        if not (result.candidates or result.pending or result.ambiguous):
-            print("\nNothing found.")
-        else:
-            _print_candidates(result, args.interval)
-            _print_pending_and_ambiguous(result)
+        conn = _open_history_or_none(settings)
+        try:
+            repository = JobRepository(conn) if conn is not None else None
+            print(f"Scanning LinkedIn incoming: {folder}")
+            if not (result.candidates or result.pending or result.ambiguous):
+                print("\nNothing found.")
+            else:
+                _print_candidates(result, args.interval, repository)
+                _print_pending_and_ambiguous(result)
+            if repository is not None:
+                interrupted = len(repository.list_by_status(JobStatus.PUBLISHING))
+                if interrupted:
+                    print(f"\nNote: {interrupted} interrupted job(s) will be recovered by the next run.")
+        finally:
+            if conn is not None:
+                conn.close()
     print("\nDry run: nothing was moved or published.")
     return EXIT_OK
 
 
-def _print_candidates(result: ScanResult, interval_s: float) -> None:
+def _open_history_or_none(settings: Settings) -> sqlite3.Connection | None:
+    """The job database, read-only, or None if it does not exist yet or cannot be read (scan still works)."""
+    try:
+        return open_app_db_read_only(settings.app_db_path)
+    except FileNotFoundError:
+        return None
+    except (SchemaTooNewError, sqlite3.Error) as error:
+        logger.warning("Duplicate check unavailable; could not read the job database: %s", error)
+        return None
+
+
+def _print_candidates(result: ScanResult, interval_s: float, repository: JobRepository | None) -> None:
     if not result.candidates:
         return
     pairs = [f"{c.media_path.name} + {c.caption_path.name}" for c in result.candidates]
     stability = [_stability_label(c, interval_s) for c in result.candidates]
-    validity = [_validation_label(c) for c in result.candidates]
+    validity = [validate_candidate(c) for c in result.candidates]
     stem_width = max(len(c.stem) for c in result.candidates)
     pair_width = max(len(p) for p in pairs)
     stability_width = max(len(s) for s in stability)
     print(f"\nCANDIDATES ({len(result.candidates)})")
     for candidate, pair, stable, valid in zip(result.candidates, pairs, stability, validity):
-        print(f"  {candidate.stem:<{stem_width}}   {pair:<{pair_width}}   {stable:<{stability_width}}   {valid}")
+        if not valid.is_valid:
+            last = f"INVALID: {'; '.join(valid.errors)}"
+        elif stable == "stable":
+            last = f"valid   {_duplicate_label(candidate, repository)}"
+        else:
+            last = "valid"  # Not hashed while it may still be changing.
+        print(f"  {candidate.stem:<{stem_width}}   {pair:<{pair_width}}   {stable:<{stability_width}}   {last}")
+
+
+def _duplicate_label(candidate: PostCandidate, repository: JobRepository | None) -> str:
+    """Whether ``run`` would skip this post as a duplicate. Same check as the graph, read-only."""
+    if repository is None:
+        return "new"
+    try:
+        media_sha256 = sha256_file(candidate.media_path)
+        caption_sha256 = sha256_file(candidate.caption_path)
+    except OSError:
+        return "could not read files to check for duplicates"
+    match = repository.find_blocking_duplicate(
+        platform=candidate.platform, mode=RUN_MODE, media_sha256=media_sha256, caption_sha256=caption_sha256
+    )
+    return f"DUPLICATE {_describe_original(match)}" if match else "new"
 
 
 def _stability_label(candidate: PostCandidate, interval_s: float) -> str:
@@ -154,9 +212,72 @@ def _stability_label(candidate: PostCandidate, interval_s: float) -> str:
     return f"NOT STABLE ({' and '.join(unstable)} changing or locked)"
 
 
-def _validation_label(candidate: PostCandidate) -> str:
-    result = validate_candidate(candidate)
-    return "valid" if result.is_valid else f"INVALID: {'; '.join(result.errors)}"
+# jobs
+
+
+def _jobs(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    try:
+        conn = open_app_db_read_only(settings.app_db_path)
+    except FileNotFoundError:
+        print(f"No jobs yet (no job database at {settings.app_db_path}).")
+        return EXIT_OK
+    except (SchemaTooNewError, sqlite3.Error) as error:
+        print(f"Error: could not read the job database: {error}", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    try:
+        repository = JobRepository(conn)
+        if args.job_id:
+            return _show_job(repository, args.job_id.strip().lower())
+        status = JobStatus(args.status) if args.status else None
+        records = repository.list_recent(args.last, status=status)
+        if not records:
+            print(f"No jobs with status {status}." if status else "No jobs yet.")
+            return EXIT_OK
+        _print_job_table(records)
+        return EXIT_OK
+    except sqlite3.Error as error:
+        print(f"Error: could not read the job database: {error}", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    finally:
+        conn.close()
+
+
+def _print_job_table(records: list[JobRecord]) -> None:
+    stem_width = max(20, *(len(r.stem) for r in records))
+    print(f"  {'JOB':<9} {'CREATED (UTC)':<20} {'STEM':<{stem_width}} {'MODE':<10} STATUS")
+    for r in records:
+        print(f"  {r.job_id[:8]:<9} {r.created_at:%Y-%m-%d %H:%M:%S}  {r.stem:<{stem_width}} {r.mode:<10} {r.status}")
+        for error in r.errors:
+            print(f"  {'':<9} - {error}")
+
+
+def _show_job(repository: JobRepository, prefix: str) -> int:
+    matches = repository.find_by_id_prefix(prefix)
+    if not matches:
+        print(f"Error: no job ID starts with '{prefix}'.", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    if len(matches) > 1:
+        print(f"Error: '{prefix}' matches {len(matches)} jobs; use a longer prefix:", file=sys.stderr)
+        for r in matches:
+            print(f"  {r.job_id}  {r.stem}  {r.status}", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    [r] = matches
+    print(f"Job:             {r.job_id}")
+    print(f"Post:            {r.stem} ({r.media_name} + {r.caption_name})")
+    print(f"Platform:        {r.platform}")
+    print(f"Mode:            {r.mode}")
+    print(f"Status:          {r.status}")
+    print(f"Created:         {r.created_at:%Y-%m-%d %H:%M:%S} UTC")
+    print(f"Updated:         {r.updated_at:%Y-%m-%d %H:%M:%S} UTC")
+    print(f"Media SHA-256:   {r.media_sha256 or '-'}")
+    print(f"Caption SHA-256: {r.caption_sha256 or '-'}")
+    print(f"Post ID:         {r.platform_post_id or '-'}")
+    print(f"Destination:     {r.destination or '-'}")
+    print("Errors:          " + ("(none)" if not r.errors else ""))
+    for error in r.errors:
+        print(f"  - {error}")
+    return EXIT_OK
 
 
 # run
@@ -217,7 +338,7 @@ def _process(settings: Settings, repository: JobRepository, interval_s: float, r
     # Until Milestone 4 the publisher is always the simulator. There is no real publisher to choose.
     context = WorkflowContext(
         publisher=Simulator(),
-        mode=PublishMode.SIMULATED,
+        mode=RUN_MODE,
         repository=repository,
         settings=settings,
         stability_interval_s=interval_s,
@@ -285,7 +406,12 @@ def _duplicate_note(job_id: str, context: WorkflowContext) -> str:
     original = context.repository.get(job_id)
     if original is None:
         return "of an existing job; files left in incoming/"
-    return f"of job {job_id[:8]} ({original.status}, {original.created_at:%Y-%m-%d}); files left in incoming/"
+    return f"{_describe_original(original)}; files left in incoming/"
+
+
+def _describe_original(original: JobRecord) -> str:
+    """How duplicates refer to the job that already handles their content (shared by run and scan)."""
+    return f"of job {original.job_id[:8]} ({original.status}, {original.created_at:%Y-%m-%d})"
 
 
 def _relative_to_data(destination: str | None, settings: Settings) -> str | None:
@@ -358,6 +484,16 @@ def _logging_to(*, verbose: bool, log_file: Path | None) -> Generator[None, None
             root.removeHandler(handler)
             handler.close()
         root.setLevel(previous_level)
+
+
+def _positive_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
 
 
 def _non_negative_float(text: str) -> float:

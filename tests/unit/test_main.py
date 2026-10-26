@@ -7,6 +7,16 @@ import pytest
 from social_media_auto_poster import main as cli
 
 
+@pytest.fixture(autouse=True)
+def isolated_base(tmp_path, monkeypatch):
+    """Run every test from an empty folder, so the real .env and database/app.db are never read."""
+    base = tmp_path / "base"
+    base.mkdir()
+    monkeypatch.chdir(base)
+    monkeypatch.delenv("AUTOPOSTER_DATA_DIR", raising=False)
+    return base
+
+
 def touch(folder: Path, *names: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     for name in names:
@@ -14,7 +24,7 @@ def touch(folder: Path, *names: str) -> None:
 
 
 def snapshot(folder: Path) -> dict[str, tuple[int, bytes]]:
-    return {p.name: (p.stat().st_mtime_ns, p.read_bytes()) for p in folder.iterdir()}
+    return {p.name: (p.stat().st_mtime_ns, p.read_bytes()) for p in folder.iterdir() if p.is_file()}
 
 
 def test_scan_reports_candidates_pending_and_ambiguous(tmp_path, capsys):
@@ -118,5 +128,5 @@ def test_scan_shows_validation_result_per_candidate(tmp_path, capsys):
     lines = capsys.readouterr().out.splitlines()
     good = next(line for line in lines if "good.jpg" in line)
     animated = next(line for line in lines if "animated.gif" in line)
-    assert good.endswith("valid")
+    assert good.endswith("valid   new")
     assert "INVALID: unsupported image type '.gif'" in animated

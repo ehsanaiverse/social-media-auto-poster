@@ -264,3 +264,23 @@ def test_list_by_status_returns_only_that_status_oldest_first(repo, clock):
 
     assert [r.job_id for r in repo.list_by_status(JobStatus.FAILED)] == ["a", "c"]
     assert repo.list_by_status(JobStatus.PUBLISHING) == []
+
+
+def test_list_recent_can_filter_by_status(repo, clock):
+    for minute, (job_id, status) in enumerate([("a", JobStatus.FAILED), ("b", JobStatus.SIMULATED), ("c", JobStatus.FAILED)]):
+        clock.now = T0 + timedelta(minutes=minute)
+        create(repo, job_id, status=status, caption=f"{minute}" * 64)
+
+    assert [r.job_id for r in repo.list_recent(status=JobStatus.FAILED)] == ["c", "a"]
+    assert [r.job_id for r in repo.list_recent(1, status=JobStatus.FAILED)] == ["c"]
+
+
+def test_find_by_id_prefix_matches_start_only_and_has_no_wildcards(repo):
+    create(repo, "abc111", status=JobStatus.FAILED)
+    create(repo, "abc222", status=JobStatus.FAILED)
+    create(repo, "xabc33", status=JobStatus.FAILED)
+
+    assert sorted(r.job_id for r in repo.find_by_id_prefix("abc")) == ["abc111", "abc222"]
+    assert [r.job_id for r in repo.find_by_id_prefix("abc2")] == ["abc222"]
+    assert repo.find_by_id_prefix("%") == []
+    assert repo.find_by_id_prefix("_bc111") == []

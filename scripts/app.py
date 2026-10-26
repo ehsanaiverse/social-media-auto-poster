@@ -199,6 +199,10 @@ class Sandbox:
         with self.active():
             return cli.main(["scan", "--interval", "0"])
 
+    def jobs(self) -> int:
+        with self.active():
+            return cli.main(["jobs"])
+
     def folder_contents(self) -> dict[str, list[str]]:
         contents = {}
         for name in ("incoming", "failed", "archive"):
@@ -293,18 +297,6 @@ def _print_folders(sandbox: Sandbox) -> None:
             print(f"  {file}")
 
 
-def _print_history(sandbox: Sandbox) -> None:
-    records = sandbox.history()
-    if not records:
-        print("No jobs yet. Choose 'Run' first.")
-        return
-    print(f"\n  {'JOB':<9} {'CREATED (UTC)':<20} {'STEM':<20} {'MODE':<10} STATUS")
-    for r in records:
-        print(f"  {r.job_id[:8]:<9} {r.created_at:%Y-%m-%d %H:%M:%S}  {r.stem:<20} {r.mode:<10} {r.status}")
-        for error in r.errors:
-            print(f"  {'':<9} - {error}")
-
-
 def _menu_actions(sandbox: Sandbox) -> dict[str, tuple[str, Callable[[], object]]]:
     incoming = sandbox.incoming
 
@@ -344,7 +336,7 @@ def _menu_actions(sandbox: Sandbox) -> dict[str, tuple[str, Callable[[], object]
         "6": ("Run (simulated)", lambda: print(f"\nexit code: {sandbox.run()}")),
         "7": ("Scan (read-only)", lambda: print(f"\nexit code: {sandbox.scan()}")),
         "8": ("Show incoming/failed/archive", lambda: _print_folders(sandbox)),
-        "9": ("Show job history", lambda: _print_history(sandbox)),
+        "9": ("Show job history (jobs command)", lambda: print(f"\nexit code: {sandbox.jobs()}")),
         "10": ("Reset sandbox", reset),
         "11": ("Simulate a crash during publish", crash),
     }

@@ -208,3 +208,20 @@ def test_simulate_crash_needs_a_complete_post(tmp_path):
 
     with pytest.raises(ValueError, match="No complete post"):
         sandbox.simulate_crash("lonely", PublishMode.REAL)
+
+
+def test_history_menu_uses_the_jobs_command(layout, monkeypatch, capsys):
+    repo, _ = layout
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv(DATA_DIR_VAR, raising=False)
+    sandbox = dev_app.Sandbox(repo / "sandbox")
+    sandbox.prepare()
+    dev_app.add_valid_post(sandbox.incoming, "launch", "Hello")
+    sandbox.run()
+    capsys.readouterr()
+
+    assert sandbox.jobs() == 0
+
+    out = capsys.readouterr().out
+    assert "STATUS" in out and "launch" in out and "SIMULATED" in out
+    assert not (repo / "database").exists()

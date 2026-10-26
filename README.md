@@ -16,7 +16,7 @@ There is no continuous folder watcher, database/repository, scheduler, OAuth flo
 
 ## Current status
 
-**Milestone 1 (local simulation) complete; Milestone 2 (job database) in progress.** What exists today:
+**Milestones 1 (local simulation) and 2 (job database) complete; Milestone 2 pending review.** What exists today:
 
 - Packaging (`pyproject.toml`) with declared dependencies.
 - An environment-variable template (`.env.example`).
@@ -33,7 +33,7 @@ There is no continuous folder watcher, database/repository, scheduler, OAuth flo
 
 - Crash recovery: at the start of every `run`, jobs left half-published by a crash are resolved (see `RECOVERED` below).
 
-Not yet: a `jobs` history command (rest of Milestone 2).
+- Three commands (`main.py`): `run`, plus the read-only `scan` (with duplicate check) and `jobs` (history).
 
 Platform order:
 
@@ -153,7 +153,18 @@ python -m social_media_auto_poster.main scan --interval 0             # instant:
 python -m social_media_auto_poster.main scan --help
 ```
 
-It lists **candidates** (image + caption pairs, each marked stable or not, and valid or `INVALID:` with reasons), **pending** files waiting for a partner, and **ambiguous** stems that need fixing by hand. Exit code 0 means the scan completed; 1 means the folder does not exist.
+It lists **candidates** (image + caption pairs, each marked stable or not, valid or `INVALID:` with reasons, and for stable valid posts `new` or `DUPLICATE of job …`), **pending** files waiting for a partner, and **ambiguous** stems that need fixing by hand. If the job database has jobs interrupted by a crash, it notes that the next `run` will recover them. `scan` reads the job database read-only and never creates it. Exit code 0 means the scan completed; 1 means the folder does not exist.
+
+### `jobs` (read-only history)
+
+```powershell
+python -m social_media_auto_poster.main jobs                    # 20 most recent jobs, newest first
+python -m social_media_auto_poster.main jobs --last 50
+python -m social_media_auto_poster.main jobs --status FAILED    # one status only
+python -m social_media_auto_poster.main jobs --id 8a61f3de      # every detail of one job (an ID prefix is enough)
+```
+
+Shows job ID, time (UTC), post name, mode (`simulated` or `real`), status, and any errors; `--id` adds both SHA-256 hashes, file names, post ID, and where the files went. It never creates or changes the database. Exit code 0 on success; 1 if the database cannot be read or the `--id` prefix matches no job or more than one.
 
 ## Manual testing
 
@@ -164,7 +175,7 @@ python scripts/app.py                                 # sandbox: .\sandbox (igno
 python scripts/app.py --sandbox D:\tmp\my-sandbox     # any other folder
 ```
 
-A terminal menu to add sample posts (valid JPEG/PNG, invalid kinds, lone files, ambiguous), run, scan, look at the folders, see job history, simulate a crash during publish (to watch startup recovery), and reset. Everything happens in a **sandbox** with its own `data\`, `database\app.db`, logs, and run lock; your real data and job database are never touched. It refuses to start if the sandbox is, contains, or is inside your real data folder, and Reset only deletes a folder marked as a sandbox (`.autoposter-sandbox`). Publishing is always simulated; Run and Scan call the real `run` / `scan` commands. Valid sample posts share the same tiny image, so adding the same caption twice demonstrates a `DUPLICATE`.
+A terminal menu to add sample posts (valid JPEG/PNG, invalid kinds, lone files, ambiguous), run, scan, look at the folders, see job history (via the `jobs` command), simulate a crash during publish (to watch startup recovery), and reset. Everything happens in a **sandbox** with its own `data\`, `database\app.db`, logs, and run lock; your real data and job database are never touched. It refuses to start if the sandbox is, contains, or is inside your real data folder, and Reset only deletes a folder marked as a sandbox (`.autoposter-sandbox`). Publishing is always simulated; Run and Scan call the real `run` / `scan` commands. Valid sample posts share the same tiny image, so adding the same caption twice demonstrates a `DUPLICATE`.
 
 ### Workflow notebook: `notebooks/workflow.ipynb`
 
