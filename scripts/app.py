@@ -21,12 +21,14 @@ import zlib
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 
 from social_media_auto_poster import main as cli
 from social_media_auto_poster.config import DATA_DIR_VAR, Settings, load_settings
-from social_media_auto_poster.models import Platform
-from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db_read_only
-from social_media_auto_poster.storage.jobs import JobRecord, JobRepository
+from social_media_auto_poster.models import JobStatus, Platform, PublishMode
+from social_media_auto_poster.services.hashing import sha256_file
+from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
+from social_media_auto_poster.storage.jobs import DuplicateJobError, JobRecord, JobRepository
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SANDBOX = REPO_ROOT / "sandbox"
@@ -216,6 +218,37 @@ class Sandbox:
         finally:
             conn.close()
 
+    def simulate_crash(self, stem: str, mode: PublishMode) -> str:
+        """Record the post ``stem`` (in incoming/) as PUBLISHING, as if a run died mid-publish.
+
+        Returns the new job ID. The next Run's startup recovery resolves it.
+        """
+        stem = check_stem(stem)
+        media = next(
+            (self.incoming / f"{stem}{ext}" for ext in (".jpg", ".jpeg", ".png") if (self.incoming / f"{stem}{ext}").is_file()),
+            None,
+        )
+        caption = self.incoming / f"{stem}.txt"
+        if media is None or not caption.is_file():
+            raise ValueError(f"No complete post named '{stem}' in incoming/ (needs an image and {stem}.txt).")
+        conn = open_app_db(self.settings.app_db_path)
+        try:
+            job_id = uuid4().hex
+            JobRepository(conn).create(
+                job_id=job_id,
+                platform=PLATFORM,
+                mode=mode,
+                stem=stem,
+                media_name=media.name,
+                caption_name=caption.name,
+                media_sha256=sha256_file(media),
+                caption_sha256=sha256_file(caption),
+                status=JobStatus.PUBLISHING,
+            )
+        finally:
+            conn.close()
+        return job_id
+
     def reset(self) -> None:
         """Delete everything in the sandbox. Refuses unless the sandbox marker file is present."""
         if not (self.root / MARKER_NAME).is_file():
@@ -285,6 +318,16 @@ def _menu_actions(sandbox: Sandbox) -> dict[str, tuple[str, Callable[[], object]
         kind = _choose("Kind of invalid post", INVALID_KINDS)
         _print_added(add_invalid_post(incoming, _ask("Post name", f"bad-{kind}"), kind))
 
+    def crash():
+        stem = _ask("Name of a complete post in incoming/", "product-launch")
+        mode = _choose(
+            "Mode of the interrupted publish",
+            {PublishMode.SIMULATED: "simulated (recovers as FAILED, then runs again)",
+             PublishMode.REAL: "real (recovers as NEEDS_REVIEW, moved to failed/)"},
+        )
+        job_id = sandbox.simulate_crash(stem, PublishMode(mode))
+        print(f"Job {job_id[:8]} is now stuck as PUBLISHING. Choose 'Run' to see startup recovery.")
+
     def reset():
         if _ask(f"Delete everything in {sandbox.root}? Type 'yes' to confirm") == "yes":
             sandbox.reset()
@@ -303,6 +346,7 @@ def _menu_actions(sandbox: Sandbox) -> dict[str, tuple[str, Callable[[], object]
         "8": ("Show incoming/failed/archive", lambda: _print_folders(sandbox)),
         "9": ("Show job history", lambda: _print_history(sandbox)),
         "10": ("Reset sandbox", reset),
+        "11": ("Simulate a crash during publish", crash),
     }
 
 
@@ -338,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         try:
             actions[choice][1]()
-        except (ValueError, FileExistsError, SandboxError, SchemaTooNewError) as error:
+        except (ValueError, FileExistsError, SandboxError, SchemaTooNewError, DuplicateJobError) as error:
             print(f"Error: {error}")
         except (EOFError, KeyboardInterrupt):
             print()

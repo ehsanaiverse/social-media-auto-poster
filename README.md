@@ -31,7 +31,9 @@ There is no continuous folder watcher, database/repository, scheduler, OAuth flo
 - Two commands (`main.py`): `run` processes every complete post once, and `scan` is a read-only report. See "How to use" below.
 - Unit and integration tests under `tests/`. Decisions are recorded in `docs/decisions.md`.
 
-Not yet: recovery of jobs interrupted by a crash, and a `jobs` history command (rest of Milestone 2).
+- Crash recovery: at the start of every `run`, jobs left half-published by a crash are resolved (see `RECOVERED` below).
+
+Not yet: a `jobs` history command (rest of Milestone 2).
 
 Platform order:
 
@@ -130,6 +132,7 @@ What happens to each post:
 | `DUPLICATE` | Same image and caption content as an earlier job (even under a different file name) | Untouched; reported on every run until you delete them |
 | `FAILED` | Invalid (or a definite publish failure) | Moved to `failed\<UTC time>_<name>\` with `error-report.txt` explaining why |
 | `NEEDS_REVIEW` | Publish outcome unknown (cannot happen with the simulator) | Moved to `failed\...`; check LinkedIn before re-posting |
+| `RECOVERED` | Shown before the jobs when an earlier run crashed mid-publish. A simulated job becomes `FAILED` (nothing was sent) and is processed again in the same run; a real one becomes `NEEDS_REVIEW` and is never retried | Simulated: stay in `incoming/`. Real: moved to `failed\...` with a report, if unchanged |
 | `WAITING (still copying)` | A file is still being written | Untouched; retried next run |
 | `PENDING` / `AMBIGUOUS` | No partner file yet / more than one file per name | Untouched |
 
@@ -137,7 +140,7 @@ To retry a failed post: fix it, move its image and caption back to `incoming\`, 
 
 `run` options: `--verbose` shows INFO logs in the terminal; `--interval 0` skips the 1-second change-watch wait. The full log is `logs\autoposter.log` (UTC timestamps, rotated at 1 MB, 5 backups; caption text is never logged). Only one `run` can work at a time.
 
-`run` exit codes (useful with Task Scheduler): `0` all simulated/duplicate/waiting or nothing to do, `1` setup error (including a job database that cannot be opened), `2` invalid command or option, `3` at least one job `FAILED`/`NEEDS_REVIEW`/`ERROR`, `4` another run is in progress.
+`run` exit codes (useful with Task Scheduler): `0` all simulated/duplicate/waiting or nothing to do, `1` setup error (including a job database that cannot be opened or crash recovery that cannot complete), `2` invalid command or option, `3` at least one job `FAILED`/`NEEDS_REVIEW`/`ERROR` (or a crashed job recovered as `NEEDS_REVIEW`), `4` another run is in progress.
 
 ### `scan` (read-only)
 
@@ -161,7 +164,7 @@ python scripts/app.py                                 # sandbox: .\sandbox (igno
 python scripts/app.py --sandbox D:\tmp\my-sandbox     # any other folder
 ```
 
-A terminal menu to add sample posts (valid JPEG/PNG, invalid kinds, lone files, ambiguous), run, scan, look at the folders, see job history, and reset. Everything happens in a **sandbox** with its own `data\`, `database\app.db`, logs, and run lock; your real data and job database are never touched. It refuses to start if the sandbox is, contains, or is inside your real data folder, and Reset only deletes a folder marked as a sandbox (`.autoposter-sandbox`). Publishing is always simulated; Run and Scan call the real `run` / `scan` commands. Valid sample posts share the same tiny image, so adding the same caption twice demonstrates a `DUPLICATE`.
+A terminal menu to add sample posts (valid JPEG/PNG, invalid kinds, lone files, ambiguous), run, scan, look at the folders, see job history, simulate a crash during publish (to watch startup recovery), and reset. Everything happens in a **sandbox** with its own `data\`, `database\app.db`, logs, and run lock; your real data and job database are never touched. It refuses to start if the sandbox is, contains, or is inside your real data folder, and Reset only deletes a folder marked as a sandbox (`.autoposter-sandbox`). Publishing is always simulated; Run and Scan call the real `run` / `scan` commands. Valid sample posts share the same tiny image, so adding the same caption twice demonstrates a `DUPLICATE`.
 
 ### Workflow notebook: `notebooks/workflow.ipynb`
 

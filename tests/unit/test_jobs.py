@@ -255,3 +255,12 @@ def test_list_recent_same_second_uses_insertion_order(repo):
 
 def test_list_recent_empty(repo):
     assert repo.list_recent() == []
+
+
+def test_list_by_status_returns_only_that_status_oldest_first(repo, clock):
+    for minute, (job_id, status) in enumerate([("a", JobStatus.FAILED), ("b", JobStatus.SIMULATED), ("c", JobStatus.FAILED)]):
+        clock.now = T0 + timedelta(minutes=minute)
+        create(repo, job_id, status=status, caption=f"{minute}" * 64)
+
+    assert [r.job_id for r in repo.list_by_status(JobStatus.FAILED)] == ["a", "c"]
+    assert repo.list_by_status(JobStatus.PUBLISHING) == []

@@ -9,7 +9,7 @@ import pytest
 from social_media_auto_poster.config import DATA_DIR_VAR
 from social_media_auto_poster.ingestion.scanner import scan_incoming
 from social_media_auto_poster.ingestion.validation import validate_candidate
-from social_media_auto_poster.models import JobStatus, Platform, PostCandidate
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "app.py"
 _spec = importlib.util.spec_from_file_location("dev_app", SCRIPT)
@@ -178,3 +178,33 @@ def test_folder_contents_lists_each_folder(tmp_path):
     dev_app.add_lone_image(sandbox.incoming, "lonely")
 
     assert sandbox.folder_contents() == {"incoming": ["lonely.jpg"], "failed": [], "archive": []}
+
+
+# Crash simulation
+
+
+def test_simulated_crash_is_recovered_by_the_next_run(layout, monkeypatch, capsys):
+    repo, _ = layout
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv(DATA_DIR_VAR, raising=False)
+    sandbox = dev_app.Sandbox(repo / "sandbox")
+    sandbox.prepare()
+    dev_app.add_valid_post(sandbox.incoming, "launch", "Hello")
+
+    job_id = sandbox.simulate_crash("launch", PublishMode.SIMULATED)
+    assert [(r.job_id, r.status) for r in sandbox.history()] == [(job_id, JobStatus.PUBLISHING)]
+
+    assert sandbox.run() == 0
+
+    out = capsys.readouterr().out
+    assert "RECOVERED (1)" in out
+    assert "SIMULATED (not published)" in out
+
+
+def test_simulate_crash_needs_a_complete_post(tmp_path):
+    sandbox = dev_app.Sandbox(tmp_path / "sandbox")
+    sandbox.prepare()
+    dev_app.add_lone_image(sandbox.incoming, "lonely")
+
+    with pytest.raises(ValueError, match="No complete post"):
+        sandbox.simulate_crash("lonely", PublishMode.REAL)

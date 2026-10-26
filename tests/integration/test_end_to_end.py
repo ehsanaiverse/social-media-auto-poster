@@ -15,7 +15,11 @@ from social_media_auto_poster import main as cli
 from social_media_auto_poster.config import load_settings
 from social_media_auto_poster.graph import nodes
 from social_media_auto_poster.graph.workflow import run_job
-from social_media_auto_poster.models import Platform
+from social_media_auto_poster.models import JobStatus, Platform, PublishMode
+from social_media_auto_poster.platforms.simulator import Simulator
+from social_media_auto_poster.services.hashing import sha256_file
+from social_media_auto_poster.storage.database import open_app_db
+from social_media_auto_poster.storage.jobs import JobRepository
 from social_media_auto_poster.services.run_lock import single_run_lock
 
 JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
@@ -324,3 +328,97 @@ def test_log_timestamps_are_utc_and_failures_logged_with_final_status(base, inco
     assert "status=FAILED" in warning
     timestamp = warning.split(" ", 1)[0]
     assert timestamp.endswith("Z") and "T" in timestamp
+
+
+# Crash recovery (Slice 2.3)
+
+
+def seed_stuck_job(base: Path, incoming: Path, stem: str, mode: PublishMode) -> str:
+    """Record a post as PUBLISHING, exactly as a run that died mid-publish leaves it."""
+    conn = open_app_db(base / "database" / "app.db")
+    try:
+        JobRepository(conn).create(
+            job_id=f"stuck-{stem}", platform=LINKEDIN, mode=mode, stem=stem,
+            media_name=f"{stem}.jpg", caption_name=f"{stem}.txt",
+            media_sha256=sha256_file(incoming / f"{stem}.jpg"), caption_sha256=sha256_file(incoming / f"{stem}.txt"),
+            status=JobStatus.PUBLISHING,
+        )
+    finally:
+        conn.close()
+    return f"stuck-{stem}"
+
+
+def test_crash_mid_publish_is_recovered_and_processed_on_next_run(base, incoming, monkeypatch, capsys):
+    add_post(incoming, "launch")
+
+    def process_killed(self, post, /):
+        raise SystemExit("process killed mid-publish")
+
+    monkeypatch.setattr(Simulator, "publish", process_killed)
+    with pytest.raises(SystemExit):
+        run()
+    assert job_rows(base) == [("launch", "PUBLISHING")]  # Left behind by the "crash".
+    monkeypatch.undo()
+    monkeypatch.chdir(base)
+    monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
+    capsys.readouterr()
+
+    exit_code = run()
+
+    out = capsys.readouterr().out
+    assert exit_code == cli.EXIT_OK
+    assert "RECOVERED (1) - jobs interrupted by an earlier crash" in out
+    assert "(simulated) simulated publish was interrupted by a crash; nothing was sent" in out
+    assert "SIMULATED (not published)" in out  # Processed again in the same run.
+    assert job_rows(base) == [("launch", "FAILED"), ("launch", "SIMULATED")]
+
+
+def test_real_mode_stuck_job_needs_review_and_is_never_processed_again(base, incoming, finals, capsys):
+    add_post(incoming, "launch")
+    run_id = seed_stuck_job(base, incoming, "launch", PublishMode.REAL)
+
+    exit_code = run()
+
+    out = capsys.readouterr().out
+    assert exit_code == cli.EXIT_JOB_PROBLEMS
+    assert "RECOVERED (1)" in out
+    assert "NEEDS_REVIEW" in out and "check the platform before re-posting" in out
+    assert finals == []  # Its files were moved to failed/, so nothing was processed.
+    assert not (incoming / "launch.jpg").exists()
+    [folder] = (base / "data" / "LinkedIn" / "failed").iterdir()
+    assert "Check LinkedIn before re-posting" in (folder / "error-report.txt").read_text(encoding="utf-8")
+    assert job_rows(base) == [("launch", "NEEDS_REVIEW")]
+    assert run_id == "stuck-launch"
+
+
+def test_next_run_after_recovery_has_nothing_to_recover(base, incoming, capsys):
+    add_post(incoming, "launch")
+    seed_stuck_job(base, incoming, "launch", PublishMode.SIMULATED)
+    run()
+    capsys.readouterr()
+
+    run()
+
+    assert "RECOVERED" not in capsys.readouterr().out
+
+
+def test_scan_never_reconciles(base, incoming):
+    add_post(incoming, "launch")
+    seed_stuck_job(base, incoming, "launch", PublishMode.SIMULATED)
+
+    assert cli.main(["scan", "--interval", "0"]) == cli.EXIT_OK
+
+    assert job_rows(base) == [("launch", "PUBLISHING")]
+
+
+def test_recovery_database_failure_stops_the_run(base, incoming, finals, monkeypatch, capsys):
+    add_post(incoming, "launch")
+
+    def broken(repository, settings):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(cli, "reconcile_interrupted_jobs", broken)
+
+    assert run() == cli.EXIT_SETUP_ERROR
+    assert finals == []
+    assert "Could not recover interrupted jobs" in capsys.readouterr().err

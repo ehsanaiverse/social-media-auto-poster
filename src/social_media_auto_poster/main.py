@@ -25,6 +25,7 @@ from social_media_auto_poster.ingestion.stability import is_file_stable
 from social_media_auto_poster.ingestion.validation import validate_candidate
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, ScanResult
 from social_media_auto_poster.platforms.simulator import Simulator
+from social_media_auto_poster.services.reconcile import Recovery, reconcile_interrupted_jobs
 from social_media_auto_poster.services.run_lock import RunLockHeldError, single_run_lock
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db
 from social_media_auto_poster.storage.jobs import JobRepository
@@ -42,11 +43,12 @@ EXIT_JOB_PROBLEMS = 3
 EXIT_LOCKED = 4
 
 RUN_EPILOG = """\
-exit codes:
+  0  run completed; every job was simulated, a duplicate, or waiting, or there was nothing to do
   0  run completed; every job was simulated or is waiting, or there was nothing to do
-  1  setup error (for example, the data folder could not be created)
+  1  setup error (data folder, job database, or crash recovery could not complete)
   2  invalid command or option
-  3  run completed, but at least one job ended FAILED, NEEDS_REVIEW, or ERROR
+  3  run completed, but at least one job ended FAILED, NEEDS_REVIEW, or ERROR,
+     or an interrupted job was recovered as NEEDS_REVIEW
   4  another run is in progress
 """
 
@@ -182,7 +184,14 @@ def _run(args: argparse.Namespace) -> int:
                 logger.error("Could not open the job database %s: %s", settings.app_db_path, error)
                 return EXIT_SETUP_ERROR
             try:
-                return _process(settings, JobRepository(conn), args.interval)
+                repository = JobRepository(conn)
+                try:
+                    recoveries = reconcile_interrupted_jobs(repository, settings)
+                except sqlite3.Error:
+                    # Never process on top of an unknown state.
+                    logger.exception("Could not recover interrupted jobs; nothing was processed")
+                    return EXIT_SETUP_ERROR
+                return _process(settings, repository, args.interval, recoveries)
             finally:
                 conn.close()
     except RunLockHeldError:
@@ -193,7 +202,7 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_SETUP_ERROR
 
 
-def _process(settings: Settings, repository: JobRepository, interval_s: float) -> int:
+def _process(settings: Settings, repository: JobRepository, interval_s: float, recoveries: list[Recovery]) -> int:
     platform = Platform.LINKEDIN
     incoming = settings.incoming_dir(platform)
     result = scan_incoming(incoming, platform)
@@ -216,6 +225,8 @@ def _process(settings: Settings, repository: JobRepository, interval_s: float) -
     lines = [_run_one(candidate, context) for candidate in result.candidates]
 
     print(f"Processing LinkedIn incoming: {incoming}")
+    if recoveries:
+        _print_recoveries(recoveries)
     if lines:
         _print_jobs(lines)
     else:
@@ -226,7 +237,19 @@ def _process(settings: Settings, repository: JobRepository, interval_s: float) -
     if any(line.label == DUPLICATE_LABEL for line in lines):
         print("Duplicates stay in incoming/; delete them when you no longer need them.")
     print(f"Log: {settings.log_file}")
-    return EXIT_JOB_PROBLEMS if any(line.problem for line in lines) else EXIT_OK
+    needs_human = any(r.status is JobStatus.NEEDS_REVIEW for r in recoveries)
+    return EXIT_JOB_PROBLEMS if needs_human or any(line.problem for line in lines) else EXIT_OK
+
+
+def _print_recoveries(recoveries: list[Recovery]) -> None:
+    stem_width = max(len(r.stem) for r in recoveries)
+    status_width = max(len(r.status) for r in recoveries)
+    print(f"\nRECOVERED ({len(recoveries)}) - jobs interrupted by an earlier crash")
+    for r in recoveries:
+        first, *rest = r.notes
+        print(f"  {r.stem:<{stem_width}}   {r.status:<{status_width}}   ({r.mode}) {first}")
+        for note in rest:
+            print(f"  {'':<{stem_width}}   {'':<{status_width}}   - {note}")
 
 
 DUPLICATE_LABEL = "DUPLICATE"

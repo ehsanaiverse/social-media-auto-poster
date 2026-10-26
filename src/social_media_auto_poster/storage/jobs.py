@@ -163,6 +163,11 @@ class JobRepository:
         ).fetchone()
         return self._to_record(row) if row else None
 
+    def list_by_status(self, status: JobStatus) -> list[JobRecord]:
+        """All jobs with ``status``, oldest first."""
+        rows = self._conn.execute(f"{_SELECT} WHERE status = ? ORDER BY created_at, rowid", (status.value,)).fetchall()
+        return [self._to_record(row) for row in rows]
+
     def list_recent(self, limit: int = 20) -> list[JobRecord]:
         """The most recently created jobs, newest first."""
         rows = self._conn.execute(f"{_SELECT} ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)).fetchall()
