@@ -1,17 +1,19 @@
 """Graph state (small, serializable) and run context (live dependencies).
 
 State is saved by the checkpointer from Milestone 3, so it holds only plain
-values: IDs, path strings, status strings, and lists of error strings. Never
-image bytes or file handles. Live objects (publisher, settings) are passed as
-LangGraph run context instead, via ``invoke(..., context=...)``.
+values: IDs, path strings, status strings, hashes, and lists of error strings.
+Never image bytes or file handles. Live objects (publisher, settings, the job
+repository) are passed as LangGraph run context instead, via
+``invoke(..., context=...)``.
 """
 
 from dataclasses import dataclass
 from typing import TypedDict
 
 from social_media_auto_poster.config import Settings
-from social_media_auto_poster.models import JobStatus, PostCandidate
+from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode
 from social_media_auto_poster.platforms.base import Publisher
+from social_media_auto_poster.storage.jobs import JobRepository
 
 
 class JobState(TypedDict):
@@ -24,7 +26,10 @@ class JobState(TypedDict):
     caption_path: str
     status: str  # A JobStatus value.
     errors: list[str]  # Lists, not tuples: state is serialized as JSON-like data.
-    retry_later: bool  # True if a file was still being copied; nothing else happened.
+    retry_later: bool  # True if a file was still being copied or unreadable; nothing else happened.
+    media_sha256: str | None  # Set by check_duplicate.
+    caption_sha256: str | None
+    duplicate_of: str | None  # Job ID of the live job that already handles this content.
     simulated: bool | None  # Set by the publish node; None if publish never ran.
     platform_post_id: str | None
     destination: str | None  # Folder the files were moved to, if they were moved.
@@ -35,6 +40,8 @@ class WorkflowContext:
     """Dependencies for one graph run. Not part of state; never serialized."""
 
     publisher: Publisher
+    mode: PublishMode  # Must match the publisher; the database rejects a mismatch.
+    repository: JobRepository
     settings: Settings
     stability_interval_s: float
 
@@ -50,6 +57,9 @@ def new_job_state(job_id: str, candidate: PostCandidate) -> JobState:
         status=JobStatus.DISCOVERED.value,
         errors=[],
         retry_later=False,
+        media_sha256=None,
+        caption_sha256=None,
+        duplicate_of=None,
         simulated=None,
         platform_post_id=None,
         destination=None,

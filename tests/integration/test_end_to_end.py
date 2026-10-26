@@ -1,5 +1,9 @@
-"""End-to-end tests of ``main run`` against a temporary data folder. Publishing is always simulated."""
+"""End-to-end tests of ``main run`` against a temporary data folder and database.
 
+Publishing is always simulated.
+"""
+
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -47,9 +51,10 @@ def finals(monkeypatch) -> list[dict]:
     return captured
 
 
-def add_post(folder: Path, stem: str, media: bytes = JPEG_BYTES, caption: bytes = b"Hello LinkedIn", ext=".jpg"):
+def add_post(folder: Path, stem: str, media: bytes = JPEG_BYTES, caption: bytes | None = None, ext=".jpg"):
+    # Default captions differ per stem: posts with identical bytes are duplicates of each other.
     (folder / f"{stem}{ext}").write_bytes(media)
-    (folder / f"{stem}.txt").write_bytes(caption)
+    (folder / f"{stem}.txt").write_bytes(caption if caption is not None else f"Hello from {stem}".encode())
 
 
 def run(*extra: str) -> int:
@@ -106,14 +111,106 @@ def test_simulation_never_produces_published_status(base, incoming, finals):
     assert list((base / "data" / "LinkedIn" / "archive").iterdir()) == []
 
 
-def test_second_run_simulates_again_until_milestone_2(incoming, finals):
+def job_rows(base: Path) -> list[tuple[str, str]]:
+    conn = sqlite3.connect(base / "database" / "app.db")
+    rows = conn.execute("SELECT stem, status FROM jobs ORDER BY rowid").fetchall()  # Insertion order.
+    conn.close()
+    return rows
+
+
+def test_second_run_reports_duplicate_and_adds_no_row(base, incoming, finals, capsys):
     add_post(incoming, "launch")
 
+    assert run() == cli.EXIT_OK
+    first_job = finals[0]["job_id"]
+    capsys.readouterr()
+
+    assert run() == cli.EXIT_OK
+
+    out = capsys.readouterr().out
+    assert finals[1]["duplicate_of"] == first_job
+    [line] = [line for line in out.splitlines() if line.strip().startswith("launch")]
+    assert "DUPLICATE" in line
+    assert f"of job {first_job[:8]} (SIMULATED, " in line
+    assert "Duplicates stay in incoming/; delete them when you no longer need them." in out
+    assert job_rows(base) == [("launch", "SIMULATED")]
+    assert (incoming / "launch.jpg").exists()
+
+
+def test_same_content_under_another_name_is_a_duplicate(base, incoming, finals):
+    add_post(incoming, "launch", caption=b"Same words")
+    add_post(incoming, "launch-copy", caption=b"Same words")
+
     run()
+
+    by_stem = {f["stem"]: f for f in finals}
+    assert by_stem["launch"]["status"] == "SIMULATED"
+    assert by_stem["launch-copy"]["duplicate_of"] == by_stem["launch"]["job_id"]
+    assert job_rows(base) == [("launch", "SIMULATED")]
+
+
+def test_edited_caption_is_a_new_job(base, incoming, finals):
+    add_post(incoming, "launch", caption=b"First version")
+    run()
+
+    (incoming / "launch.txt").write_bytes(b"Second version")
     run()
 
     assert [f["status"] for f in finals] == ["SIMULATED", "SIMULATED"]
-    assert finals[0]["job_id"] != finals[1]["job_id"]
+    assert finals[1]["duplicate_of"] is None
+    assert len(job_rows(base)) == 2
+
+
+def test_fixed_failed_post_is_processed_again(base, incoming, finals):
+    add_post(incoming, "launch", caption=b"   ")
+    run()
+    [failed_folder] = (base / "data" / "LinkedIn" / "failed").iterdir()
+
+    # The user fixes the caption and moves the post back.
+    (failed_folder / "launch.jpg").replace(incoming / "launch.jpg")
+    (incoming / "launch.txt").write_bytes(b"Now with a caption")
+    run()
+
+    assert [f["status"] for f in finals] == ["FAILED", "SIMULATED"]
+    assert job_rows(base) == [("launch", "FAILED"), ("launch", "SIMULATED")]
+
+
+def test_unchanged_failed_post_moved_back_is_not_blocked(base, incoming, finals):
+    add_post(incoming, "launch", media=b"not an image")
+    run()
+    [failed_folder] = (base / "data" / "LinkedIn" / "failed").iterdir()
+    for name in ("launch.jpg", "launch.txt"):
+        (failed_folder / name).replace(incoming / name)
+
+    run()
+
+    assert [f["status"] for f in finals] == ["FAILED", "FAILED"]  # Fails again; never reported as a duplicate.
+    assert all(f["duplicate_of"] is None for f in finals)
+
+
+def test_run_creates_the_database_but_scan_does_not(base, incoming):
+    add_post(incoming, "launch")
+
+    assert cli.main(["scan", "--interval", "0"]) == cli.EXIT_OK
+    assert not (base / "database").exists()
+
+    run()
+    assert (base / "database" / "app.db").exists()
+
+
+def test_database_newer_than_the_code_stops_the_run(base, incoming, finals, capsys):
+    add_post(incoming, "launch")
+    (base / "database").mkdir()
+    conn = sqlite3.connect(base / "database" / "app.db")
+    conn.execute("PRAGMA user_version = 99")
+    conn.close()
+
+    exit_code = run()
+
+    assert exit_code == cli.EXIT_SETUP_ERROR
+    assert "Could not open the job database" in capsys.readouterr().err
+    assert finals == []
+    assert (incoming / "launch.jpg").exists()
 
 
 def test_empty_inbox_has_nothing_to_process(incoming, capsys):

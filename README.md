@@ -16,7 +16,7 @@ There is no continuous folder watcher, database/repository, scheduler, OAuth flo
 
 ## Current status
 
-**Milestone 1 (local simulation) complete, pending review.** What exists today:
+**Milestone 1 (local simulation) complete; Milestone 2 (job database) in progress.** What exists today:
 
 - Packaging (`pyproject.toml`) with declared dependencies.
 - An environment-variable template (`.env.example`).
@@ -26,11 +26,12 @@ There is no continuous folder watcher, database/repository, scheduler, OAuth flo
 - A safe simulation publisher that never contacts any platform (`platforms/simulator.py`).
 - Ingestion (`ingestion/`): a one-shot scan that pairs images with captions (`scanner.py`), a file-copy stability check (`stability.py`), and content validation (`validation.py`).
 - A service that moves a post's two files together into `archive/` or `failed/` (`services/archive.py`).
-- A LangGraph workflow (`graph/`) that takes one post through stability → validation → simulated publish → record, moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`.
+- A LangGraph workflow (`graph/`) that takes one post through stability → validation → duplicate check → simulated publish → record, moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`.
+- A job database (`database\app.db`, SQLite, via `storage/`): every processed post is recorded with SHA-256 hashes of its image and caption, so the same content is never processed twice.
 - Two commands (`main.py`): `run` processes every complete post once, and `scan` is a read-only report. See "How to use" below.
 - Unit and integration tests under `tests/`. Decisions are recorded in `docs/decisions.md`.
 
-There is no database yet, so nothing remembers past runs (Milestone 2).
+Not yet: recovery of jobs interrupted by a crash, and a `jobs` history command (rest of Milestone 2).
 
 Platform order:
 
@@ -125,17 +126,18 @@ What happens to each post:
 
 | Result | Meaning | Files |
 | --- | --- | --- |
-| `SIMULATED (not published)` | Valid; publishing was simulated. **Nothing is sent to LinkedIn in Milestone 1.** | Stay in `incoming/`; simulated again on the next run until Milestone 2 adds duplicate detection |
+| `SIMULATED (not published)` | Valid; publishing was simulated. **Nothing is sent to LinkedIn until Milestone 4.** | Stay in `incoming/`; recorded in the job database |
+| `DUPLICATE` | Same image and caption content as an earlier job (even under a different file name) | Untouched; reported on every run until you delete them |
 | `FAILED` | Invalid (or a definite publish failure) | Moved to `failed\<UTC time>_<name>\` with `error-report.txt` explaining why |
 | `NEEDS_REVIEW` | Publish outcome unknown (cannot happen with the simulator) | Moved to `failed\...`; check LinkedIn before re-posting |
 | `WAITING (still copying)` | A file is still being written | Untouched; retried next run |
 | `PENDING` / `AMBIGUOUS` | No partner file yet / more than one file per name | Untouched |
 
-To retry a failed post: fix it, move its image and caption back to `incoming\`, and delete the old `failed\` folder.
+To retry a failed post: fix it, move its image and caption back to `incoming\`, and delete the old `failed\` folder. A failed job never blocks a retry; editing the caption (or image) of any post makes it a new job.
 
 `run` options: `--verbose` shows INFO logs in the terminal; `--interval 0` skips the 1-second change-watch wait. The full log is `logs\autoposter.log` (UTC timestamps, rotated at 1 MB, 5 backups; caption text is never logged). Only one `run` can work at a time.
 
-`run` exit codes (useful with Task Scheduler): `0` all simulated/waiting or nothing to do, `1` setup error, `2` invalid command or option, `3` at least one job `FAILED`/`NEEDS_REVIEW`/`ERROR`, `4` another run is in progress.
+`run` exit codes (useful with Task Scheduler): `0` all simulated/duplicate/waiting or nothing to do, `1` setup error (including a job database that cannot be opened), `2` invalid command or option, `3` at least one job `FAILED`/`NEEDS_REVIEW`/`ERROR`, `4` another run is in progress.
 
 ### `scan` (read-only)
 
@@ -154,7 +156,7 @@ It lists **candidates** (image + caption pairs, each marked stable or not, and v
 
 Copy `.env.example` to `.env` when local configuration is introduced. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, or logs. OAuth and API access are not configured by this scaffold. Future integrations must use official APIs and comply with their permissions and policies.
 
-SQLite is planned for durable post state and restart recovery, but no database has been created. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
+Job records live in `database\app.db` (SQLite, created by `run`; ignored by Git). Restart recovery arrives later in Milestone 2. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
 
 ## Architecture decisions
 

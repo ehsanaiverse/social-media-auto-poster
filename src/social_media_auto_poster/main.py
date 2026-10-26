@@ -1,12 +1,14 @@
 """Command-line entry point: ``python -m social_media_auto_poster.main <command>``.
 
 - ``scan``: a read-only report of what ingestion would pick up.
-- ``run``: process every complete post once through the workflow graph.
-  Publishing is always simulated in Milestone 1.
+- ``run``: process every complete post once through the workflow graph,
+  recording each job in ``database/app.db``. Publishing is always simulated
+  until Milestone 4.
 """
 
 import argparse
 import logging
+import sqlite3
 import sys
 import time
 from collections.abc import Generator
@@ -21,9 +23,11 @@ from social_media_auto_poster.graph.workflow import run_job
 from social_media_auto_poster.ingestion.scanner import scan_incoming
 from social_media_auto_poster.ingestion.stability import is_file_stable
 from social_media_auto_poster.ingestion.validation import validate_candidate
-from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, ScanResult
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, ScanResult
 from social_media_auto_poster.platforms.simulator import Simulator
 from social_media_auto_poster.services.run_lock import RunLockHeldError, single_run_lock
+from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db
+from social_media_auto_poster.storage.jobs import JobRepository
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +175,16 @@ def _run(args: argparse.Namespace) -> int:
     settings = load_settings()
     try:
         with single_run_lock(settings.lock_file), _logging_to(verbose=args.verbose, log_file=settings.log_file):
-            return _process(settings, args.interval)
+            ensure_data_dirs(settings)
+            try:
+                conn = open_app_db(settings.app_db_path)
+            except (SchemaTooNewError, sqlite3.Error) as error:
+                logger.error("Could not open the job database %s: %s", settings.app_db_path, error)
+                return EXIT_SETUP_ERROR
+            try:
+                return _process(settings, JobRepository(conn), args.interval)
+            finally:
+                conn.close()
     except RunLockHeldError:
         print("Another run is in progress; try again when it has finished.", file=sys.stderr)
         return EXIT_LOCKED
@@ -180,8 +193,7 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_SETUP_ERROR
 
 
-def _process(settings: Settings, interval_s: float) -> int:
-    ensure_data_dirs(settings)
+def _process(settings: Settings, repository: JobRepository, interval_s: float) -> int:
     platform = Platform.LINKEDIN
     incoming = settings.incoming_dir(platform)
     result = scan_incoming(incoming, platform)
@@ -193,9 +205,15 @@ def _process(settings: Settings, interval_s: float) -> int:
         len(result.ambiguous),
     )
 
-    # Milestone 1: the publisher is always the simulator. There is no real publisher to choose.
-    context = WorkflowContext(publisher=Simulator(), settings=settings, stability_interval_s=interval_s)
-    lines = [_run_one(candidate, context, settings) for candidate in result.candidates]
+    # Until Milestone 4 the publisher is always the simulator. There is no real publisher to choose.
+    context = WorkflowContext(
+        publisher=Simulator(),
+        mode=PublishMode.SIMULATED,
+        repository=repository,
+        settings=settings,
+        stability_interval_s=interval_s,
+    )
+    lines = [_run_one(candidate, context) for candidate in result.candidates]
 
     print(f"Processing LinkedIn incoming: {incoming}")
     if lines:
@@ -205,28 +223,32 @@ def _process(settings: Settings, interval_s: float) -> int:
     _print_pending_and_ambiguous(result)
 
     print("\nSimulation mode: nothing was sent to LinkedIn.")
-    if any(line.label.startswith(JobStatus.SIMULATED.value) for line in lines):
-        print("Note: simulated posts stay in incoming/ and are simulated again on the next run")
-        print("(duplicate detection arrives in Milestone 2).")
+    if any(line.label == DUPLICATE_LABEL for line in lines):
+        print("Duplicates stay in incoming/; delete them when you no longer need them.")
     print(f"Log: {settings.log_file}")
     return EXIT_JOB_PROBLEMS if any(line.problem for line in lines) else EXIT_OK
 
 
-def _run_one(candidate: PostCandidate, context: WorkflowContext, settings: Settings) -> _JobLine:
+DUPLICATE_LABEL = "DUPLICATE"
+
+
+def _run_one(candidate: PostCandidate, context: WorkflowContext) -> _JobLine:
     try:
         final = run_job(candidate, context)
-    except Exception:  # A bug, not a publish outcome (the graph handles those). Keep going.
+    except Exception:  # A bug or a database failure, not a publish outcome. Keep going.
         logger.exception("Unexpected error; job abandoned: platform=%s stem=%s", candidate.platform, candidate.stem)
         return _JobLine(candidate.stem, "ERROR (unexpected)", "see the log for details", (), problem=True)
-    return _describe(final, settings)
+    return _describe(final, context)
 
 
-def _describe(final: JobState, settings: Settings) -> _JobLine:
+def _describe(final: JobState, context: WorkflowContext) -> _JobLine:
     stem, status, errors = final["stem"], final["status"], tuple(final["errors"])
-    destination = _relative_to_data(final["destination"], settings)
+    destination = _relative_to_data(final["destination"], context.settings)
 
     if final["retry_later"]:
         return _JobLine(stem, "WAITING (still copying)", "will retry on next run", (), problem=False)
+    if final["duplicate_of"]:
+        return _JobLine(stem, DUPLICATE_LABEL, _duplicate_note(final["duplicate_of"], context), (), problem=False)
     if status == JobStatus.SIMULATED:
         return _JobLine(stem, "SIMULATED (not published)", "files stay in incoming/", errors, problem=False)
     if status == JobStatus.PUBLISHED:
@@ -234,6 +256,13 @@ def _describe(final: JobState, settings: Settings) -> _JobLine:
         return _JobLine(stem, status, note, errors, problem=bool(errors))
     note = f"moved to {destination}" if destination else "files left in incoming/"
     return _JobLine(stem, status, note, errors, problem=True)
+
+
+def _duplicate_note(job_id: str, context: WorkflowContext) -> str:
+    original = context.repository.get(job_id)
+    if original is None:
+        return "of an existing job; files left in incoming/"
+    return f"of job {job_id[:8]} ({original.status}, {original.created_at:%Y-%m-%d}); files left in incoming/"
 
 
 def _relative_to_data(destination: str | None, settings: Settings) -> str | None:
