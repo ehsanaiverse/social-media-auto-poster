@@ -103,3 +103,41 @@ Significant decisions, newest last. Each entry: what was decided, why, and what 
 
 - **Decision:** `logs/autoposter.log` uses a `RotatingFileHandler` (1 MB × 5), UTC timestamps, and INFO and above. The terminal shows WARNING and above (INFO with `--verbose`). Caption text is never logged. Handlers are closed after each command.
 - **Why:** Bounded disk use; timestamps that match archive folder names and error reports; captions may be private content. Closing handlers stops Windows from keeping the log file locked.
+
+---
+
+# Milestone 2
+
+## D18. The job UUID is the database primary key (2026-10-26, M2 plan)
+
+- **Decision:** Keep the random UUID job ID and use it as `jobs.job_id` (TEXT primary key). It remains the graph `thread_id`.
+- **Why:** One ID everywhere (logs, error reports, graph thread, database), and it works the same if PostgreSQL ever replaces SQLite.
+- **Consequences:** This replaces the earlier plan to switch to a database-generated ID in M2.
+
+## D19. Duplicates create no row and stay in `incoming/` (2026-10-26, M2 plan)
+
+- **Decision:** When a post's content matches a live job, no new job row is written. The files are left untouched, and the post is reported as a duplicate of the existing job on every run.
+- **Why:** Simulated posts stay in `incoming/` by design. Moving duplicates to `failed/` would catch them, and writing a row per run would grow the table without limit under a scheduled run.
+- **Consequences:** The user removes duplicate files by hand.
+
+## D20. Duplicate detection is per mode (2026-10-26, M2 plan)
+
+- **Decision:** Each job records `mode` (`simulated` or `real`). Duplicate checks and the unique index use platform + mode + both hashes.
+- **Why:** Otherwise every post simulated during development would count as a duplicate in M4 and would never be published for real.
+- **Consequences:** The database also rejects `PUBLISHED` for a simulated job and `SIMULATED` for a real one.
+
+## D21. `FAILED` never blocks a retry (2026-10-26, M2 plan)
+
+- **Decision:** Only `PUBLISHING`, `PUBLISHED`, `NEEDS_REVIEW`, and `SIMULATED` block new jobs with the same content.
+- **Why:** A user who fixes a failed post, or moves it back unchanged after a temporary failure, expects it to be processed again.
+- **Consequences:** Several `FAILED` rows can exist for the same content, giving a history of attempts.
+
+## D22. `jobs` history command (2026-10-26, M2 plan)
+
+- **Decision:** Add a read-only `jobs` command in Slice 2.4 to list recent jobs from the database.
+- **Why:** Lets the user see what happened without opening SQLite.
+
+## D23. Storage foundation details (2026-10-26, Slice 2.1)
+
+- **Decision:** Python's stdlib `sqlite3` (no new dependency). `database/app.db` sits at a fixed path under the base folder. Schema updates are append-only migrations tracked by `PRAGMA user_version`, each in its own transaction; a newer schema is refused. `synchronous=FULL`, with the default rollback journal (only one writer, because of the run lock). Explicit column lists, never `SELECT *`. Timestamps are UTC text (`%Y-%m-%dT%H:%M:%SZ`).
+- **Why:** Simple, durable, and portable. The key safety rules (no simulated `PUBLISHED`, one live job per content) are enforced by SQLite as well as by code.

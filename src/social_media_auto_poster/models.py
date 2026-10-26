@@ -29,6 +29,16 @@ class JobStatus(StrEnum):
     NEEDS_REVIEW = "NEEDS_REVIEW"  # Outcome unknown; must not be retried automatically.
 
 
+class PublishMode(StrEnum):
+    """Whether a job was published for real or only simulated.
+
+    Duplicate detection is per mode, so simulated history never blocks a real publish.
+    """
+
+    SIMULATED = "simulated"
+    REAL = "real"
+
+
 @dataclass(frozen=True)
 class PostCandidate:
     """One paired post found by ingestion: an image and a caption sharing a filename stem.

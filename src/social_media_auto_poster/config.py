@@ -47,6 +47,10 @@ class Settings:
     def lock_file(self) -> Path:
         return self.base_dir / "autoposter.lock"
 
+    @property
+    def app_db_path(self) -> Path:
+        return self.base_dir / "database" / "app.db"
+
 
 def load_settings(
     base_dir: Path | None = None,

@@ -77,3 +77,8 @@ def test_log_and_lock_files_live_under_base_dir(tmp_path):
     settings = load_settings(base_dir=tmp_path, environ={DATA_DIR_VAR: "elsewhere"})
     assert settings.log_file == tmp_path.resolve() / "logs" / "autoposter.log"
     assert settings.lock_file == tmp_path.resolve() / "autoposter.lock"
+
+
+def test_app_db_lives_under_base_dir(tmp_path):
+    settings = load_settings(base_dir=tmp_path, environ={DATA_DIR_VAR: "elsewhere"})
+    assert settings.app_db_path == tmp_path.resolve() / "database" / "app.db"
