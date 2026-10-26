@@ -80,6 +80,27 @@ def open_app_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def open_app_db_read_only(path: Path) -> sqlite3.Connection:
+    """Open an existing application database without any ability to change it.
+
+    Raises ``FileNotFoundError`` if it does not exist (it is never created here)
+    and ``SchemaTooNewError`` if it was written by a newer application.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"No job database at {path}")
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+        if current > SCHEMA_VERSION:
+            raise SchemaTooNewError(
+                f"Database schema version {current} is newer than this application supports ({SCHEMA_VERSION})."
+            )
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """Apply every migration newer than the database's ``user_version``, each in its own transaction."""
     current = conn.execute("PRAGMA user_version").fetchone()[0]

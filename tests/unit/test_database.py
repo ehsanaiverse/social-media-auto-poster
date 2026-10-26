@@ -12,6 +12,7 @@ from social_media_auto_poster.storage.database import (
     SCHEMA_VERSION,
     SchemaTooNewError,
     open_app_db,
+    open_app_db_read_only,
 )
 
 
@@ -98,3 +99,37 @@ def test_unique_index_covers_exactly_the_blocking_statuses(tmp_path):
     assert {s.strip(" '") for s in listed.split(",")} == {s.value for s in BLOCKING_STATUSES}
     assert JobStatus.FAILED not in BLOCKING_STATUSES
     conn.close()
+
+
+def test_read_only_open_can_read_but_never_write(tmp_path):
+    path = tmp_path / "app.db"
+    open_app_db(path).close()
+
+    conn = open_app_db_read_only(path)
+    assert conn.execute("SELECT count(*) FROM jobs").fetchone()[0] == 0
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        conn.execute("DELETE FROM jobs")
+    conn.close()
+
+
+def test_read_only_open_never_creates_a_database(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        open_app_db_read_only(tmp_path / "missing" / "app.db")
+    assert not (tmp_path / "missing").exists()
+
+
+def test_read_only_open_refuses_newer_schema(tmp_path):
+    path = tmp_path / "app.db"
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA user_version = 99")
+    conn.close()
+
+    with pytest.raises(SchemaTooNewError):
+        open_app_db_read_only(path)
+
+
+def test_read_only_open_handles_spaces_in_path(tmp_path):
+    path = tmp_path / "folder with spaces" / "app.db"
+    open_app_db(path).close()
+
+    open_app_db_read_only(path).close()

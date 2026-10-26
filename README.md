@@ -152,6 +152,26 @@ python -m social_media_auto_poster.main scan --help
 
 It lists **candidates** (image + caption pairs, each marked stable or not, and valid or `INVALID:` with reasons), **pending** files waiting for a partner, and **ambiguous** stems that need fixing by hand. Exit code 0 means the scan completed; 1 means the folder does not exist.
 
+## Manual testing
+
+### Interactive tester: `scripts/app.py`
+
+```powershell
+python scripts/app.py                                 # sandbox: .\sandbox (ignored by Git)
+python scripts/app.py --sandbox D:\tmp\my-sandbox     # any other folder
+```
+
+A terminal menu to add sample posts (valid JPEG/PNG, invalid kinds, lone files, ambiguous), run, scan, look at the folders, see job history, and reset. Everything happens in a **sandbox** with its own `data\`, `database\app.db`, logs, and run lock; your real data and job database are never touched. It refuses to start if the sandbox is, contains, or is inside your real data folder, and Reset only deletes a folder marked as a sandbox (`.autoposter-sandbox`). Publishing is always simulated; Run and Scan call the real `run` / `scan` commands. Valid sample posts share the same tiny image, so adding the same caption twice demonstrates a `DUPLICATE`.
+
+### Workflow notebook: `notebooks/workflow.ipynb`
+
+```powershell
+python -m pip install -e ".[dev,notebook]"            # once: ipykernel + jupyter
+jupyter notebook notebooks/workflow.ipynb             # or open it in VS Code
+```
+
+Shows the LangGraph workflow as a picture and as Mermaid text, then runs one sample post through it in a temporary sandbox and prints the final state. The picture is rendered by the **mermaid.ink** web service, which receives only node names and edges (no post content); offline, paste the printed Mermaid text into https://mermaid.live. Commit the notebook with outputs cleared (a test checks this).
+
 ## Configuration and security
 
 Copy `.env.example` to `.env` when local configuration is introduced. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, or logs. OAuth and API access are not configured by this scaffold. Future integrations must use official APIs and comply with their permissions and policies.

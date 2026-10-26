@@ -163,6 +163,11 @@ class JobRepository:
         ).fetchone()
         return self._to_record(row) if row else None
 
+    def list_recent(self, limit: int = 20) -> list[JobRecord]:
+        """The most recently created jobs, newest first."""
+        rows = self._conn.execute(f"{_SELECT} ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)).fetchall()
+        return [self._to_record(row) for row in rows]
+
     def _require(self, job_id: str) -> JobRecord:
         record = self.get(job_id)
         if record is None:

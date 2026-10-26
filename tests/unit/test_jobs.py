@@ -233,3 +233,25 @@ def test_unknown_status_is_rejected(conn):
             "INSERT INTO jobs (job_id, platform, mode, stem, media_name, caption_name, status, created_at, updated_at)"
             " VALUES ('x', 'LinkedIn', 'simulated', 's', 'm', 'c', 'BOGUS', 't', 't')"
         )
+
+
+# History
+
+
+def test_list_recent_is_newest_first_and_limited(repo, clock):
+    for minute, job_id in enumerate(["old", "middle", "new"]):
+        clock.now = T0 + timedelta(minutes=minute)
+        create(repo, job_id, status=JobStatus.FAILED)
+
+    assert [r.job_id for r in repo.list_recent(2)] == ["new", "middle"]
+
+
+def test_list_recent_same_second_uses_insertion_order(repo):
+    create(repo, "first", status=JobStatus.FAILED)
+    create(repo, "second", status=JobStatus.FAILED)
+
+    assert [r.job_id for r in repo.list_recent()] == ["second", "first"]
+
+
+def test_list_recent_empty(repo):
+    assert repo.list_recent() == []
