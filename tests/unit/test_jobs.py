@@ -284,3 +284,48 @@ def test_find_by_id_prefix_matches_start_only_and_has_no_wildcards(repo):
     assert [r.job_id for r in repo.find_by_id_prefix("abc2")] == ["abc222"]
     assert repo.find_by_id_prefix("%") == []
     assert repo.find_by_id_prefix("_bc111") == []
+
+
+# Manual resolution
+
+
+@pytest.mark.parametrize("status", [JobStatus.PUBLISHED, JobStatus.FAILED])
+def test_resolve_needs_review_sets_status_and_appends_note(repo, clock, status):
+    create(repo, mode=REAL, status=JobStatus.NEEDS_REVIEW, errors=("outcome unknown",))
+    clock.now = T0 + timedelta(hours=1)
+    post_id = "urn:li:share:1" if status is JobStatus.PUBLISHED else None
+
+    record = repo.resolve_needs_review("job-1", status=status, note="resolved", platform_post_id=post_id)
+
+    assert record.status is status
+    assert record.platform_post_id == post_id
+    assert record.errors == ("outcome unknown", "resolved")
+    assert record.updated_at == T0 + timedelta(hours=1)
+
+
+@pytest.mark.parametrize(
+    ("mode", "status"),
+    [(SIM, JobStatus.SIMULATED), (REAL, JobStatus.PUBLISHED), (REAL, JobStatus.PUBLISHING), (REAL, JobStatus.FAILED)],
+)
+def test_resolve_needs_review_refuses_other_statuses(repo, mode, status):
+    create(repo, mode=mode, status=status)
+    before = repo.get("job-1")
+
+    with pytest.raises(JobNotFoundError):
+        repo.resolve_needs_review("job-1", status=JobStatus.FAILED, note="x")
+    assert repo.get("job-1") == before
+
+
+def test_resolve_needs_review_only_allows_published_or_failed(repo):
+    create(repo, mode=REAL, status=JobStatus.NEEDS_REVIEW)
+
+    with pytest.raises(ValueError):
+        repo.resolve_needs_review("job-1", status=JobStatus.SIMULATED, note="x")
+
+
+def test_resolve_needs_review_simulated_job_cannot_become_published(repo):
+    create(repo, mode=SIM, status=JobStatus.NEEDS_REVIEW)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.resolve_needs_review("job-1", status=JobStatus.PUBLISHED, note="x", platform_post_id="p")
+    assert repo.get("job-1").status is JobStatus.NEEDS_REVIEW

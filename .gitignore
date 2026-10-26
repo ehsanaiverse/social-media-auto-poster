@@ -26,6 +26,7 @@ ENV/
 # Local data and state
 /data/**/*
 !/data/**/.gitkeep
+/database/
 *.db
 *.db-journal
 *.db-wal

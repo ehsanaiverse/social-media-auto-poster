@@ -88,7 +88,7 @@ def make_candidate(settings: Settings, media: bytes = JPEG_BYTES, caption: bytes
 
 
 def visited_nodes(candidate: PostCandidate, ctx: WorkflowContext) -> list[str]:
-    updates = build_workflow().stream(new_job_state("test-job", candidate), context=ctx, stream_mode="updates")
+    updates = build_workflow().stream(new_job_state("test-job", candidate, ctx.mode), context=ctx, stream_mode="updates")
     return [name for update in updates for name in update]
 
 

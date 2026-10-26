@@ -5,6 +5,7 @@
 - ``run``: process every complete post once through the workflow graph,
   recording each job in ``database/app.db``. Publishing is always simulated
   until Milestone 4.
+- ``resolve``: manually settle a NEEDS_REVIEW job as PUBLISHED or FAILED.
 """
 
 import argparse
@@ -12,11 +13,15 @@ import logging
 import sqlite3
 import sys
 import time
+from collections import Counter
 from collections.abc import Generator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from uuid import uuid4
 
 from social_media_auto_poster.config import DATA_DIR_VAR, Settings, ensure_data_dirs, load_settings
 from social_media_auto_poster.graph.state import JobState, WorkflowContext
@@ -30,7 +35,7 @@ from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.services.reconcile import Recovery, reconcile_interrupted_jobs
 from social_media_auto_poster.services.run_lock import RunLockHeldError, single_run_lock
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
-from social_media_auto_poster.storage.jobs import JobRecord, JobRepository
+from social_media_auto_poster.storage.jobs import JobNotFoundError, JobRecord, JobRepository
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +51,33 @@ EXIT_SETUP_ERROR = 1
 EXIT_JOB_PROBLEMS = 3
 EXIT_LOCKED = 4
 
+# Outcome counters reported on the "Run finished" log line, in this order.
+RUN_COUNTS = (
+    "simulated", "published", "failed", "needs_review", "duplicates",
+    "waiting", "pending", "ambiguous", "recovered", "errors",
+)
+MIN_JOB_ID_PREFIX = 6
+
+# The current run's short ID, added to every log-file line by _RunIdFilter. "-" outside a run.
+_RUN_ID: ContextVar[str] = ContextVar("run_id", default="-")
+
 RUN_EPILOG = """\
+exit codes:
   0  run completed; every job was simulated, a duplicate, or waiting, or there was nothing to do
-  0  run completed; every job was simulated or is waiting, or there was nothing to do
   1  setup error (data folder, job database, or crash recovery could not complete)
   2  invalid command or option
   3  run completed, but at least one job ended FAILED, NEEDS_REVIEW, or ERROR,
      or an interrupted job was recovered as NEEDS_REVIEW
   4  another run is in progress
+"""
+
+RESOLVE_EPILOG = """\
+exit codes:
+  0  resolved
+  1  refused: no such job, ambiguous ID prefix, not NEEDS_REVIEW, empty post ID,
+     a simulated job marked --published, or no job database
+  2  invalid command or option (e.g. an ID prefix shorter than 6 characters)
+  4  a run is in progress
 """
 
 
@@ -97,6 +121,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     jobs.add_argument("--id", dest="job_id", help="Show every detail of one job (an ID prefix is enough).")
     jobs.set_defaults(handler=_jobs)
+
+    resolve = commands.add_parser(
+        "resolve",
+        help="Manually resolve a NEEDS_REVIEW job after checking the platform.",
+        description=(
+            "Settle a NEEDS_REVIEW job once you have checked the platform. --published keeps its content "
+            "blocked from re-posting; --failed lets it be retried. Files are never moved."
+        ),
+        epilog=RESOLVE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    resolve.add_argument("job_id", type=_job_id_prefix, help=f"Job ID, or its first {MIN_JOB_ID_PREFIX}+ characters.")
+    outcome = resolve.add_mutually_exclusive_group(required=True)
+    outcome.add_argument("--published", metavar="POST_ID", help="It was published; record the platform's post ID.")
+    outcome.add_argument("--failed", action="store_true", help="It was not published; allow a retry.")
+    resolve.set_defaults(handler=_resolve)
 
     run = commands.add_parser(
         "run",
@@ -280,6 +320,106 @@ def _show_job(repository: JobRepository, prefix: str) -> int:
     return EXIT_OK
 
 
+# resolve
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _resolve(args: argparse.Namespace) -> int:
+    if args.published is not None and not args.published.strip():
+        print("Error: --published needs the platform's post ID (it must not be empty).", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    settings = load_settings()
+    try:
+        # The same lock as run: resolve and run never change the database at the same time.
+        with single_run_lock(settings.lock_file), _logging_to(verbose=False, log_file=settings.log_file), _run_scope():
+            if not settings.app_db_path.is_file():
+                print(f"Error: no job database at {settings.app_db_path}; nothing to resolve.", file=sys.stderr)
+                return EXIT_SETUP_ERROR
+            try:
+                conn = open_app_db(settings.app_db_path)
+            except (SchemaTooNewError, sqlite3.Error) as error:
+                print(f"Error: could not open the job database: {error}", file=sys.stderr)
+                return EXIT_SETUP_ERROR
+            try:
+                return _resolve_job(JobRepository(conn), settings, args)
+            finally:
+                conn.close()
+    except RunLockHeldError:
+        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        return EXIT_LOCKED
+
+
+def _resolve_job(repository: JobRepository, settings: Settings, args: argparse.Namespace) -> int:
+    matches = repository.find_by_id_prefix(args.job_id)
+    if not matches:
+        print(f"Error: no job ID starts with '{args.job_id}'. Nothing was changed.", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    if len(matches) > 1:
+        print(f"Error: '{args.job_id}' matches {len(matches)} jobs; use a longer prefix:", file=sys.stderr)
+        for r in matches:
+            print(f"  {r.job_id}  {r.stem}  {r.status}", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+
+    [job] = matches
+    name = f"job {job.job_id[:8]} ({job.stem})"
+    if job.status is not JobStatus.NEEDS_REVIEW:
+        print(
+            f"Error: {name} is {job.status}; only NEEDS_REVIEW jobs can be resolved. Nothing was changed.",
+            file=sys.stderr,
+        )
+        return EXIT_SETUP_ERROR
+    published = args.published is not None
+    if published and job.mode is PublishMode.SIMULATED:
+        print(
+            f"Error: {name} is a simulated job; nothing was sent, so it cannot have been published. "
+            "Resolve it with --failed. Nothing was changed.",
+            file=sys.stderr,
+        )
+        return EXIT_SETUP_ERROR
+
+    status = JobStatus.PUBLISHED if published else JobStatus.FAILED
+    post_id = args.published.strip() if published else None
+    stamp = f"{_utc_now():%Y-%m-%dT%H:%M:%SZ}"
+    note = (
+        f"resolved manually as PUBLISHED (post ID {post_id}) at {stamp}"
+        if published
+        else f"resolved manually as FAILED at {stamp}"
+    )
+    try:
+        repository.resolve_needs_review(job.job_id, status=status, note=note, platform_post_id=post_id)
+    except JobNotFoundError:  # Cannot happen while we hold the lock; refuse rather than guess.
+        print(f"Error: {name} is no longer NEEDS_REVIEW. Nothing was changed.", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    logger.info(
+        "Job resolved manually: job_id=%s platform=%s mode=%s stem=%s status=%s post_id=%s",
+        job.job_id, job.platform, job.mode, job.stem, status, post_id,
+    )
+
+    print(f"Resolved {name} as {status}.")
+    print(f"Note recorded: {note}")
+    _print_resolve_next_steps(job, status, settings)
+    return EXIT_OK
+
+
+def _print_resolve_next_steps(job: JobRecord, status: JobStatus, settings: Settings) -> None:
+    files = f"{job.media_name} and {job.caption_name}"
+    incoming = settings.incoming_dir(job.platform)
+    if job.destination:
+        print(f"Files: {files} are in {job.destination}")
+    else:
+        print(f"Files: {files} were not moved by the app (check {incoming})")
+
+    if status is JobStatus.PUBLISHED:
+        print("Next: the content stays blocked from re-posting. Keep or delete the files as you like.")
+    elif job.destination:
+        print(f"Next: to retry, fix the post if needed, move {files} back into {incoming}, then run again.")
+    else:
+        print("Next: if the files are still in incoming/, the next run will process them again.")
+
+
 # run
 
 
@@ -292,29 +432,33 @@ class _JobLine:
     note: str
     details: tuple[str, ...]
     problem: bool  # Counts toward exit code 3.
+    outcome: str  # One of RUN_COUNTS, for the "Run finished" log line.
 
 
 def _run(args: argparse.Namespace) -> int:
     settings = load_settings()
     try:
-        with single_run_lock(settings.lock_file), _logging_to(verbose=args.verbose, log_file=settings.log_file):
-            ensure_data_dirs(settings)
+        with (
+            single_run_lock(settings.lock_file),
+            _logging_to(verbose=args.verbose, log_file=settings.log_file),
+            _run_scope(),
+        ):
+            started = time.monotonic()
+            counts: Counter[str] = Counter()
+            exit_code = EXIT_SETUP_ERROR
+            logger.info("Run started: platform=%s mode=%s", Platform.LINKEDIN, RUN_MODE)
+            # flush: when output is piped, stdout is buffered and stderr warnings would overtake it.
+            print(f"Processing LinkedIn incoming: {settings.incoming_dir(Platform.LINKEDIN)}", flush=True)
             try:
-                conn = open_app_db(settings.app_db_path)
-            except (SchemaTooNewError, sqlite3.Error) as error:
-                logger.error("Could not open the job database %s: %s", settings.app_db_path, error)
-                return EXIT_SETUP_ERROR
-            try:
-                repository = JobRepository(conn)
-                try:
-                    recoveries = reconcile_interrupted_jobs(repository, settings)
-                except sqlite3.Error:
-                    # Never process on top of an unknown state.
-                    logger.exception("Could not recover interrupted jobs; nothing was processed")
-                    return EXIT_SETUP_ERROR
-                return _process(settings, repository, args.interval, recoveries)
+                exit_code = _run_locked(settings, args.interval, counts)
+                return exit_code
             finally:
-                conn.close()
+                logger.info(
+                    "Run finished: %s exit_code=%d duration_s=%.2f",
+                    " ".join(f"{key}={counts[key]}" for key in RUN_COUNTS),
+                    exit_code,
+                    time.monotonic() - started,
+                )
     except RunLockHeldError:
         print("Another run is in progress; try again when it has finished.", file=sys.stderr)
         return EXIT_LOCKED
@@ -323,12 +467,43 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_SETUP_ERROR
 
 
-def _process(settings: Settings, repository: JobRepository, interval_s: float, recoveries: list[Recovery]) -> int:
+def _run_locked(settings: Settings, interval_s: float, counts: Counter[str]) -> int:
+    """Everything a run does while holding the lock, after "Run started" is logged."""
+    ensure_data_dirs(settings)
+    try:
+        conn = open_app_db(settings.app_db_path)
+    except (SchemaTooNewError, sqlite3.Error) as error:
+        logger.error("Could not open the job database %s: %s", settings.app_db_path, error)
+        return EXIT_SETUP_ERROR
+    try:
+        repository = JobRepository(conn)
+        try:
+            recoveries = reconcile_interrupted_jobs(repository, settings)
+        except sqlite3.Error:
+            # Never process on top of an unknown state.
+            logger.exception("Could not recover interrupted jobs; nothing was processed")
+            return EXIT_SETUP_ERROR
+        counts["recovered"] = len(recoveries)
+        if recoveries:
+            _print_recoveries(recoveries)
+        return _process(settings, repository, interval_s, recoveries, counts)
+    finally:
+        conn.close()
+
+
+def _process(
+    settings: Settings,
+    repository: JobRepository,
+    interval_s: float,
+    recoveries: list[Recovery],
+    counts: Counter[str],
+) -> int:
     platform = Platform.LINKEDIN
-    incoming = settings.incoming_dir(platform)
-    result = scan_incoming(incoming, platform)
+    result = scan_incoming(settings.incoming_dir(platform), platform)
+    counts["pending"] = len(result.pending)
+    counts["ambiguous"] = len(result.ambiguous)
     logger.info(
-        "Run started: platform=%s candidates=%d pending=%d ambiguous=%d",
+        "Scan complete: platform=%s candidates=%d pending=%d ambiguous=%d",
         platform,
         len(result.candidates),
         len(result.pending),
@@ -344,10 +519,8 @@ def _process(settings: Settings, repository: JobRepository, interval_s: float, r
         stability_interval_s=interval_s,
     )
     lines = [_run_one(candidate, context) for candidate in result.candidates]
+    counts.update(line.outcome for line in lines)
 
-    print(f"Processing LinkedIn incoming: {incoming}")
-    if recoveries:
-        _print_recoveries(recoveries)
     if lines:
         _print_jobs(lines)
     else:
@@ -380,8 +553,10 @@ def _run_one(candidate: PostCandidate, context: WorkflowContext) -> _JobLine:
     try:
         final = run_job(candidate, context)
     except Exception:  # A bug or a database failure, not a publish outcome. Keep going.
-        logger.exception("Unexpected error; job abandoned: platform=%s stem=%s", candidate.platform, candidate.stem)
-        return _JobLine(candidate.stem, "ERROR (unexpected)", "see the log for details", (), problem=True)
+        logger.exception(
+            "Unexpected error; job abandoned: platform=%s mode=%s stem=%s", candidate.platform, context.mode, candidate.stem
+        )
+        return _JobLine(candidate.stem, "ERROR (unexpected)", "see the log for details", (), problem=True, outcome="errors")
     return _describe(final, context)
 
 
@@ -390,16 +565,19 @@ def _describe(final: JobState, context: WorkflowContext) -> _JobLine:
     destination = _relative_to_data(final["destination"], context.settings)
 
     if final["retry_later"]:
-        return _JobLine(stem, "WAITING (still copying)", "will retry on next run", (), problem=False)
+        return _JobLine(stem, "WAITING (still copying)", "will retry on next run", (), problem=False, outcome="waiting")
     if final["duplicate_of"]:
-        return _JobLine(stem, DUPLICATE_LABEL, _duplicate_note(final["duplicate_of"], context), (), problem=False)
+        note = _duplicate_note(final["duplicate_of"], context)
+        return _JobLine(stem, DUPLICATE_LABEL, note, (), problem=False, outcome="duplicates")
     if status == JobStatus.SIMULATED:
-        return _JobLine(stem, "SIMULATED (not published)", "files stay in incoming/", errors, problem=False)
+        note = "files stay in incoming/"
+        return _JobLine(stem, "SIMULATED (not published)", note, errors, problem=False, outcome="simulated")
     if status == JobStatus.PUBLISHED:
         note = f"archived to {destination}" if destination else "files left in incoming/"
-        return _JobLine(stem, status, note, errors, problem=bool(errors))
+        return _JobLine(stem, status, note, errors, problem=bool(errors), outcome="published")
     note = f"moved to {destination}" if destination else "files left in incoming/"
-    return _JobLine(stem, status, note, errors, problem=True)
+    outcome = "needs_review" if status == JobStatus.NEEDS_REVIEW else "failed"
+    return _JobLine(stem, status, note, errors, problem=True, outcome=outcome)
 
 
 def _duplicate_note(job_id: str, context: WorkflowContext) -> str:
@@ -467,7 +645,10 @@ def _logging_to(*, verbose: bool, log_file: Path | None) -> Generator[None, None
             log_file, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
         )
         file_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s", "%Y-%m-%dT%H:%M:%SZ")
+        file_handler.addFilter(_RunIdFilter())
+        formatter = logging.Formatter(
+            "%(asctime)s %(levelname)s run_id=%(run_id)s %(name)s %(message)s", "%Y-%m-%dT%H:%M:%SZ"
+        )
         formatter.converter = time.gmtime  # UTC, matching archive folder names and error reports.
         file_handler.setFormatter(formatter)
         handlers.append(file_handler)
@@ -486,6 +667,13 @@ def _logging_to(*, verbose: bool, log_file: Path | None) -> Generator[None, None
         root.setLevel(previous_level)
 
 
+def _job_id_prefix(text: str) -> str:
+    prefix = text.strip().lower()
+    if len(prefix) < MIN_JOB_ID_PREFIX:
+        raise argparse.ArgumentTypeError(f"use at least {MIN_JOB_ID_PREFIX} characters of the job ID")
+    return prefix
+
+
 def _positive_int(text: str) -> int:
     try:
         value = int(text)
@@ -494,6 +682,24 @@ def _positive_int(text: str) -> int:
     if value < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
     return value
+
+
+class _RunIdFilter(logging.Filter):
+    """Adds the current run's ID to every record (log file only; terminal lines stay short)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.run_id = _RUN_ID.get()
+        return True
+
+
+@contextmanager
+def _run_scope() -> Generator[str, None, None]:
+    """Give everything logged inside the block (including graph nodes) a new short run ID."""
+    token = _RUN_ID.set(uuid4().hex[:8])
+    try:
+        yield _RUN_ID.get()
+    finally:
+        _RUN_ID.reset(token)
 
 
 def _non_negative_float(text: str) -> float:

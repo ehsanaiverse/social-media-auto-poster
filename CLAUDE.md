@@ -55,8 +55,9 @@ LangGraph is a **required** part of this project, not an optional or future enha
 - **In Milestone 1, `SIMULATED` jobs leave their files in `incoming/`.** The archive service is still unit-tested directly against temporary directories.
 - **Never blindly retry an external publish whose outcome is ambiguous** (timeout, lost response, crash while `PUBLISHING`). Mark it `NEEDS_REVIEW` unless the platform offers a safe way to check whether it succeeded.
 - Use structured logging with job ID, platform, and state on every relevant log line.
-- **Never log caption text.** Log lines carry job ID, stem, platform, status, paths, and error messages only. The run log is `logs/autoposter.log` (`RotatingFileHandler`, 1 MB × 5 backups, UTC timestamps).
-- **Only one `run` at a time.** `run` takes an OS-level lock (`msvcrt.locking` on Windows, `fcntl.flock` elsewhere) on `<base>/autoposter.lock` before any work; if held, it prints "Another run is in progress" and exits 4. The OS releases the lock when the process exits or crashes, so a leftover lock file never blocks. `scan` does not take the lock.
+- **Never log caption text.** Log lines carry job ID, stem, platform, mode, status, paths, and error messages only. The run log is `logs/autoposter.log` (`RotatingFileHandler`, 1 MB × 5 backups, UTC timestamps).
+- **Run log structure:** every log-file line carries `run_id=<8 hex>` (set per `run`/`resolve` by a `ContextVar` + logging filter, so graph nodes get it too; `-` outside a run). Terminal lines stay short (no run_id). `run` logs "Run started" first (right after taking the lock) and always ends with "Run finished" giving `simulated published failed needs_review duplicates waiting pending ambiguous recovered errors exit_code duration_s`. Every job line has `mode=`. **A job_id is only logged if it is stored:** duplicates and files still being copied log exactly one `Job skipped: ... status=SKIPPED result=DUPLICATE duplicate_of=<stored id>` / `result=WAITING` line with no job_id. The terminal prints "Processing ..." before any job runs.
+- **Only one `run` at a time.** `run` takes an OS-level lock (`msvcrt.locking` on Windows, `fcntl.flock` elsewhere) on `<base>/autoposter.lock` before any work; if held, it prints "Another run is in progress" and exits 4. The OS releases the lock when the process exits or crashes, so a leftover lock file never blocks. `resolve` takes the same lock (so it never changes the DB during a run); `scan` and `jobs` do not.
 - A simulated result must always be labelled as simulated. Never log, store, or display a simulated post as published to LinkedIn.
 
 ## Input conventions
@@ -96,9 +97,11 @@ src/social_media_auto_poster/
 └── main.py            # CLI entry point
 ```
 
-The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` has three commands. `jobs` (Slice 2.4) is read-only history via `open_app_db_read_only` (`--last N`, `--status S`, `--id PREFIX`; prefix matching has no wildcards); it never creates or changes the DB and takes no lock. `scan` (added early, after Slice 3) must stay read-only: it reports stability, validation, and (for stable valid posts) `new` or `DUPLICATE of job …` using the same `sha256_file` + `find_blocking_duplicate` check and `RUN_MODE` as `run`, plus a note about interrupted `PUBLISHING` jobs; it never moves, publishes, reconciles, or creates folders or the DB. `run` (Slice 6) creates the data folders, takes the run lock, and runs each complete post once through the graph with the `Simulator` publisher (there is no real publisher to select in M1). It has no `--dir`: incoming, failed, and archive must come from the same settings. It is one-shot; continuous folder watching is not part of M1. One unexpected job error is logged and shown as `ERROR (unexpected)` without stopping other jobs.
+The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` has four commands (`run`, `scan`, `jobs`, `resolve`). `jobs` (Slice 2.4) is read-only history via `open_app_db_read_only` (`--last N`, `--status S`, `--id PREFIX`; prefix matching has no wildcards); it never creates or changes the DB and takes no lock. `scan` (added early, after Slice 3) must stay read-only: it reports stability, validation, and (for stable valid posts) `new` or `DUPLICATE of job …` using the same `sha256_file` + `find_blocking_duplicate` check and `RUN_MODE` as `run`, plus a note about interrupted `PUBLISHING` jobs; it never moves, publishes, reconciles, or creates folders or the DB. `run` (Slice 6) creates the data folders, takes the run lock, and runs each complete post once through the graph with the `Simulator` publisher (there is no real publisher to select in M1). It has no `--dir`: incoming, failed, and archive must come from the same settings. It is one-shot; continuous folder watching is not part of M1. One unexpected job error is logged and shown as `ERROR (unexpected)` without stopping other jobs.
 
 **`run` exit codes:** 0 completed (all simulated, duplicate, or waiting, or nothing to do); 1 setup error (data folder, job database, or crash recovery); 2 usage error (argparse); 3 completed, but at least one job ended `FAILED`, `NEEDS_REVIEW`, or `ERROR`, or a crashed job was recovered as `NEEDS_REVIEW`; 4 another run is in progress. **`jobs` exit codes:** 0 ok (including "no jobs yet"); 1 database unreadable or `--id` matches no job or more than one; 2 usage error.
+
+**`resolve <job_id> --published <post_id> | --failed`:** settles a `NEEDS_REVIEW` job after the user has checked the platform. Only `NEEDS_REVIEW` jobs; the repository UPDATE only matches a row that is still `NEEDS_REVIEW`, so no other row can change. Job-ID prefix of at least 6 characters (shorter is a usage error) matching exactly one job. `--published` needs a non-blank post ID, sets `PUBLISHED` (content stays blocked) and is refused for simulated jobs; `--failed` sets `FAILED` (content can be retried). A note `resolved manually as <STATUS> [(post ID ...)] at <UTC>` is appended to the job's errors. Files are never moved; the output says where they are and what to do next. Never creates the DB. **Exit codes:** 0 resolved; 1 refused (no match, ambiguous, wrong status, blank post ID, simulated `--published`, no DB); 2 usage error; 4 lock held.
 
 Configuration: `AUTOPOSTER_DATA_DIR` sets the content root (default `data`, relative paths resolved against the base directory, which is the current working directory). Real environment variables override `.env`. `load_settings()` reads `.env` with `dotenv_values` and never mutates `os.environ`. Explain any significant structural change before making it, and do not add empty abstractions.
 
@@ -110,7 +113,19 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | --- | --------- | ------ |
 | 0 | Inspect, plan, establish this file | Done |
 | 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | Complete, pending review: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability), 4 (validation + archive), 5 (LangGraph workflow), 6 (`run` command, end-to-end tests) done and tested. Decisions in `docs/decisions.md` |
-| 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | Complete, pending review: Slices 2.1 (schema, repository, hashing), 2.2 (graph integration: `check_duplicate`, DB writes, `run` opens the DB), 2.3 (startup reconciliation), 2.4 (`jobs` command, `scan` shows duplicates) done and tested |
+| 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | Implemented, tested, and committed (see below); awaiting the developer's review sign-off |
+
+### Milestone 2 status detail
+
+| Work | Implemented | Tested | Committed |
+| --- | --- | --- | --- |
+| 2.1 Schema, migrations, repository, hashing | yes | yes | `5237e69` |
+| 2.2 `check_duplicate`, DB writes in the graph, fail-closed rules, `run` opens the DB | yes | yes | `24c73d7` |
+| Dev tools: `scripts/app.py` sandbox tester, `notebooks/workflow.ipynb`, `open_app_db_read_only`, `list_recent` | yes | yes | `04ce5cb` (notebook outputs cleared in `d30dc71`) |
+| 2.3 Startup reconciliation, `list_by_status`, tester crash simulation (menu 11) | yes | yes | `d30dc71` |
+| 2.4 `jobs` command, duplicates + interrupted note in `scan`, tester history via `jobs` | yes | yes | `9c0e4be` |
+| M2 follow-up: `resolve` command (+ tester menu 12), run logging (run_id, start/finish, skipped lines, mode), sandbox hardening, `/database/` ignored, test isolation (`tests/conftest.py`) | yes | yes | not yet (pending review) |
+| Planned next: Milestone 3 (checkpointer) | no | no | no |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |
 | 5 | Reliability and expansion: logging/monitoring, operational docs, evaluate PostgreSQL, plan Facebook/Instagram adapters | Not started |
@@ -130,13 +145,15 @@ Tests must cover, as the features appear: normal execution, validation failures,
 - Add a dependency only in the milestone that uses it. Verify the package name, current version, and Python compatibility on PyPI or the official docs before adding or pinning it. Bounds are `>=` the version actually installed and tested, `<` the next major version.
 - Current: `langgraph`, `python-dotenv` (runtime); `pytest` (dev); `ipykernel`, `jupyter` (optional `notebook` extra, only for `notebooks/`; verified on Python 3.14). Application and test code must never import from the `notebook` extra.
 
-## Developer tools
-
-- **`scripts/app.py`** (stdlib only): interactive manual tester. It always works in a sandbox (default `<repo>/sandbox`, Git-ignored) that acts as both the base folder and the data folder, so its database, logs, and run lock never touch the real ones. It refuses a sandbox that is the project folder or is, contains, or is inside the real data folder. Reset deletes only a folder holding the `.autoposter-sandbox` marker. Run and Scan call `main(["run"])` / `main(["scan"])`; never duplicate app logic in the script. Job history reads the sandbox database through `open_app_db_read_only` and `JobRepository.list_recent`.
-- **`notebooks/workflow.ipynb`**: graph picture (`draw_mermaid_png`, via the mermaid.ink web service, which receives the graph structure only), Mermaid text, and one sample post through `run_job` in a temporary sandbox. It reuses the sample helpers from `scripts/app.py`. **Commit it with outputs cleared**; `tests/unit/test_notebook.py` enforces this.
 - Expected later: `watchdog` (when folder watching is added), `langgraph-checkpoint-sqlite` (M3), `requests` or similar (M4). `langchain` is **not** a dependency (see "No LLMs" above).
 - **Python version:** the developer uses **Python 3.14**; minimum is 3.12 (`requires-python = ">=3.12"`). `langgraph` officially lists classifiers only through 3.13, so re-check 3.14 compatibility whenever a dependency is added (especially `langgraph-checkpoint-sqlite` in M3). Falling back to 3.13 is the remedy if something breaks.
 - **Virtual environment:** the project venv is named `.vevn` (developer's choice).
+
+## Developer tools
+
+- **`scripts/app.py`** (stdlib only): interactive manual tester. It always works in a sandbox (default `<repo>/sandbox`, Git-ignored) that acts as both the base folder and the data folder, so its database, logs, and run lock never touch the real ones. It refuses a sandbox that is the project folder, or that is, contains, or is inside the real data folder, the real `database/` folder, or the real `logs/` folder. It only adopts a folder that is **empty or already holds the `.autoposter-sandbox` marker** (so `--sandbox src` is refused), and Reset deletes only a marked folder. Run, Scan, Show job history, and Resolve call `main(["run"])`, `main(["scan"])`, `main(["jobs"])`, and `main(["resolve", ...])`; never duplicate app logic in the script. Menu 11 simulates a crash during publish; menu 12 resolves a `NEEDS_REVIEW` job.
+- **`notebooks/workflow.ipynb`**: graph picture (`draw_mermaid_png`, via the mermaid.ink web service, which receives the graph structure only), Mermaid text, and one sample post through `run_job` in a temporary sandbox. It reuses the sample helpers from `scripts/app.py`. **Commit it with outputs cleared**; `tests/unit/test_notebook.py` enforces this.
+- **Test isolation (`tests/conftest.py`):** every test runs from its own empty temporary folder with `AUTOPOSTER_DATA_DIR` unset, and a session-wide check fails the run if the real `database/app.db` was changed or created.
 
 ## Commands (Windows PowerShell, from repo root)
 
@@ -151,6 +168,7 @@ python -m social_media_auto_poster.main scan --dir <folder> --interval 0
 python -m social_media_auto_poster.main run                  # process every complete post once (simulated)
 python -m social_media_auto_poster.main run --verbose        # also show INFO logs in the terminal
 python -m social_media_auto_poster.main jobs                 # read-only job history (--last N, --status S, --id PREFIX)
+python -m social_media_auto_poster.main resolve <id> --failed            # settle a NEEDS_REVIEW job (or --published <post_id>)
 ```
 
 Record every significant decision in `docs/decisions.md` (date, decision, why, consequences).

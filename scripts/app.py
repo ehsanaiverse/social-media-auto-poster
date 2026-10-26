@@ -146,16 +146,28 @@ def real_data_dir(repo_root: Path = REPO_ROOT) -> Path:
 
 
 def check_sandbox(sandbox: Path, *, repo_root: Path, real_data: Path) -> Path:
-    """Return the resolved sandbox path, or raise ``SandboxError`` if it could mix with real data."""
-    sandbox, repo_root, real_data = sandbox.resolve(), repo_root.resolve(), real_data.resolve()
+    """Return the resolved sandbox path, or raise ``SandboxError`` if it could mix with real files.
+
+    Refuses the project folder itself, and any folder that is, is inside, or
+    contains the real data folder, the real job database folder, or the real
+    logs folder. ``Sandbox.prepare`` additionally refuses non-empty folders that
+    are not already sandboxes (for example ``src``).
+    """
+    sandbox, repo_root = sandbox.resolve(), repo_root.resolve()
     if sandbox == repo_root:
         raise SandboxError(f"The sandbox must not be the project folder itself: {sandbox}")
-    if sandbox == real_data:
-        raise SandboxError(f"The sandbox is the real data folder: {sandbox}")
-    if sandbox.is_relative_to(real_data):
-        raise SandboxError(f"The sandbox is inside the real data folder {real_data}: {sandbox}")
-    if real_data.is_relative_to(sandbox):
-        raise SandboxError(f"The sandbox contains the real data folder {real_data}: {sandbox}")
+    protected = {
+        "real data folder": real_data.resolve(),
+        "real job database folder": (repo_root / "database").resolve(),
+        "real logs folder": (repo_root / "logs").resolve(),
+    }
+    for label, path in protected.items():
+        if sandbox == path:
+            raise SandboxError(f"The sandbox is the {label}: {sandbox}")
+        if sandbox.is_relative_to(path):
+            raise SandboxError(f"The sandbox is inside the {label} {path}: {sandbox}")
+        if path.is_relative_to(sandbox):
+            raise SandboxError(f"The sandbox contains the {label} {path}: {sandbox}")
     return sandbox
 
 
@@ -171,8 +183,15 @@ class Sandbox:
         return self.settings.incoming_dir(PLATFORM)
 
     def prepare(self) -> None:
+        """Create the sandbox. Only an empty folder (or one already marked as a sandbox) is ever adopted."""
+        marker = self.root / MARKER_NAME
+        if self.root.exists() and not marker.is_file() and any(self.root.iterdir()):
+            raise SandboxError(
+                f"{self.root} is not empty and is not a sandbox; refusing to use it "
+                "(Reset would delete its contents). Choose an empty or new folder."
+            )
         self.root.mkdir(parents=True, exist_ok=True)
-        (self.root / MARKER_NAME).touch()
+        marker.touch()
         self.incoming.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
@@ -202,6 +221,21 @@ class Sandbox:
     def jobs(self) -> int:
         with self.active():
             return cli.main(["jobs"])
+
+    def resolve(self, *args: str) -> int:
+        with self.active():
+            return cli.main(["resolve", *args])
+
+    def needs_review(self) -> list[JobRecord]:
+        """NEEDS_REVIEW jobs in the sandbox database, read-only."""
+        try:
+            conn = open_app_db_read_only(self.settings.app_db_path)
+        except FileNotFoundError:
+            return []
+        try:
+            return JobRepository(conn).list_recent(100, status=JobStatus.NEEDS_REVIEW)
+        finally:
+            conn.close()
 
     def folder_contents(self) -> dict[str, list[str]]:
         contents = {}
@@ -320,6 +354,26 @@ def _menu_actions(sandbox: Sandbox) -> dict[str, tuple[str, Callable[[], object]
         job_id = sandbox.simulate_crash(stem, PublishMode(mode))
         print(f"Job {job_id[:8]} is now stuck as PUBLISHING. Choose 'Run' to see startup recovery.")
 
+    def resolve():
+        waiting = sandbox.needs_review()
+        if not waiting:
+            print("No NEEDS_REVIEW jobs. Use 'Simulate a crash during publish' with mode real, then 'Run'.")
+            return
+        print("NEEDS_REVIEW jobs:")
+        for record in waiting:
+            print(f"   {record.job_id[:8]}  {record.stem}  ({record.mode})")
+        prefix = _ask("Job ID (first 6+ characters)", waiting[0].job_id[:8])
+        outcome = _choose(
+            "Resolve as",
+            {"failed": "FAILED (it was not published; allows a retry)",
+             "published": "PUBLISHED (it is live; keeps the content blocked)"},
+        )
+        if outcome == "failed":
+            args = [prefix, "--failed"]
+        else:
+            args = [prefix, "--published", _ask("Post ID", "urn:li:share:demo")]
+        print(f"\nexit code: {sandbox.resolve(*args)}")
+
     def reset():
         if _ask(f"Delete everything in {sandbox.root}? Type 'yes' to confirm") == "yes":
             sandbox.reset()
@@ -339,6 +393,7 @@ def _menu_actions(sandbox: Sandbox) -> dict[str, tuple[str, Callable[[], object]
         "9": ("Show job history (jobs command)", lambda: print(f"\nexit code: {sandbox.jobs()}")),
         "10": ("Reset sandbox", reset),
         "11": ("Simulate a crash during publish", crash),
+        "12": ("Resolve a NEEDS_REVIEW job", resolve),
     }
 
 
@@ -353,7 +408,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Refusing to start: {error}", file=sys.stderr)
         return 1
     sandbox = Sandbox(root)
-    sandbox.prepare()
+    try:
+        sandbox.prepare()
+    except SandboxError as error:
+        print(f"Refusing to start: {error}", file=sys.stderr)
+        return 1
     print(f"Sandbox: {root}   (simulation only; your real data is never touched)")
 
     actions = _menu_actions(sandbox)
@@ -376,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
             actions[choice][1]()
         except (ValueError, FileExistsError, SandboxError, SchemaTooNewError, DuplicateJobError) as error:
             print(f"Error: {error}")
+        except SystemExit as exit_:  # An app command rejected its arguments (argparse); keep the menu open.
+            print(f"exit code: {exit_.code}")
         except (EOFError, KeyboardInterrupt):
             print()
             return 0

@@ -80,13 +80,14 @@ def build_workflow() -> CompiledStateGraph:
 def run_job(candidate: PostCandidate, context: WorkflowContext) -> JobState:
     """Run one candidate through the graph and return its final state.
 
-    The job ID is a random UUID in Milestone 1; Milestone 2 replaces it with
-    the database job ID. It is also the graph thread ID, which matters once a
-    checkpointer is added in Milestone 3.
+    The job ID is a random UUID. It becomes the database job ID if the job is
+    recorded (duplicates and files still being copied are never recorded), and
+    it is the graph thread ID, which matters once a checkpointer is added in
+    Milestone 3.
     """
     job_id = uuid4().hex
     return build_workflow().invoke(
-        new_job_state(job_id, candidate),
+        new_job_state(job_id, candidate, context.mode),
         config={"configurable": {"thread_id": job_id}},
         context=context,
     )

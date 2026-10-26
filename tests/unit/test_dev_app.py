@@ -225,3 +225,73 @@ def test_history_menu_uses_the_jobs_command(layout, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "STATUS" in out and "launch" in out and "SIMULATED" in out
     assert not (repo / "database").exists()
+
+
+# Stricter sandbox rules (real database/logs folders, non-empty folders)
+
+
+@pytest.mark.parametrize(
+    "where", ["database", "database/inner", "logs", "logs/inner"],
+)
+def test_real_database_and_logs_folders_are_refused(layout, where):
+    repo, real_data = layout
+
+    with pytest.raises(dev_app.SandboxError, match="real (job database|logs) folder"):
+        dev_app.check_sandbox(repo / where, repo_root=repo, real_data=real_data)
+
+
+def test_non_empty_folder_without_marker_is_never_adopted(layout):
+    repo, _ = layout
+    src = repo / "src"
+    src.mkdir()
+    (src / "module.py").write_text("print('precious')")
+
+    with pytest.raises(dev_app.SandboxError, match="not empty and is not a sandbox"):
+        dev_app.Sandbox(src).prepare()
+    assert not (src / dev_app.MARKER_NAME).exists()
+    assert (src / "module.py").exists()
+
+
+def test_existing_marked_sandbox_is_reused(tmp_path):
+    sandbox = dev_app.Sandbox(tmp_path / "sandbox")
+    sandbox.prepare()
+    dev_app.add_lone_image(sandbox.incoming, "lonely")
+
+    dev_app.Sandbox(tmp_path / "sandbox").prepare()  # Not empty, but marked: fine.
+
+    assert (sandbox.incoming / "lonely.jpg").exists()
+
+
+def test_main_refuses_to_start_in_a_non_empty_unmarked_folder(tmp_path, monkeypatch, capsys):
+    folder = tmp_path / "my-documents"
+    folder.mkdir()
+    (folder / "thesis.docx").write_bytes(b"precious")
+    monkeypatch.setattr(dev_app, "real_data_dir", lambda: tmp_path / "real-data")
+
+    assert dev_app.main(["--sandbox", str(folder)]) == 1
+
+    assert "Refusing to start" in capsys.readouterr().err
+    assert sorted(p.name for p in folder.iterdir()) == ["thesis.docx"]
+
+
+# Resolve through the tester
+
+
+def test_resolve_a_needs_review_job_through_the_tester(layout, monkeypatch, capsys):
+    repo, _ = layout
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv(DATA_DIR_VAR, raising=False)
+    sandbox = dev_app.Sandbox(repo / "sandbox")
+    sandbox.prepare()
+    dev_app.add_valid_post(sandbox.incoming, "launch", "Hello")
+    job_id = sandbox.simulate_crash("launch", PublishMode.REAL)
+    sandbox.run()  # Recovery: NEEDS_REVIEW, files moved to failed/.
+    assert [r.job_id for r in sandbox.needs_review()] == [job_id]
+    capsys.readouterr()
+
+    assert sandbox.resolve(job_id[:8], "--failed") == 0
+
+    assert "Resolved job" in capsys.readouterr().out
+    assert sandbox.needs_review() == []
+    assert [r.status for r in sandbox.history()] == [JobStatus.FAILED]
+    assert not (repo / "database").exists()

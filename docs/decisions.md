@@ -108,6 +108,8 @@ Significant decisions, newest last. Each entry: what was decided, why, and what 
 
 # Milestone 2
 
+Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `9c0e4be`. D28–D30 (M2 follow-up) are implemented and tested but not yet committed.
+
 ## D18. The job UUID is the database primary key (2026-10-26, M2 plan)
 
 - **Decision:** Keep the random UUID job ID and use it as `jobs.job_id` (TEXT primary key). It remains the graph `thread_id`.
@@ -137,31 +139,46 @@ Significant decisions, newest last. Each entry: what was decided, why, and what 
 - **Decision:** Add a read-only `jobs` command in Slice 2.4 to list recent jobs from the database.
 - **Why:** Lets the user see what happened without opening SQLite.
 
-## D23. Storage foundation details (2026-10-26, Slice 2.1)
+## D23. Storage foundation details (2026-10-26, Slice 2.1, `5237e69`)
 
 - **Decision:** Python's stdlib `sqlite3` (no new dependency). `database/app.db` sits at a fixed path under the base folder. Schema updates are append-only migrations tracked by `PRAGMA user_version`, each in its own transaction; a newer schema is refused. `synchronous=FULL`, with the default rollback journal (only one writer, because of the run lock). Explicit column lists, never `SELECT *`. Timestamps are UTC text (`%Y-%m-%dT%H:%M:%SZ`).
 - **Why:** Simple, durable, and portable. The key safety rules (no simulated `PUBLISHED`, one live job per content) are enforced by SQLite as well as by code.
 
-## D24. Database writes in the graph, and failing closed (2026-10-26, Slice 2.2)
+## D24. Database writes in the graph, and failing closed (2026-10-26, Slice 2.2, `24c73d7`)
 
 - **Decision:** A new `check_duplicate` node hashes both files and looks up a live job with the same content. `mark_publishing` commits the job row as `PUBLISHING` before the publish call. `record_result` writes the outcome (creating a `FAILED` row first for validation failures). `archive` records the destination on a best-effort basis. A database error before publishing propagates: nothing is published and the files stay put. A database error in `record_result` after a real publish propagates and skips `archive`, so the `PUBLISHING` row keeps blocking a re-publish. A file that cannot be read while hashing is treated as "still copying" (no row, retried next run). If the database rejects the `mark_publishing` insert as a duplicate, the job is treated as a duplicate and the publisher is never called.
 - **Why:** Nothing should ever be published without a durable record first, and a lost record must never lead to a second publish.
 - **Consequences:** Duplicates are by content, not name: identical bytes under two names are one post. Startup reconciliation (Slice 2.3) resolves leftover `PUBLISHING` rows.
 
-## D25. Developer tools: sandboxed tester and workflow notebook (2026-10-26, between Slices 2.2 and 2.3)
+## D25. Developer tools: sandboxed tester and workflow notebook (2026-10-26, between Slices 2.2 and 2.3, `04ce5cb`)
 
 - **Decision:** `scripts/app.py` is a stdlib-only interactive tester that runs the real `run` and `scan` commands with the **sandbox as the working (base) folder** and `AUTOPOSTER_DATA_DIR` pointing at the sandbox data. The sandbox check refuses the project folder and any overlap with the real data folder. Reset requires a `.autoposter-sandbox` marker. `notebooks/workflow.ipynb` visualises the graph and runs one sample post; it is committed with outputs cleared. A `notebook` optional extra holds `ipykernel` and `jupyter`. `open_app_db_read_only` and `JobRepository.list_recent` were added for the tester's job history and will be reused by the `jobs` command (Slice 2.4).
 - **Why:** Setting `AUTOPOSTER_DATA_DIR` alone would still have written the sandbox's job database, logs, and lock under the real base folder. The marker prevents a mistyped `--sandbox` path from being wiped.
 - **Consequences:** `draw_mermaid_png()` contacts mermaid.ink, which receives only the graph structure (node names and edges); the Mermaid text is always printed as an offline fallback.
 
-## D26. Startup reconciliation of interrupted publishes (2026-10-26, Slice 2.3)
+## D26. Startup reconciliation of interrupted publishes (2026-10-26, Slice 2.3, `d30dc71`)
 
 - **Decision:** At the start of `run` (after the lock and database open, before scanning), every `PUBLISHING` row is resolved. Simulated mode → `FAILED` ("nothing was sent"), files left in place, so the post is processed again in the same run. Real mode → `NEEDS_REVIEW`, status written first, then the files move to `failed/` with an error report, but only if both are still in `incoming/` and match the recorded hashes. A database error during reconciliation stops the run (exit 1). A recovered `NEEDS_REVIEW` makes the run exit 3. `scan` never reconciles. Retrying the archive move for a real `PUBLISHED` job is deferred to M4.
 - **Why:** The single-run lock guarantees that any `PUBLISHING` row seen at startup belongs to a dead process, so no timeouts or guesses are needed. Real-mode outcomes are unknown and must never be retried automatically. Moving the files stops them from being reported as a confusing "duplicate" on every run.
 - **Consequences:** `scripts/app.py` gained "Simulate a crash during publish" to demonstrate recovery by hand.
 
-## D27. Read-only `jobs` command, and duplicates shown by `scan` (2026-10-26, Slice 2.4)
+## D27. Read-only `jobs` command, and duplicates shown by `scan` (2026-10-26, Slice 2.4, `9c0e4be`)
 
 - **Decision:** `jobs` lists recent jobs (`--last`, `--status`) or shows one job in full (`--id`, an exact ID prefix with no wildcards), using `open_app_db_read_only`. It never creates or changes the database and takes no lock. `scan` now opens the database read-only if it exists and marks each stable, valid candidate `new` or `DUPLICATE of job …`, using the same hashing, `find_blocking_duplicate` call, and `RUN_MODE` as `run`. It also notes interrupted `PUBLISHING` jobs without reconciling them. If the database is missing or unreadable, `scan` still works and shows `new`. The tester's history now calls `main(["jobs"])`.
 - **Why:** Users can see what happened, and what `run` will do, without opening SQLite. Reusing the same check means `scan` can never disagree with `run`.
 - **Consequences:** Tests for `main` run from an isolated temporary folder, because `scan` now reads the database under the current folder.
+
+## D28. `resolve` command for NEEDS_REVIEW jobs (2026-10-26, M2 follow-up)
+
+- **Decision:** `resolve <job_id> --published <post_id> | --failed` settles a `NEEDS_REVIEW` job after a human has checked the platform. It takes the run lock (exit 4 if held), never creates the database, and accepts an ID prefix of at least 6 characters (shorter = usage error, exit 2) only if it matches exactly one job. The repository UPDATE is conditional on `status = 'NEEDS_REVIEW'`, so no other row can ever change. `--published` requires a non-blank post ID and is refused for simulated jobs. A timestamped note is appended to the job's errors. Files are never moved; the output says where they are and what to do next. Tester menu 12 drives it.
+- **Why:** `NEEDS_REVIEW` must never be retried automatically, but a human who has checked LinkedIn needs a safe, recorded way to unblock (`--failed`) or confirm (`--published`) the content.
+
+## D29. Run logging: run_id, start/finish lines, skipped-job lines (2026-10-26, M2 follow-up)
+
+- **Decision:** A per-run 8-hex `run_id` (a `ContextVar` read by a logging filter) appears on every log-file line, including lines from graph nodes; terminal lines stay short. "Run started" is logged right after taking the lock, and "Run finished" (outcome counts including `recovered`, exit code, duration) is logged on every path. `mode=` is on every job line (`mode` added to `JobState`). Duplicates and files still being copied log exactly one `Job skipped ... status=SKIPPED` line **without a job_id**, because a job_id is only logged if it is stored. The "Processing ..." header is printed before any work.
+- **Why:** One run's lines can be found together; the log never references IDs that do not exist in the database; counts make scheduled runs auditable.
+
+## D30. Safety hardening for sandbox and tests (2026-10-26, M2 follow-up)
+
+- **Decision:** `/database/` is Git-ignored as a whole. The tester refuses the real `database/` and `logs/` folders and only adopts empty or already-marked folders (previously `--sandbox src` or `--sandbox database` would have been marked, and Reset would have deleted their contents). `tests/conftest.py` runs every test from its own temporary folder with `AUTOPOSTER_DATA_DIR` unset, and fails the session if the real `database/app.db` changed.
+- **Why:** Found during the M2 status check: the earlier sandbox check guarded only the data folder.

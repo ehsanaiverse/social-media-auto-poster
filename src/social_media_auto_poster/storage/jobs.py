@@ -139,6 +139,38 @@ class JobRepository:
             raise JobNotFoundError(job_id)
         return self._require(job_id)
 
+    def resolve_needs_review(
+        self,
+        job_id: str,
+        *,
+        status: JobStatus,
+        note: str,
+        platform_post_id: str | None = None,
+    ) -> JobRecord:
+        """Manually resolve a NEEDS_REVIEW job as PUBLISHED or FAILED, appending ``note`` to its errors.
+
+        The UPDATE only matches a row that is *still* NEEDS_REVIEW, so no other
+        row (or a row whose status changed meanwhile) can ever be modified.
+        Raises ``JobNotFoundError`` if no NEEDS_REVIEW job has this ID.
+        """
+        if status not in (JobStatus.PUBLISHED, JobStatus.FAILED):
+            raise ValueError("A NEEDS_REVIEW job can only be resolved as PUBLISHED or FAILED.")
+        current = self.get(job_id)
+        if current is None or current.status is not JobStatus.NEEDS_REVIEW:
+            raise JobNotFoundError(f"No NEEDS_REVIEW job with ID {job_id}")
+        errors = json.dumps([*current.errors, note])
+        with self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE jobs SET status = ?, platform_post_id = ?, errors = ?, updated_at = ?
+                WHERE job_id = ? AND status = ?
+                """,
+                (status.value, platform_post_id, errors, self._timestamp(), job_id, JobStatus.NEEDS_REVIEW.value),
+            )
+        if cursor.rowcount != 1:
+            raise JobNotFoundError(f"No NEEDS_REVIEW job with ID {job_id}")
+        return self._require(job_id)
+
     def get(self, job_id: str) -> JobRecord | None:
         row = self._conn.execute(f"{_SELECT} WHERE job_id = ?", (job_id,)).fetchone()
         return self._to_record(row) if row else None

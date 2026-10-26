@@ -52,7 +52,7 @@ def check_stability(state: JobState, runtime: Runtime[WorkflowContext]) -> Updat
     interval = runtime.context.stability_interval_s
     unstable = [p.name for p in (candidate.media_path, candidate.caption_path) if not is_file_stable(p, interval)]
     if unstable:
-        logger.info("Files still being copied; will retry later: %s files=%s", _fields(state), unstable)
+        logger.debug("Files still being copied: %s files=%s", _skip_fields(state), unstable)
         return {"retry_later": True}
     return {}
 
@@ -74,7 +74,7 @@ def check_duplicate(state: JobState, runtime: Runtime[WorkflowContext]) -> Updat
         caption_sha256 = sha256_file(candidate.caption_path)
     except OSError as error:
         # Same meaning as an unstable file: not ready yet, try again next run.
-        logger.info("Could not read files for hashing; will retry later: %s error=%s", _fields(state), error)
+        logger.debug("Could not read files for hashing: %s error=%s", _skip_fields(state), error)
         return {"retry_later": True}
 
     context = runtime.context
@@ -86,13 +86,7 @@ def check_duplicate(state: JobState, runtime: Runtime[WorkflowContext]) -> Updat
     )
     update: Update = {"media_sha256": media_sha256, "caption_sha256": caption_sha256}
     if match is not None:
-        logger.info(
-            "Duplicate of an existing job; skipped: %s duplicate_of=%s duplicate_status=%s",
-            _fields(state),
-            match.job_id,
-            match.status,
-        )
-        update["duplicate_of"] = match.job_id
+        update["duplicate_of"] = match.job_id  # Logged once, by record_result.
     return update
 
 
@@ -126,7 +120,7 @@ def mark_publishing(state: JobState, runtime: Runtime[WorkflowContext]) -> Updat
             caption_sha256=state["caption_sha256"],
         )
         duplicate_of = match.job_id if match else "unknown"
-        logger.warning("Duplicate detected while recording; not published: %s duplicate_of=%s", _fields(state), duplicate_of)
+        logger.debug("Duplicate detected while recording: %s duplicate_of=%s", _skip_fields(state), duplicate_of)
         return {"duplicate_of": duplicate_of}
     return {"status": JobStatus.PUBLISHING.value}
 
@@ -172,15 +166,22 @@ def move_to_failed(state: JobState, runtime: Runtime[WorkflowContext]) -> Update
 
 
 def record_result(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
-    """The single place every job's outcome is recorded, in the database and the log."""
-    if not (state["retry_later"] or state["duplicate_of"]):
-        _write_outcome(state, runtime.context)
+    """The single place every job's outcome is recorded, in the database and the log.
 
+    Skipped jobs (duplicates, files still being copied) get no row, so their
+    log line carries no job_id: a job_id is only ever logged if it is stored.
+    """
     if state["retry_later"]:
-        outcome = "not processed yet (files still being copied or unreadable)"
-    elif state["duplicate_of"]:
-        outcome = f"DUPLICATE of job {state['duplicate_of']}; skipped, files left in place"
-    elif state["status"] == JobStatus.SIMULATED.value:
+        logger.info("Job skipped: %s status=SKIPPED result=WAITING", _skip_fields(state))
+        return {}
+    if state["duplicate_of"]:
+        logger.info(
+            "Job skipped: %s status=SKIPPED result=DUPLICATE duplicate_of=%s", _skip_fields(state), state["duplicate_of"]
+        )
+        return {}
+
+    _write_outcome(state, runtime.context)
+    if state["status"] == JobStatus.SIMULATED.value:
         outcome = "SIMULATED: nothing was sent to any platform"
     else:
         outcome = state["status"]
@@ -291,4 +292,13 @@ def _candidate(state: JobState) -> PostCandidate:
 
 
 def _fields(state: Mapping[str, Any]) -> str:
-    return f"job_id={state['job_id']} platform={state['platform']} stem={state['stem']} status={state['status']}"
+    """Log fields for a job that is (or is about to be) stored in the database."""
+    return (
+        f"job_id={state['job_id']} platform={state['platform']} mode={state['mode']} "
+        f"stem={state['stem']} status={state['status']}"
+    )
+
+
+def _skip_fields(state: Mapping[str, Any]) -> str:
+    """Log fields for a skipped job: no job_id, because skipped jobs are never stored."""
+    return f"platform={state['platform']} mode={state['mode']} stem={state['stem']}"

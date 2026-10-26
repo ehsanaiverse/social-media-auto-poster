@@ -21,6 +21,7 @@ class JobState(TypedDict):
 
     job_id: str
     platform: str
+    mode: str  # A PublishMode value; on every job log line.
     stem: str
     media_path: str
     caption_path: str
@@ -46,11 +47,12 @@ class WorkflowContext:
     stability_interval_s: float
 
 
-def new_job_state(job_id: str, candidate: PostCandidate) -> JobState:
+def new_job_state(job_id: str, candidate: PostCandidate, mode: PublishMode) -> JobState:
     """The starting state for a newly discovered candidate."""
     return JobState(
         job_id=job_id,
         platform=candidate.platform.value,
+        mode=mode.value,
         stem=candidate.stem,
         media_path=str(candidate.media_path),
         caption_path=str(candidate.caption_path),
