@@ -23,7 +23,10 @@ from social_media_auto_poster.ingestion.stability import is_file_stable
 from social_media_auto_poster.ingestion.validation import validate_candidate
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, ScanResult
 from social_media_auto_poster.platforms.simulator import Simulator
+from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.services.run_lock import RunLockHeldError, single_run_lock
+from social_media_auto_poster.storage.db import connect as connect_db
+from social_media_auto_poster.storage.repository import JobRepository
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +198,9 @@ def _process(settings: Settings, interval_s: float) -> int:
 
     # Milestone 1: the publisher is always the simulator. There is no real publisher to choose.
     context = WorkflowContext(publisher=Simulator(), settings=settings, stability_interval_s=interval_s)
-    lines = [_run_one(candidate, context, settings) for candidate in result.candidates]
+    conn = connect_db(settings.app_db)
+    repo = JobRepository(conn)
+    lines = [_run_one(candidate, context, settings, repo) for candidate in result.candidates]
 
     print(f"Processing LinkedIn incoming: {incoming}")
     if lines:
@@ -212,12 +217,23 @@ def _process(settings: Settings, interval_s: float) -> int:
     return EXIT_JOB_PROBLEMS if any(line.problem for line in lines) else EXIT_OK
 
 
-def _run_one(candidate: PostCandidate, context: WorkflowContext, settings: Settings) -> _JobLine:
+def _run_one(candidate: PostCandidate, context: WorkflowContext, settings: Settings, repo: JobRepository) -> _JobLine:
+    media_hash = sha256_file(candidate.media_path)
+    caption_hash = sha256_file(candidate.caption_path)
+    existing = repo.find_by_hashes(candidate.platform, media_hash, caption_hash)
+    if existing is not None:
+        return _JobLine(candidate.stem, "DUPLICATE", "already processed", (), problem=False)
+    job_id = repo.create(candidate.platform, candidate.stem, candidate.media_path, candidate.caption_path,
+                         media_hash, caption_hash)
     try:
         final = run_job(candidate, context)
-    except Exception:  # A bug, not a publish outcome (the graph handles those). Keep going.
+    except Exception:
         logger.exception("Unexpected error; job abandoned: platform=%s stem=%s", candidate.platform, candidate.stem)
+        repo.update_status(job_id, JobStatus.NEEDS_REVIEW, error="unexpected error")
         return _JobLine(candidate.stem, "ERROR (unexpected)", "see the log for details", (), problem=True)
+    status = JobStatus(final["status"])
+    repo.update_status(job_id, status, error="; ".join(final["errors"]) or None,
+                       platform_post_id=final.get("platform_post_id"))
     return _describe(final, settings)
 
 
