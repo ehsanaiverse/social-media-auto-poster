@@ -51,3 +51,14 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+
+
+.env
+*.db
+*.db-shm
+*.db-wal
+sandbox/
+logs/
+.vevn/
+.venv/

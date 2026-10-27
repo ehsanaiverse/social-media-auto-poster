@@ -1,12 +1,16 @@
 """The per-post workflow graph. One graph run per discovered candidate.
 
-Routes:
-- not stable yet:     check_stability -> record_result -> END
-- invalid:            ... validate -> move_to_failed -> record_result -> END
-- FAILED/NEEDS_REVIEW: ... publish -> move_to_failed -> record_result -> END
-- SIMULATED:          ... publish -> record_result -> END  (files stay in incoming/)
-- real PUBLISHED:     ... publish -> record_result -> archive -> END
+Main path: check_stability -> validate -> check_duplicate -> mark_publishing -> publish -> record_result
 
+Routes:
+- not stable / unreadable: check_stability or check_duplicate -> record_result -> END (no DB row)
+- invalid:                 ... validate -> move_to_failed -> record_result -> END
+- duplicate:               ... check_duplicate (or mark_publishing) -> record_result -> END (no DB row)
+- FAILED/NEEDS_REVIEW:     ... publish -> move_to_failed -> record_result -> END
+- SIMULATED:               ... publish -> record_result -> END  (files stay in incoming/)
+- real PUBLISHED:          ... publish -> record_result -> archive -> END
+
+The job row is committed as PUBLISHING in mark_publishing, before publish.
 Only a confirmed real ``PUBLISHED`` result reaches ``archive``, and only after
 ``record_result`` has recorded it.
 """
@@ -29,6 +33,7 @@ def build_workflow() -> CompiledStateGraph:
 
     graph.add_node(nodes.CHECK_STABILITY, nodes.check_stability)
     graph.add_node(nodes.VALIDATE, nodes.validate)
+    graph.add_node(nodes.CHECK_DUPLICATE, nodes.check_duplicate)
     graph.add_node(nodes.MARK_PUBLISHING, nodes.mark_publishing)
     graph.add_node(nodes.PUBLISH, nodes.publish)
     graph.add_node(nodes.MOVE_TO_FAILED, nodes.move_to_failed)
@@ -44,9 +49,18 @@ def build_workflow() -> CompiledStateGraph:
     graph.add_conditional_edges(
         nodes.VALIDATE,
         nodes.route_after_validate,
-        {nodes.MARK_PUBLISHING: nodes.MARK_PUBLISHING, nodes.MOVE_TO_FAILED: nodes.MOVE_TO_FAILED},
+        {nodes.CHECK_DUPLICATE: nodes.CHECK_DUPLICATE, nodes.MOVE_TO_FAILED: nodes.MOVE_TO_FAILED},
     )
-    graph.add_edge(nodes.MARK_PUBLISHING, nodes.PUBLISH)
+    graph.add_conditional_edges(
+        nodes.CHECK_DUPLICATE,
+        nodes.route_after_duplicate_check,
+        {nodes.MARK_PUBLISHING: nodes.MARK_PUBLISHING, nodes.RECORD_RESULT: nodes.RECORD_RESULT},
+    )
+    graph.add_conditional_edges(
+        nodes.MARK_PUBLISHING,
+        nodes.route_after_mark_publishing,
+        {nodes.PUBLISH: nodes.PUBLISH, nodes.RECORD_RESULT: nodes.RECORD_RESULT},
+    )
     graph.add_conditional_edges(
         nodes.PUBLISH,
         nodes.route_after_publish,
@@ -66,13 +80,14 @@ def build_workflow() -> CompiledStateGraph:
 def run_job(candidate: PostCandidate, context: WorkflowContext) -> JobState:
     """Run one candidate through the graph and return its final state.
 
-    The job ID is a random UUID in Milestone 1; Milestone 2 replaces it with
-    the database job ID. It is also the graph thread ID, which matters once a
-    checkpointer is added in Milestone 3.
+    The job ID is a random UUID. It becomes the database job ID if the job is
+    recorded (duplicates and files still being copied are never recorded), and
+    it is the graph thread ID, which matters once a checkpointer is added in
+    Milestone 3.
     """
     job_id = uuid4().hex
     return build_workflow().invoke(
-        new_job_state(job_id, candidate),
+        new_job_state(job_id, candidate, context.mode),
         config={"configurable": {"thread_id": job_id}},
         context=context,
     )

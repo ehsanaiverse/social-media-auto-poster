@@ -1,7 +1,16 @@
 """Graph nodes and routing functions.
 
-Nodes are thin: each calls one service and returns a state update. Every log
-line carries job ID, platform, stem, and status.
+Nodes are thin: each calls one or two services and returns a state update.
+Every log line carries job ID, platform, stem, and status.
+
+Database rules (Milestone 2):
+- The job row is created with status PUBLISHING and committed *before* the
+  publish call. If that write fails, the error propagates and nothing is
+  published (fail closed).
+- ``record_result`` writes the final outcome. If that write fails after a real
+  publish, the error propagates, ``archive`` never runs, and the PUBLISHING row
+  keeps blocking a second publish until startup reconciliation handles it.
+- Duplicates and files still being copied get no row.
 """
 
 import logging
@@ -16,6 +25,8 @@ from social_media_auto_poster.ingestion.stability import is_file_stable
 from social_media_auto_poster.ingestion.validation import validate_candidate
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate
 from social_media_auto_poster.services.archive import ArchiveError, archive_post, write_error_report
+from social_media_auto_poster.services.hashing import sha256_file
+from social_media_auto_poster.storage.jobs import DuplicateJobError
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +35,7 @@ Update = dict[str, Any]
 # Node names, shared with workflow.py and the routing functions.
 CHECK_STABILITY = "check_stability"
 VALIDATE = "validate"
+CHECK_DUPLICATE = "check_duplicate"
 MARK_PUBLISHING = "mark_publishing"
 PUBLISH = "publish"
 MOVE_TO_FAILED = "move_to_failed"
@@ -40,7 +52,7 @@ def check_stability(state: JobState, runtime: Runtime[WorkflowContext]) -> Updat
     interval = runtime.context.stability_interval_s
     unstable = [p.name for p in (candidate.media_path, candidate.caption_path) if not is_file_stable(p, interval)]
     if unstable:
-        logger.info("Files still being copied; will retry later: %s files=%s", _fields(state), unstable)
+        logger.debug("Files still being copied: %s files=%s", _skip_fields(state), unstable)
         return {"retry_later": True}
     return {}
 
@@ -54,9 +66,62 @@ def validate(state: JobState) -> Update:
     return update
 
 
-def mark_publishing(state: JobState) -> Update:
-    # A separate node so that, once checkpoints exist (M3), PUBLISHING is saved
-    # before the publish call. A crash mid-publish then shows up as PUBLISHING.
+def check_duplicate(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
+    """Hash both files and look for a live job that already handles this content."""
+    candidate = _candidate(state)
+    try:
+        media_sha256 = sha256_file(candidate.media_path)
+        caption_sha256 = sha256_file(candidate.caption_path)
+    except OSError as error:
+        # Same meaning as an unstable file: not ready yet, try again next run.
+        logger.debug("Could not read files for hashing: %s error=%s", _skip_fields(state), error)
+        return {"retry_later": True}
+
+    context = runtime.context
+    match = context.repository.find_blocking_duplicate(
+        platform=candidate.platform,
+        mode=context.mode,
+        media_sha256=media_sha256,
+        caption_sha256=caption_sha256,
+    )
+    update: Update = {"media_sha256": media_sha256, "caption_sha256": caption_sha256}
+    if match is not None:
+        update["duplicate_of"] = match.job_id  # Logged once, by record_result.
+    return update
+
+
+def mark_publishing(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
+    """Create the job row as PUBLISHING and commit it before anything is published.
+
+    A separate node so that, once checkpoints exist (M3), PUBLISHING is also
+    saved in graph state before the publish call.
+    """
+    context = runtime.context
+    candidate = _candidate(state)
+    try:
+        context.repository.create(
+            job_id=state["job_id"],
+            platform=candidate.platform,
+            mode=context.mode,
+            stem=candidate.stem,
+            media_name=candidate.media_path.name,
+            caption_name=candidate.caption_path.name,
+            media_sha256=state["media_sha256"],
+            caption_sha256=state["caption_sha256"],
+            status=JobStatus.PUBLISHING,
+            errors=tuple(state["errors"]),
+        )
+    except DuplicateJobError:
+        # Another process recorded the same content in the meantime. Never publish twice.
+        match = context.repository.find_blocking_duplicate(
+            platform=candidate.platform,
+            mode=context.mode,
+            media_sha256=state["media_sha256"],
+            caption_sha256=state["caption_sha256"],
+        )
+        duplicate_of = match.job_id if match else "unknown"
+        logger.debug("Duplicate detected while recording: %s duplicate_of=%s", _skip_fields(state), duplicate_of)
+        return {"duplicate_of": duplicate_of}
     return {"status": JobStatus.PUBLISHING.value}
 
 
@@ -100,11 +165,23 @@ def move_to_failed(state: JobState, runtime: Runtime[WorkflowContext]) -> Update
     return {"destination": str(folder)}
 
 
-def record_result(state: JobState) -> Update:
-    """The single place every job's outcome is recorded. In Milestone 2 this also writes the database."""
+def record_result(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
+    """The single place every job's outcome is recorded, in the database and the log.
+
+    Skipped jobs (duplicates, files still being copied) get no row, so their
+    log line carries no job_id: a job_id is only ever logged if it is stored.
+    """
     if state["retry_later"]:
-        outcome = "not processed yet (files still being copied)"
-    elif state["status"] == JobStatus.SIMULATED.value:
+        logger.info("Job skipped: %s status=SKIPPED result=WAITING", _skip_fields(state))
+        return {}
+    if state["duplicate_of"]:
+        logger.info(
+            "Job skipped: %s status=SKIPPED result=DUPLICATE duplicate_of=%s", _skip_fields(state), state["duplicate_of"]
+        )
+        return {}
+
+    _write_outcome(state, runtime.context)
+    if state["status"] == JobStatus.SIMULATED.value:
         outcome = "SIMULATED: nothing was sent to any platform"
     else:
         outcome = state["status"]
@@ -126,9 +203,14 @@ def archive(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
     try:
         folder = archive_post(candidate, runtime.context.settings.archive_dir(candidate.platform))
     except (OSError, ArchiveError) as error:
+        message = f"published, but could not move files to archive/: {error}"
         logger.error("Published, but could not archive files; left in place: %s error=%s", _fields(state), error)
-        return {"errors": [*state["errors"], f"published, but could not move files to archive/: {error}"]}
+        errors = [*state["errors"], message]
+        _update_after_publish(state, runtime.context, errors=tuple(errors))
+        return {"errors": errors}
+
     logger.info("Archived: %s folder=%s", _fields(state), folder)
+    _update_after_publish(state, runtime.context, destination=str(folder))
     return {"destination": str(folder)}
 
 
@@ -140,7 +222,15 @@ def route_after_stability(state: JobState) -> str:
 
 
 def route_after_validate(state: JobState) -> str:
-    return MARK_PUBLISHING if state["status"] == JobStatus.VALIDATED.value else MOVE_TO_FAILED
+    return CHECK_DUPLICATE if state["status"] == JobStatus.VALIDATED.value else MOVE_TO_FAILED
+
+
+def route_after_duplicate_check(state: JobState) -> str:
+    return RECORD_RESULT if state["retry_later"] or state["duplicate_of"] else MARK_PUBLISHING
+
+
+def route_after_mark_publishing(state: JobState) -> str:
+    return RECORD_RESULT if state["duplicate_of"] else PUBLISH
 
 
 def route_after_publish(state: JobState) -> str:
@@ -158,6 +248,40 @@ def route_after_record(state: JobState) -> str:
 # Helpers
 
 
+def _write_outcome(state: JobState, context: WorkflowContext) -> None:
+    """Create the row if it does not exist yet (validation failures), then store the outcome."""
+    repository = context.repository
+    status = JobStatus(state["status"])
+    if repository.get(state["job_id"]) is None:
+        candidate = _candidate(state)
+        repository.create(
+            job_id=state["job_id"],
+            platform=candidate.platform,
+            mode=context.mode,
+            stem=candidate.stem,
+            media_name=candidate.media_path.name,
+            caption_name=candidate.caption_path.name,
+            media_sha256=state["media_sha256"],
+            caption_sha256=state["caption_sha256"],
+            status=status,
+        )
+    repository.update(
+        state["job_id"],
+        status=status,
+        platform_post_id=state["platform_post_id"],
+        destination=state["destination"],
+        errors=tuple(state["errors"]),
+    )
+
+
+def _update_after_publish(state: JobState, context: WorkflowContext, **fields: Any) -> None:
+    """Best-effort update once PUBLISHED is already recorded: a failure is logged, never raised."""
+    try:
+        context.repository.update(state["job_id"], **fields)
+    except Exception:  # Deliberately broad: the status is already safe in the database.
+        logger.exception("Could not record archive details: %s fields=%s", _fields(state), sorted(fields))
+
+
 def _candidate(state: JobState) -> PostCandidate:
     return PostCandidate(
         platform=Platform(state["platform"]),
@@ -168,4 +292,13 @@ def _candidate(state: JobState) -> PostCandidate:
 
 
 def _fields(state: Mapping[str, Any]) -> str:
-    return f"job_id={state['job_id']} platform={state['platform']} stem={state['stem']} status={state['status']}"
+    """Log fields for a job that is (or is about to be) stored in the database."""
+    return (
+        f"job_id={state['job_id']} platform={state['platform']} mode={state['mode']} "
+        f"stem={state['stem']} status={state['status']}"
+    )
+
+
+def _skip_fields(state: Mapping[str, Any]) -> str:
+    """Log fields for a skipped job: no job_id, because skipped jobs are never stored."""
+    return f"platform={state['platform']} mode={state['mode']} stem={state['stem']}"
