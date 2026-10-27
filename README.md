@@ -14,7 +14,7 @@ The Python application lives in **`backend/`**; its setup, commands, tests, and 
 
 ## Non-goals for this scaffold
 
-There is no continuous folder watcher, database/repository, scheduler, OAuth flow, or live publishing integration yet. The simulator does not contact a platform and its result is not confirmation of publication. This scaffold does not claim API access is configured.
+There is no continuous folder watcher, scheduler, OAuth flow, or live publishing integration yet. The simulator does not contact a platform and its result is not confirmation of publication. This scaffold does not claim API access is configured.
 
 ## Current status
 
@@ -30,12 +30,9 @@ There is no continuous folder watcher, database/repository, scheduler, OAuth flo
 - A service that moves a post's two files together into `archive/` or `failed/` (`services/archive.py`).
 - A LangGraph workflow (`graph/`) that takes one post through stability → validation → duplicate check → simulated publish → record, moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`.
 - A job database (`backend\database\app.db`, SQLite, via `storage/`): every processed post is recorded with SHA-256 hashes of its image and caption, so the same content is never processed twice.
-- Two commands (`main.py`): `run` processes every complete post once, and `scan` is a read-only report. See "How to use" below.
-- Unit and integration tests under `backend/tests/`. Decisions are recorded in `docs/decisions.md`.
-
 - Crash recovery: at the start of every `run`, jobs left half-published by a crash are resolved (see `RECOVERED` below).
-
-- Four commands (`main.py`): `run`, the read-only `scan` (with duplicate check) and `jobs` (history), and `resolve` for jobs that need review.
+- Four commands (`main.py`): `run` processes every complete post once, the read-only `scan` (with duplicate check) and `jobs` (history), and `resolve` for jobs that need review. See "How to use" below.
+- Unit and integration tests under `backend/tests/`. Decisions are recorded in `docs/decisions.md`.
 
 Platform order:
 
