@@ -1,10 +1,20 @@
-"""Checks that the Slice 1 layout migration left the package importable."""
+"""Checks that the package is importable from its backend/ layout (Slice 1 migration, D32 move)."""
 
 import importlib
+from pathlib import Path
 
 import pytest
 
+import social_media_auto_poster
 from social_media_auto_poster.platforms.simulator import Simulator
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+
+def test_package_is_installed_from_backend_src():
+    package_dir = Path(social_media_auto_poster.__file__).resolve().parent
+    assert package_dir == BACKEND_DIR / "src" / "social_media_auto_poster"
+    assert (BACKEND_DIR / "pyproject.toml").is_file()
 
 
 @pytest.mark.parametrize(
