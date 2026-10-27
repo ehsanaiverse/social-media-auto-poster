@@ -5,8 +5,8 @@
   application's default base folder is ``backend/`` whatever the current folder,
   so without this override a test could read or write the project's real
   ``.env``, ``data/``, ``database/``, ``logs/``, or lock file.
-- A session-wide check fails the run if the real ``database/app.db`` changed
-  (or was created) while the tests ran.
+- A session-wide check fails the run if the real ``database/app.db`` or
+  ``database/langgraph_checkpoints.db`` changed (or was created) while the tests ran.
 """
 
 import hashlib
@@ -16,6 +16,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REAL_DB = REPO_ROOT / "database" / "app.db"
+REAL_CHECKPOINTS = REPO_ROOT / "database" / "langgraph_checkpoints.db"
 
 
 def _fingerprint(path: Path) -> str | None:
@@ -32,6 +33,7 @@ def _run_from_isolated_folder(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse=True, scope="session")
 def _real_database_is_never_touched():
-    before = _fingerprint(REAL_DB)
+    before = {path: _fingerprint(path) for path in (REAL_DB, REAL_CHECKPOINTS)}
     yield
-    assert _fingerprint(REAL_DB) == before, f"A test changed or created the real job database: {REAL_DB}"
+    for path, fingerprint in before.items():
+        assert _fingerprint(path) == fingerprint, f"A test changed or created a real database: {path}"

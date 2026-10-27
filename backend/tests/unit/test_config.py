@@ -107,6 +107,7 @@ def test_default_base_dir_is_backend_whatever_the_current_folder(tmp_path, monke
     assert settings.base_dir == BACKEND_DIR
     assert settings.data_dir == BACKEND_DIR / "data"
     assert settings.app_db_path == BACKEND_DIR / "database" / "app.db"
+    assert settings.checkpoint_db_path == BACKEND_DIR / "database" / "langgraph_checkpoints.db"
     assert settings.log_file == BACKEND_DIR / "logs" / "autoposter.log"
     assert settings.lock_file == BACKEND_DIR / "autoposter.lock"
     assert not (tmp_path / "data").exists()  # Loading settings creates nothing.

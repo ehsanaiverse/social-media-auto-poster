@@ -58,6 +58,11 @@ class Settings:
     def app_db_path(self) -> Path:
         return self.base_dir / "database" / "app.db"
 
+    @property
+    def checkpoint_db_path(self) -> Path:
+        """LangGraph execution state only; kept apart from the business records in ``app.db``."""
+        return self.base_dir / "database" / "langgraph_checkpoints.db"
+
 
 class ProjectDirNotFoundError(RuntimeError):
     """The package is not installed from a backend/ folder (see ``default_base_dir``)."""
