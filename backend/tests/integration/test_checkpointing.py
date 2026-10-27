@@ -3,7 +3,10 @@
 Temporary folders only; nothing contacts a platform.
 """
 
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,7 @@ from social_media_auto_poster.graph.state import JobState, WorkflowContext, new_
 from social_media_auto_poster.graph.workflow import build_workflow, run_job
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, PublishResult
 from social_media_auto_poster.platforms.simulator import Simulator
+from social_media_auto_poster.services.archive import ERROR_REPORT_NAME, JOB_MARKER_NAME
 from social_media_auto_poster.storage.database import open_app_db
 from social_media_auto_poster.storage.jobs import JobRepository
 
@@ -423,4 +427,159 @@ def test_a_failing_resume_keeps_the_thread_and_the_next_run_finishes_it(base_set
     assert run() == 0
 
     assert stored(base_settings, job_id).status is JobStatus.PUBLISHED
+    assert threads_left(base_settings) == []
+
+
+# Crashes while moving files are finished by the resume
+
+
+def crash_while(settings: Settings, candidate: PostCandidate, publisher, *, monkeypatch, setup) -> str:
+    """Run one job with ``setup(patch)`` applied; it must "kill the process". Returns the job ID."""
+    with monkeypatch.context() as patch:
+        setup(patch)
+        conn = open_app_db(settings.app_db_path)
+        try:
+            with open_checkpointer(settings.checkpoint_db_path, app_db_path=settings.app_db_path) as saver:
+                with pytest.raises(SystemExit):
+                    run_job(candidate, make_context(settings, JobRepository(conn), saver, publisher))
+                [thread] = saved_thread_ids(saver)
+        finally:
+            conn.close()
+    return thread
+
+
+def die_when_moving(source: Path):
+    """os.replace that "kills the process" when moving ``source``: no rollback, like a real crash."""
+    real_replace = os.replace
+
+    def replace(src, dst):
+        if Path(src) == source:
+            raise SystemExit("process killed mid-move")
+        real_replace(src, dst)
+
+    return replace
+
+
+def die(*args, **kwargs):
+    raise SystemExit("process killed")
+
+
+def files_in(folder: Path) -> list[str]:
+    return sorted(p.name for p in folder.iterdir())
+
+
+def test_archive_crash_between_image_and_caption_is_finished(base_settings, monkeypatch, capsys):
+    candidate = make_candidate(base_settings)
+    job_id = crash_while(
+        base_settings, candidate, FakeRealPublisher(), monkeypatch=monkeypatch,
+        setup=lambda patch: patch.setattr(os, "replace", die_when_moving(candidate.caption_path)),
+    )
+    [folder] = base_settings.archive_dir(LINKEDIN).iterdir()
+    assert files_in(folder) == [JOB_MARKER_NAME, "launch.jpg"] and candidate.caption_path.exists()  # Split.
+    assert stored(base_settings, job_id).status is JobStatus.PUBLISHED  # Recorded before the move.
+
+    assert run() == 0
+
+    assert "RESUMED (1)" in capsys.readouterr().out
+    assert files_in(folder) == [JOB_MARKER_NAME, "launch.jpg", "launch.txt"]
+    assert not candidate.media_path.exists() and not candidate.caption_path.exists()
+    record = stored(base_settings, job_id)
+    assert record.status is JobStatus.PUBLISHED and record.destination == str(folder) and record.errors == ()
+    assert threads_left(base_settings) == []
+
+
+def test_archive_crash_after_both_moves_before_the_checkpoint_is_finished(base_settings, monkeypatch):
+    candidate = make_candidate(base_settings)
+    job_id = crash_while(
+        base_settings, candidate, FakeRealPublisher(), monkeypatch=monkeypatch,
+        setup=lambda patch: patch.setattr(nodes, "_update_after_publish", die),
+    )
+    [folder] = base_settings.archive_dir(LINKEDIN).iterdir()
+    assert files_in(folder) == [JOB_MARKER_NAME, "launch.jpg", "launch.txt"]
+    assert stored(base_settings, job_id).destination is None  # Not recorded before the crash.
+
+    assert run() == 0
+
+    assert [p.name for p in base_settings.archive_dir(LINKEDIN).iterdir()] == [folder.name]  # No second folder.
+    record = stored(base_settings, job_id)
+    assert record.status is JobStatus.PUBLISHED and record.destination == str(folder) and record.errors == ()
+
+
+def test_archive_split_that_cannot_be_finished_stays_published(base_settings, monkeypatch, capsys):
+    candidate = make_candidate(base_settings)
+    job_id = crash_while(
+        base_settings, candidate, FakeRealPublisher(), monkeypatch=monkeypatch,
+        setup=lambda patch: patch.setattr(os, "replace", die_when_moving(candidate.caption_path)),
+    )
+    candidate.caption_path.unlink()  # Someone deleted the caption before the next run.
+
+    assert run() == 3
+
+    out = capsys.readouterr().out
+    assert "manual repair" in out
+    record = stored(base_settings, job_id)
+    assert record.status is JobStatus.PUBLISHED  # Never changed to FAILED.
+    assert record.platform_post_id == "urn:li:share:123"
+    assert any("published, but could not move files to archive/" in e for e in record.errors)
+    assert threads_left(base_settings) == []
+
+
+def test_failed_post_crash_between_image_and_caption_is_finished(base_settings, monkeypatch, capsys):
+    candidate = make_candidate(base_settings, caption=b"   ")  # Invalid: whitespace-only caption.
+    job_id = crash_while(
+        base_settings, candidate, Simulator(), monkeypatch=monkeypatch,
+        setup=lambda patch: patch.setattr(os, "replace", die_when_moving(candidate.caption_path)),
+    )
+    assert stored(base_settings, job_id) is None  # Validation failures are recorded after the move.
+
+    assert run() == 3
+
+    assert "RESUMED (1)" in capsys.readouterr().out
+    [folder] = base_settings.failed_dir(LINKEDIN).iterdir()
+    assert files_in(folder) == [JOB_MARKER_NAME, ERROR_REPORT_NAME, "launch.jpg", "launch.txt"]
+    record = stored(base_settings, job_id)
+    assert record.status is JobStatus.FAILED and record.destination == str(folder)
+    assert threads_left(base_settings) == []
+
+
+def test_failed_post_crash_after_both_moves_before_the_checkpoint_is_finished(base_settings, monkeypatch):
+    candidate = make_candidate(base_settings, caption=b"   ")
+    job_id = crash_while(
+        base_settings, candidate, Simulator(), monkeypatch=monkeypatch,
+        setup=lambda patch: patch.setattr(nodes, "write_error_report", die),
+    )
+    [folder] = base_settings.failed_dir(LINKEDIN).iterdir()
+    assert files_in(folder) == [JOB_MARKER_NAME, "launch.jpg", "launch.txt"]  # Moved; no report yet.
+
+    assert run() == 3
+
+    assert [p.name for p in base_settings.failed_dir(LINKEDIN).iterdir()] == [folder.name]
+    assert files_in(folder) == [JOB_MARKER_NAME, ERROR_REPORT_NAME, "launch.jpg", "launch.txt"]
+    assert "caption is empty" in (folder / ERROR_REPORT_NAME).read_text(encoding="utf-8")
+    assert stored(base_settings, job_id).status is JobStatus.FAILED
+
+
+# Real process death
+
+
+def test_a_killed_process_is_resumed_by_the_next_run(base_settings, capsys):
+    make_candidate(base_settings)
+    # A separate Python process runs the real `run` command and dies (os._exit: no cleanup at all)
+    # as soon as record_result starts, i.e. after the simulated publish returned.
+    script = (
+        "import os, sys\n"
+        "from social_media_auto_poster import main as cli\n"
+        "from social_media_auto_poster.graph import nodes\n"
+        "nodes.record_result = lambda state, runtime: os._exit(70)\n"
+        "sys.exit(cli.main(['run', '--interval', '0']))\n"
+    )
+    killed = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
+    assert killed.returncode == 70, killed.stderr
+    [job_id] = threads_left(base_settings)
+    assert stored(base_settings, job_id).status is JobStatus.PUBLISHING
+
+    assert run() == 0
+
+    assert "RESUMED (1)" in capsys.readouterr().out
+    assert stored(base_settings, job_id).status is JobStatus.SIMULATED
     assert threads_left(base_settings) == []
