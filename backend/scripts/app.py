@@ -21,11 +21,18 @@ import zlib
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 from uuid import uuid4
 
 from social_media_auto_poster import main as cli
 from social_media_auto_poster.config import BASE_DIR_VAR, DATA_DIR_VAR, Settings, load_settings
-from social_media_auto_poster.models import JobStatus, Platform, PublishMode
+from social_media_auto_poster.graph import nodes
+from social_media_auto_poster.graph.checkpoints import open_checkpointer, saved_thread_ids
+from social_media_auto_poster.graph.state import WorkflowContext
+from social_media_auto_poster.graph.workflow import run_job
+from social_media_auto_poster.ingestion.validation import validate_candidate
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, PublishResult
+from social_media_auto_poster.platforms.simulator import Simulator
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
 from social_media_auto_poster.storage.jobs import DuplicateJobError, JobRecord, JobRepository
@@ -171,6 +178,21 @@ def check_sandbox(sandbox: Path, *, repo_root: Path, real_data: Path) -> Path:
     return sandbox
 
 
+class _SimulatedCrash(Exception):
+    """Stops a job inside the tester, as if the process had died."""
+
+
+def _killed_before_recording(state, runtime):
+    raise _SimulatedCrash("crashed after publish, before the result was recorded")
+
+
+class _SandboxRealPublisher:
+    """Sandbox only: pretends a real publish succeeded. Sends nothing anywhere."""
+
+    def publish(self, post: PostCandidate, /) -> PublishResult:
+        return PublishResult(success=True, simulated=False, platform_post_id=f"urn:li:share:sandbox-{uuid4().hex[:8]}")
+
+
 class Sandbox:
     """A self-contained base folder: data/, database/, logs/, and the run lock all live inside it."""
 
@@ -260,14 +282,8 @@ class Sandbox:
 
         Returns the new job ID. The next Run's startup recovery resolves it.
         """
-        stem = check_stem(stem)
-        media = next(
-            (self.incoming / f"{stem}{ext}" for ext in (".jpg", ".jpeg", ".png") if (self.incoming / f"{stem}{ext}").is_file()),
-            None,
-        )
-        caption = self.incoming / f"{stem}.txt"
-        if media is None or not caption.is_file():
-            raise ValueError(f"No complete post named '{stem}' in incoming/ (needs an image and {stem}.txt).")
+        post = self._complete_post(stem)
+        media, caption = post.media_path, post.caption_path
         conn = open_app_db(self.settings.app_db_path)
         try:
             job_id = uuid4().hex
@@ -285,6 +301,49 @@ class Sandbox:
         finally:
             conn.close()
         return job_id
+
+    def simulate_crash_after_publish(self, stem: str, mode: PublishMode) -> str:
+        """Run the post ``stem`` through the real graph and "kill" it right after publish returned.
+
+        Leaves a PUBLISHING row and a saved checkpoint whose next step is record_result,
+        so the next Run resumes the job from its checkpoint. Real mode uses a sandbox-only
+        fake publisher with a made-up post ID: nothing is sent anywhere. Returns the job ID.
+        """
+        post = self._complete_post(stem)
+        if not validate_candidate(post).is_valid:
+            raise ValueError(f"'{post.stem}' is not a valid post; add a valid one first.")
+        conn = open_app_db(self.settings.app_db_path)
+        try:
+            repository = JobRepository(conn)
+            if repository.find_blocking_duplicate(
+                platform=PLATFORM, mode=mode,
+                media_sha256=sha256_file(post.media_path), caption_sha256=sha256_file(post.caption_path),
+            ):
+                raise ValueError(f"'{post.stem}' is already recorded in {mode} mode; add a new post first.")
+            publisher = Simulator() if mode is PublishMode.SIMULATED else _SandboxRealPublisher()
+            with open_checkpointer(self.settings.checkpoint_db_path, app_db_path=self.settings.app_db_path) as saver:
+                before = set(saved_thread_ids(saver))
+                context = WorkflowContext(publisher, mode, repository, self.settings, 0, checkpointer=saver)
+                with mock.patch.object(nodes, "record_result", _killed_before_recording):
+                    try:
+                        run_job(post, context)
+                    except _SimulatedCrash:
+                        pass
+                [job_id] = set(saved_thread_ids(saver)) - before
+        finally:
+            conn.close()
+        return job_id
+
+    def _complete_post(self, stem: str) -> PostCandidate:
+        stem = check_stem(stem)
+        media = next(
+            (self.incoming / f"{stem}{ext}" for ext in (".jpg", ".jpeg", ".png") if (self.incoming / f"{stem}{ext}").is_file()),
+            None,
+        )
+        caption = self.incoming / f"{stem}.txt"
+        if media is None or not caption.is_file():
+            raise ValueError(f"No complete post named '{stem}' in incoming/ (needs an image and {stem}.txt).")
+        return PostCandidate(PLATFORM, stem, media, caption)
 
     def reset(self) -> None:
         """Delete everything in the sandbox. Refuses unless the sandbox marker file is present."""
@@ -343,6 +402,16 @@ def _menu_actions(sandbox: Sandbox) -> dict[str, tuple[str, Callable[[], object]
         kind = _choose("Kind of invalid post", INVALID_KINDS)
         _print_added(add_invalid_post(incoming, _ask("Post name", f"bad-{kind}"), kind))
 
+    def crash_after_publish():
+        stem = _ask("Name of a complete, new post in incoming/", "product-launch")
+        mode = _choose(
+            "Mode of the interrupted job",
+            {PublishMode.SIMULATED: "simulated (resumes as SIMULATED)",
+             PublishMode.REAL: "real, with a fake sandbox publisher (resumes as PUBLISHED and is archived)"},
+        )
+        job_id = sandbox.simulate_crash_after_publish(stem, PublishMode(mode))
+        print(f"Job {job_id[:8]} published, then 'crashed' before recording it. Choose 'Run' to see it resumed.")
+
     def crash():
         stem = _ask("Name of a complete post in incoming/", "product-launch")
         mode = _choose(
@@ -393,6 +462,7 @@ def _menu_actions(sandbox: Sandbox) -> dict[str, tuple[str, Callable[[], object]
         "10": ("Reset sandbox", reset),
         "11": ("Simulate a crash during publish", crash),
         "12": ("Resolve a NEEDS_REVIEW job", resolve),
+        "13": ("Simulate a crash after publish (resume)", crash_after_publish),
     }
 
 

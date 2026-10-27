@@ -300,3 +300,42 @@ def test_resolve_a_needs_review_job_through_the_tester(layout, monkeypatch, caps
     assert sandbox.needs_review() == []
     assert [r.status for r in sandbox.history()] == [JobStatus.FAILED]
     assert not (repo / "database").exists()
+
+
+# Crash after publish (resumed from the checkpoint)
+
+
+@pytest.mark.parametrize(
+    ("mode", "status"), [(PublishMode.SIMULATED, JobStatus.SIMULATED), (PublishMode.REAL, JobStatus.PUBLISHED)]
+)
+def test_crash_after_publish_is_resumed_by_the_next_run(layout, monkeypatch, capsys, mode, status):
+    repo, _ = layout
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv(BASE_DIR_VAR, str(repo))
+    monkeypatch.delenv(DATA_DIR_VAR, raising=False)
+    sandbox = dev_app.Sandbox(repo / "sandbox")
+    sandbox.prepare()
+    dev_app.add_valid_post(sandbox.incoming, "launch", "Hello")
+
+    job_id = sandbox.simulate_crash_after_publish("launch", mode)
+    assert [(r.job_id, r.status) for r in sandbox.history()] == [(job_id, JobStatus.PUBLISHING)]
+
+    assert sandbox.run() == 0
+
+    assert "RESUMED (1)" in capsys.readouterr().out
+    record = next(r for r in sandbox.history() if r.job_id == job_id)
+    assert record.status is status
+    if mode is PublishMode.REAL:
+        assert record.platform_post_id.startswith("urn:li:share:sandbox-")
+        assert sandbox.folder_contents()["archive"]
+    assert not (repo / "database").exists()  # Only the sandbox's own stores were used.
+
+
+def test_crash_after_publish_refuses_content_that_is_already_recorded(tmp_path):
+    sandbox = dev_app.Sandbox(tmp_path / "sandbox")
+    sandbox.prepare()
+    dev_app.add_valid_post(sandbox.incoming, "launch", "Hello")
+    sandbox.simulate_crash_after_publish("launch", PublishMode.SIMULATED)
+
+    with pytest.raises(ValueError, match="already recorded"):
+        sandbox.simulate_crash_after_publish("launch", PublishMode.SIMULATED)
