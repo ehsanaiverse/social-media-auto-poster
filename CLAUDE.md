@@ -121,7 +121,7 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | --- | --- | --- | --- |
 | 2.1 Schema, migrations, repository, hashing | yes | yes | `5237e69` |
 | 2.2 `check_duplicate`, DB writes in the graph, fail-closed rules, `run` opens the DB | yes | yes | `24c73d7` |
-| Dev tools: `scripts/app.py` sandbox tester, `notebooks/workflow.ipynb`, `open_app_db_read_only`, `list_recent` | yes | yes | `04ce5cb` (notebook outputs cleared in `d30dc71`) |
+| Dev tools: `scripts/app.py` sandbox tester, `open_app_db_read_only`, `list_recent` (a workflow notebook was added here and later removed, D32) | yes | yes | `04ce5cb` |
 | 2.3 Startup reconciliation, `list_by_status`, tester crash simulation (menu 11) | yes | yes | `d30dc71` |
 | 2.4 `jobs` command, duplicates + interrupted note in `scan`, tester history via `jobs` | yes | yes | `9c0e4be` |
 | M2 follow-up: `resolve` command (+ tester menu 12), run logging (run_id, start/finish, skipped lines, mode), sandbox hardening, `/database/` ignored, test isolation (`tests/conftest.py`) | yes | yes | not yet (pending review) |
@@ -143,7 +143,7 @@ Tests must cover, as the features appear: normal execution, validation failures,
 - `pyproject.toml` is the source of truth for dependencies: runtime in `[project] dependencies`, test tooling in `[project.optional-dependencies] dev`. The supported install is `pip install -e ".[dev]"`, which reads only `pyproject.toml`.
 - `requirements.txt` is kept by the developer's choice but is **not** used by the documented install. It currently lists unpinned packages beyond the agreed set (including `langchain`, which is excluded above); do not treat it as authoritative or install from it.
 - Add a dependency only in the milestone that uses it. Verify the package name, current version, and Python compatibility on PyPI or the official docs before adding or pinning it. Bounds are `>=` the version actually installed and tested, `<` the next major version.
-- Current: `langgraph`, `python-dotenv` (runtime); `pytest` (dev); `ipykernel`, `jupyter` (optional `notebook` extra, only for `notebooks/`; verified on Python 3.14). Application and test code must never import from the `notebook` extra.
+- Current: `langgraph`, `python-dotenv` (runtime); `pytest` (dev).
 
 - Expected later: `watchdog` (when folder watching is added), `langgraph-checkpoint-sqlite` (M3), `requests` or similar (M4). `langchain` is **not** a dependency (see "No LLMs" above).
 - **Python version:** the developer uses **Python 3.14**; minimum is 3.12 (`requires-python = ">=3.12"`). `langgraph` officially lists classifiers only through 3.13, so re-check 3.14 compatibility whenever a dependency is added (especially `langgraph-checkpoint-sqlite` in M3). Falling back to 3.13 is the remedy if something breaks.
@@ -152,7 +152,6 @@ Tests must cover, as the features appear: normal execution, validation failures,
 ## Developer tools
 
 - **`scripts/app.py`** (stdlib only): interactive manual tester. It always works in a sandbox (default `<repo>/sandbox`, Git-ignored) that acts as both the base folder and the data folder, so its database, logs, and run lock never touch the real ones. It refuses a sandbox that is the project folder, or that is, contains, or is inside the real data folder, the real `database/` folder, or the real `logs/` folder. It only adopts a folder that is **empty or already holds the `.autoposter-sandbox` marker** (so `--sandbox src` is refused), and Reset deletes only a marked folder. Run, Scan, Show job history, and Resolve call `main(["run"])`, `main(["scan"])`, `main(["jobs"])`, and `main(["resolve", ...])`; never duplicate app logic in the script. Menu 11 simulates a crash during publish; menu 12 resolves a `NEEDS_REVIEW` job.
-- **`notebooks/workflow.ipynb`**: graph picture (`draw_mermaid_png`, via the mermaid.ink web service, which receives the graph structure only), Mermaid text, and one sample post through `run_job` in a temporary sandbox. It reuses the sample helpers from `scripts/app.py`. **Commit it with outputs cleared**; `tests/unit/test_notebook.py` enforces this.
 - **Test isolation (`tests/conftest.py`):** every test runs from its own empty temporary folder with `AUTOPOSTER_DATA_DIR` unset, and a session-wide check fails the run if the real `database/app.db` was changed or created.
 
 ## Commands (Windows PowerShell, from repo root)
