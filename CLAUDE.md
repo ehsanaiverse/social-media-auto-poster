@@ -133,6 +133,18 @@ The folder structure was migrated in Milestone 1, Slice 1, and moved from `src/`
 
 Work **one milestone at a time**. Do not start the next milestone until the current one is tested, its results are explained, and the user has reviewed it.
 
+### Git workflow (from 2026-10-28)
+
+Work **directly on `main`**: no new branches and no pull requests. For every change:
+
+1. `git pull origin main` first.
+2. Run `python -m pytest -q` (from `backend\`) before **every** commit; commit only if all tests pass.
+3. Make small commits with clear messages.
+4. Never force-push and never rewrite history (no `reset` of pushed commits, no `rebase` of `main`, no `--amend` of a pushed commit).
+5. Show the developer the test output and the list of new commits, and **push only after the developer says OK**.
+
+`backup/main-before-pr1` and every `archive/*` tag must be kept.
+
 | # | Milestone | Status |
 | --- | --- | --- |
 | 0 | Inspect, plan, establish this file | Done |
