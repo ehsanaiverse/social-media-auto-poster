@@ -12,35 +12,40 @@ dist/
 .coverage
 htmlcov/
 
-# Virtual environments
+# Virtual environments (the project venv is .vevn)
+.vevn/
+.venv/
 venv/
 env/
 ENV/
-.venv/
-.venv
 
 # Local secrets
 .env
 .env.*
 !.env.example
 
-# Local data and state
-data/**/*
+# Local data and state (never commit content, databases, logs, or the run lock)
+/data/**/*
 !/data/**/.gitkeep
-database/**/
+database/
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
-*.db-journal
+autoposter.lock
 *.lock
+logs/
 *.log
 *.log.[0-9]*
-logs/**/*
-!logs/.gitkeep
+sandbox/
+.ipynb_checkpoints/
 
 # Frontend
 node_modules/
 frontend/dist/
+*.tsbuildinfo
 *.local
 
 # Editors and operating systems
@@ -51,14 +56,3 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 Desktop.ini
-
-
-
-.env
-*.db
-*.db-shm
-*.db-wal
-sandbox/
-logs/
-.vevn/
-.venv/
