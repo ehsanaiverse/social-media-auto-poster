@@ -14,7 +14,7 @@ import sqlite3
 import sys
 import time
 from collections import Counter
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -233,20 +233,34 @@ def _duplicate_label(candidate: PostCandidate, repository: JobRepository | None)
     if repository is None:
         return "new"
     try:
-        media_sha256 = sha256_file(candidate.media_path)
-        caption_sha256 = sha256_file(candidate.caption_path)
+        match = find_duplicate(candidate, repository)
     except OSError:
         return "could not read files to check for duplicates"
-    match = repository.find_blocking_duplicate(
-        platform=candidate.platform, mode=RUN_MODE, media_sha256=media_sha256, caption_sha256=caption_sha256
-    )
     return f"DUPLICATE {_describe_original(match)}" if match else "new"
 
 
-def _stability_label(candidate: PostCandidate, interval_s: float) -> str:
+def find_duplicate(candidate: PostCandidate, repository: JobRepository) -> JobRecord | None:
+    """The stored job that would make ``run`` skip this post, or None. Read-only; OSError if unreadable.
+
+    Shared by ``scan`` and the local API so they can never disagree with ``run``.
+    """
+    return repository.find_blocking_duplicate(
+        platform=candidate.platform,
+        mode=RUN_MODE,
+        media_sha256=sha256_file(candidate.media_path),
+        caption_sha256=sha256_file(candidate.caption_path),
+    )
+
+
+def unstable_files(candidate: PostCandidate, interval_s: float) -> list[str]:
+    """Which of the post's files ("media", "caption") are still changing or locked. Empty means stable."""
     # Both files must be complete before a post can be processed.
     files = {"media": candidate.media_path, "caption": candidate.caption_path}
-    unstable = [role for role, path in files.items() if not is_file_stable(path, interval_s)]
+    return [role for role, path in files.items() if not is_file_stable(path, interval_s)]
+
+
+def _stability_label(candidate: PostCandidate, interval_s: float) -> str:
+    unstable = unstable_files(candidate, interval_s)
     if not unstable:
         return "stable"
     return f"NOT STABLE ({' and '.join(unstable)} changing or locked)"
@@ -424,7 +438,7 @@ def _print_resolve_next_steps(job: JobRecord, status: JobStatus, settings: Setti
 
 
 @dataclass(frozen=True)
-class _JobLine:
+class JobLine:
     """One job's line in the run summary."""
 
     stem: str
@@ -435,46 +449,98 @@ class _JobLine:
     outcome: str  # One of RUN_COUNTS, for the "Run finished" log line.
 
 
+@dataclass(frozen=True)
+class RunReport:
+    """What one run did. The ``run`` command prints it; the local API returns it as JSON."""
+
+    exit_code: int
+    recoveries: tuple[Recovery, ...] = ()
+    jobs: tuple[JobLine, ...] = ()
+    scan: ScanResult | None = None  # None if the run stopped at setup (exit code 1) before scanning.
+
+
+def run_once(
+    settings: Settings,
+    interval_s: float = DEFAULT_INTERVAL_S,
+    *,
+    verbose: bool = False,
+    on_start: Callable[[], None] | None = None,
+) -> RunReport:
+    """One complete run: lock, recover interrupted jobs, then process every complete post once.
+
+    Shared by the ``run`` command and the local API, so both follow exactly the same rules.
+    ``on_start`` is called right after "Run started" is logged, before any work.
+    Raises RunLockHeldError if another run holds the lock, and OSError if the run cannot be set up.
+    """
+    with (
+        single_run_lock(settings.lock_file),
+        _logging_to(verbose=verbose, log_file=settings.log_file),
+        _run_scope(),
+    ):
+        started = time.monotonic()
+        counts: Counter[str] = Counter()
+        report = RunReport(EXIT_SETUP_ERROR)
+        logger.info("Run started: platform=%s mode=%s", Platform.LINKEDIN, RUN_MODE)
+        if on_start is not None:
+            on_start()
+        try:
+            report = _run_locked(settings, interval_s, counts)
+            return report
+        finally:
+            logger.info(
+                "Run finished: %s exit_code=%d duration_s=%.2f",
+                " ".join(f"{key}={counts[key]}" for key in RUN_COUNTS),
+                report.exit_code,
+                time.monotonic() - started,
+            )
+
+
 def _run(args: argparse.Namespace) -> int:
     settings = load_settings()
+    incoming = settings.incoming_dir(Platform.LINKEDIN)
     try:
-        with (
-            single_run_lock(settings.lock_file),
-            _logging_to(verbose=args.verbose, log_file=settings.log_file),
-            _run_scope(),
-        ):
-            started = time.monotonic()
-            counts: Counter[str] = Counter()
-            exit_code = EXIT_SETUP_ERROR
-            logger.info("Run started: platform=%s mode=%s", Platform.LINKEDIN, RUN_MODE)
+        report = run_once(
+            settings,
+            args.interval,
+            verbose=args.verbose,
             # flush: when output is piped, stdout is buffered and stderr warnings would overtake it.
-            print(f"Processing LinkedIn incoming: {settings.incoming_dir(Platform.LINKEDIN)}", flush=True)
-            try:
-                exit_code = _run_locked(settings, args.interval, counts)
-                return exit_code
-            finally:
-                logger.info(
-                    "Run finished: %s exit_code=%d duration_s=%.2f",
-                    " ".join(f"{key}={counts[key]}" for key in RUN_COUNTS),
-                    exit_code,
-                    time.monotonic() - started,
-                )
+            on_start=lambda: print(f"Processing LinkedIn incoming: {incoming}", flush=True),
+        )
     except RunLockHeldError:
         print("Another run is in progress; try again when it has finished.", file=sys.stderr)
         return EXIT_LOCKED
     except OSError as error:
         print(f"Error: could not set up the run: {error}", file=sys.stderr)
         return EXIT_SETUP_ERROR
+    _print_run_report(report, settings)
+    return report.exit_code
 
 
-def _run_locked(settings: Settings, interval_s: float, counts: Counter[str]) -> int:
+def _print_run_report(report: RunReport, settings: Settings) -> None:
+    if report.recoveries:
+        _print_recoveries(report.recoveries)
+    if report.scan is None:
+        return  # Stopped at setup; the error is in the log.
+    if report.jobs:
+        _print_jobs(report.jobs)
+    else:
+        print("\nNothing to process.")
+    _print_pending_and_ambiguous(report.scan)
+
+    print("\nSimulation mode: nothing was sent to LinkedIn.")
+    if any(line.label == DUPLICATE_LABEL for line in report.jobs):
+        print("Duplicates stay in incoming/; delete them when you no longer need them.")
+    print(f"Log: {settings.log_file}")
+
+
+def _run_locked(settings: Settings, interval_s: float, counts: Counter[str]) -> RunReport:
     """Everything a run does while holding the lock, after "Run started" is logged."""
     ensure_data_dirs(settings)
     try:
         conn = open_app_db(settings.app_db_path)
     except (SchemaTooNewError, sqlite3.Error) as error:
         logger.error("Could not open the job database %s: %s", settings.app_db_path, error)
-        return EXIT_SETUP_ERROR
+        return RunReport(EXIT_SETUP_ERROR)
     try:
         repository = JobRepository(conn)
         try:
@@ -482,10 +548,8 @@ def _run_locked(settings: Settings, interval_s: float, counts: Counter[str]) -> 
         except sqlite3.Error:
             # Never process on top of an unknown state.
             logger.exception("Could not recover interrupted jobs; nothing was processed")
-            return EXIT_SETUP_ERROR
+            return RunReport(EXIT_SETUP_ERROR)
         counts["recovered"] = len(recoveries)
-        if recoveries:
-            _print_recoveries(recoveries)
         return _process(settings, repository, interval_s, recoveries, counts)
     finally:
         conn.close()
@@ -497,7 +561,7 @@ def _process(
     interval_s: float,
     recoveries: list[Recovery],
     counts: Counter[str],
-) -> int:
+) -> RunReport:
     platform = Platform.LINKEDIN
     result = scan_incoming(settings.incoming_dir(platform), platform)
     counts["pending"] = len(result.pending)
@@ -518,24 +582,15 @@ def _process(
         settings=settings,
         stability_interval_s=interval_s,
     )
-    lines = [_run_one(candidate, context) for candidate in result.candidates]
+    lines = tuple(_run_one(candidate, context) for candidate in result.candidates)
     counts.update(line.outcome for line in lines)
 
-    if lines:
-        _print_jobs(lines)
-    else:
-        print("\nNothing to process.")
-    _print_pending_and_ambiguous(result)
-
-    print("\nSimulation mode: nothing was sent to LinkedIn.")
-    if any(line.label == DUPLICATE_LABEL for line in lines):
-        print("Duplicates stay in incoming/; delete them when you no longer need them.")
-    print(f"Log: {settings.log_file}")
     needs_human = any(r.status is JobStatus.NEEDS_REVIEW for r in recoveries)
-    return EXIT_JOB_PROBLEMS if needs_human or any(line.problem for line in lines) else EXIT_OK
+    exit_code = EXIT_JOB_PROBLEMS if needs_human or any(line.problem for line in lines) else EXIT_OK
+    return RunReport(exit_code, recoveries=tuple(recoveries), jobs=lines, scan=result)
 
 
-def _print_recoveries(recoveries: list[Recovery]) -> None:
+def _print_recoveries(recoveries: tuple[Recovery, ...]) -> None:
     stem_width = max(len(r.stem) for r in recoveries)
     status_width = max(len(r.status) for r in recoveries)
     print(f"\nRECOVERED ({len(recoveries)}) - jobs interrupted by an earlier crash")
@@ -549,35 +604,35 @@ def _print_recoveries(recoveries: list[Recovery]) -> None:
 DUPLICATE_LABEL = "DUPLICATE"
 
 
-def _run_one(candidate: PostCandidate, context: WorkflowContext) -> _JobLine:
+def _run_one(candidate: PostCandidate, context: WorkflowContext) -> JobLine:
     try:
         final = run_job(candidate, context)
     except Exception:  # A bug or a database failure, not a publish outcome. Keep going.
         logger.exception(
             "Unexpected error; job abandoned: platform=%s mode=%s stem=%s", candidate.platform, context.mode, candidate.stem
         )
-        return _JobLine(candidate.stem, "ERROR (unexpected)", "see the log for details", (), problem=True, outcome="errors")
+        return JobLine(candidate.stem, "ERROR (unexpected)", "see the log for details", (), problem=True, outcome="errors")
     return _describe(final, context)
 
 
-def _describe(final: JobState, context: WorkflowContext) -> _JobLine:
+def _describe(final: JobState, context: WorkflowContext) -> JobLine:
     stem, status, errors = final["stem"], final["status"], tuple(final["errors"])
     destination = _relative_to_data(final["destination"], context.settings)
 
     if final["retry_later"]:
-        return _JobLine(stem, "WAITING (still copying)", "will retry on next run", (), problem=False, outcome="waiting")
+        return JobLine(stem, "WAITING (still copying)", "will retry on next run", (), problem=False, outcome="waiting")
     if final["duplicate_of"]:
         note = _duplicate_note(final["duplicate_of"], context)
-        return _JobLine(stem, DUPLICATE_LABEL, note, (), problem=False, outcome="duplicates")
+        return JobLine(stem, DUPLICATE_LABEL, note, (), problem=False, outcome="duplicates")
     if status == JobStatus.SIMULATED:
         note = "files stay in incoming/"
-        return _JobLine(stem, "SIMULATED (not published)", note, errors, problem=False, outcome="simulated")
+        return JobLine(stem, "SIMULATED (not published)", note, errors, problem=False, outcome="simulated")
     if status == JobStatus.PUBLISHED:
         note = f"archived to {destination}" if destination else "files left in incoming/"
-        return _JobLine(stem, status, note, errors, problem=bool(errors), outcome="published")
+        return JobLine(stem, status, note, errors, problem=bool(errors), outcome="published")
     note = f"moved to {destination}" if destination else "files left in incoming/"
     outcome = "needs_review" if status == JobStatus.NEEDS_REVIEW else "failed"
-    return _JobLine(stem, status, note, errors, problem=True, outcome=outcome)
+    return JobLine(stem, status, note, errors, problem=True, outcome=outcome)
 
 
 def _duplicate_note(job_id: str, context: WorkflowContext) -> str:
@@ -601,7 +656,7 @@ def _relative_to_data(destination: str | None, settings: Settings) -> str | None
         return destination
 
 
-def _print_jobs(lines: list[_JobLine]) -> None:
+def _print_jobs(lines: tuple[JobLine, ...]) -> None:
     stem_width = max(len(line.stem) for line in lines)
     label_width = max(len(line.label) for line in lines)
     print(f"\nJOBS ({len(lines)})")
