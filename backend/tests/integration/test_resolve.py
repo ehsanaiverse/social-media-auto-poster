@@ -20,6 +20,7 @@ LINKEDIN = Platform.LINKEDIN
 @pytest.fixture
 def base(tmp_path, monkeypatch) -> Path:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
     monkeypatch.setattr(cli, "_utc_now", lambda: FIXED_NOW)
     return tmp_path

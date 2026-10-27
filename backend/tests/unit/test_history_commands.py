@@ -17,6 +17,7 @@ JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
 @pytest.fixture
 def base(tmp_path, monkeypatch) -> Path:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
     return tmp_path
 

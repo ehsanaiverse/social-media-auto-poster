@@ -1,8 +1,10 @@
 """Test isolation shared by every test.
 
-- Each test runs from its own empty temporary folder with ``AUTOPOSTER_DATA_DIR``
-  unset, so no test can read or write the project's real ``.env``, ``data/``,
-  ``database/``, ``logs/``, or lock file by accident.
+- Each test runs from its own empty temporary folder, which is also its base
+  folder (``AUTOPOSTER_BASE_DIR``), with ``AUTOPOSTER_DATA_DIR`` unset. The
+  application's default base folder is ``backend/`` whatever the current folder,
+  so without this override a test could read or write the project's real
+  ``.env``, ``data/``, ``database/``, ``logs/``, or lock file.
 - A session-wide check fails the run if the real ``database/app.db`` changed
   (or was created) while the tests ran.
 """
@@ -22,7 +24,9 @@ def _fingerprint(path: Path) -> str | None:
 
 @pytest.fixture(autouse=True)
 def _run_from_isolated_folder(tmp_path_factory, monkeypatch):
-    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
+    cwd = tmp_path_factory.mktemp("cwd")
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(cwd))
     monkeypatch.delenv("AUTOPOSTER_DATA_DIR", raising=False)
 
 

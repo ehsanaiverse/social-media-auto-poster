@@ -23,23 +23,33 @@ ENV/
 .env.*
 !.env.example
 
-# Local data and state
-/data/**/*
-!/data/**/.gitkeep
+# Runtime folders (backend/ is the base folder)
+/backend/data/
+/backend/database/
+/backend/logs/
+/backend/sandbox/
+
+# Legacy runtime folders at the repo root, from before the backend/ move.
+# Kept ignored until they are moved into backend/; then these lines can go.
+/data/
 /database/
+/logs/
+/sandbox/
+
+# Databases, logs, and the run lock, wherever they are
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite3
-
-# Logs
 *.log
 *.log.[0-9]*
 autoposter.lock
-/logs/*
-!/logs/.gitkeep
+
+# Frontend (React; not created yet)
+frontend/node_modules/
+frontend/dist/
 
 # Editors and operating systems
 .vscode/
@@ -47,7 +57,3 @@ autoposter.lock
 .DS_Store
 Thumbs.db
 Desktop.ini
-
-# Developer tools
-/sandbox/
-.ipynb_checkpoints/

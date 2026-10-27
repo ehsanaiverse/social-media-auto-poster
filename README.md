@@ -2,6 +2,8 @@
 
 A local, folder-driven Python application scaffold for preparing and publishing social media content. The project is being built incrementally, starting with LinkedIn and adding other platforms only after their integrations are separately planned and validated.
 
+The Python application lives in **`backend/`**; its setup, commands, tests, and sandbox tester are summarised in [backend/README.md](backend/README.md). A React frontend and a local FastAPI API are planned but not built yet (see "Architecture decisions").
+
 ## MVP goals
 
 - Discover content placed in platform-specific incoming folders.
@@ -18,18 +20,18 @@ There is no continuous folder watcher, database/repository, scheduler, OAuth flo
 
 **Milestones 1 (local simulation) and 2 (job database) complete; Milestone 2 pending review.** What exists today:
 
-- Packaging (`pyproject.toml`) with declared dependencies.
-- An environment-variable template (`.env.example`).
+- Packaging (`backend/pyproject.toml`) with declared dependencies.
+- An environment-variable template (`backend/.env.example`).
 - Shared models (`models.py`): `Platform`, `JobStatus` (including the terminal `SIMULATED` status), `PostCandidate`, `ScanResult`, `ValidationResult`, and `PublishResult`, which records a definite success or failure and always whether the result was simulated.
-- Settings (`config.py`): resolves the content folder root and can create the `data/<Platform>/{incoming,archive,failed}` folders.
+- Settings (`config.py`): uses `backend/` as the base folder whatever folder a command is started from, resolves the content folder root, and can create the `data/<Platform>/{incoming,archive,failed}` folders.
 - A platform-neutral publisher protocol (`platforms/base.py`).
 - A safe simulation publisher that never contacts any platform (`platforms/simulator.py`).
 - Ingestion (`ingestion/`): a one-shot scan that pairs images with captions (`scanner.py`), a file-copy stability check (`stability.py`), and content validation (`validation.py`).
 - A service that moves a post's two files together into `archive/` or `failed/` (`services/archive.py`).
 - A LangGraph workflow (`graph/`) that takes one post through stability → validation → duplicate check → simulated publish → record, moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`.
-- A job database (`database\app.db`, SQLite, via `storage/`): every processed post is recorded with SHA-256 hashes of its image and caption, so the same content is never processed twice.
+- A job database (`backend\database\app.db`, SQLite, via `storage/`): every processed post is recorded with SHA-256 hashes of its image and caption, so the same content is never processed twice.
 - Two commands (`main.py`): `run` processes every complete post once, and `scan` is a read-only report. See "How to use" below.
-- Unit and integration tests under `tests/`. Decisions are recorded in `docs/decisions.md`.
+- Unit and integration tests under `backend/tests/`. Decisions are recorded in `docs/decisions.md`.
 
 - Crash recovery: at the start of every `run`, jobs left half-published by a crash are resolved (see `RECOVERED` below).
 
@@ -45,53 +47,55 @@ Facebook and Instagram are placeholders for future work, not supported integrati
 
 ## Project layout
 
-Current layout, after the Milestone 1, Slice 1 migration. Packages marked "empty" contain only an `__init__.py` and get code in later slices:
+Packages marked "empty" contain only an `__init__.py`:
 
 ```text
-data/                              Local platform content; ignored by Git
-  LinkedIn/{incoming,archive,failed}/
-  Facebook/{incoming,archive,failed}/
-  Instagram/{incoming,archive,failed}/
-src/social_media_auto_poster/
-  config.py                        Settings and data-folder creation
-  models.py                        Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult
-  platforms/                       Publisher protocol (base.py) and simulator (simulator.py)
-  platforms/{linkedin,facebook,instagram}/   Empty
-  graph/                           LangGraph workflow: state.py, nodes.py, workflow.py
-  ingestion/                       Scanning/pairing, stability check, validation
-  services/                        Moving posts to archive/failed (archive.py), single-run lock (run_lock.py)
-  storage/                         Empty; SQLite repository (Milestone 2)
-tests/unit/, tests/integration/    Unit tests; full-graph and end-to-end run tests
+backend/                           The Python project
+  pyproject.toml, README.md, .env.example
+  src/social_media_auto_poster/
+    config.py                      Settings (base folder = backend/) and data-folder creation
+    models.py                      Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult
+    platforms/                     Publisher protocol (base.py) and simulator (simulator.py)
+    platforms/{linkedin,facebook,instagram}/   Empty
+    graph/                         LangGraph workflow: state.py, nodes.py, workflow.py
+    ingestion/                     Scanning/pairing, stability check, validation
+    services/                      Hashing, moving posts, crash recovery, single-run lock
+    storage/                       SQLite job database and repository
+    main.py                        Commands: run, scan, jobs, resolve
+  tests/unit/, tests/integration/  Unit tests; full-graph and end-to-end run tests
+  scripts/app.py                   Interactive sandbox tester
+  data/                            Local platform content; ignored by Git
+    LinkedIn/{incoming,archive,failed}/   (and Facebook/, Instagram/)
+  database/, logs/, sandbox/       Job database, run log, tester sandbox; ignored by Git
 docs/decisions.md                  Decision records
-scripts/                           Empty
-logs/                              Local application logs; ignored by Git
 ```
 
-`main.py` provides the `run` and `scan` commands. The full target layout is in `CLAUDE.md` ("Target code layout").
+The binding layout is in `CLAUDE.md` ("Code layout").
 
 ## Content naming convention
 
 The initial convention is one image and one UTF-8 text caption with the same filename stem, for example:
 
 ```text
-data/LinkedIn/incoming/product-launch.jpg
-data/LinkedIn/incoming/product-launch.txt
+backend/data/LinkedIn/incoming/product-launch.jpg
+backend/data/LinkedIn/incoming/product-launch.txt
 ```
 
 The planned initial image extensions are `.jpg`, `.jpeg`, and `.png`. Pairing, the file-copy stability check, and validation (extension, image signature, UTF-8 non-empty caption) exist; see `CLAUDE.md`, "Input conventions". This convention is provisional; media support will be reviewed against each platform's official API before implementation.
 
 ## Windows setup
 
-Use Python 3.12 or newer; the project is developed on **Python 3.14**. From PowerShell in the project root:
+Use Python 3.12 or newer; the project is developed on **Python 3.14**. The virtual environment `.vevn` stays at the repo root; the package is installed from `backend\`:
 
 ```powershell
-py -3.14 -m venv .vevn               # once
-.\.vevn\Scripts\Activate.ps1
+py -3.14 -m venv .vevn               # once, from the repo root
+.\.vevn\Scripts\Activate.ps1         # from the repo root
+cd backend
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-Dependencies are declared only in `pyproject.toml`. The `[dev]` extra adds `pytest`.
+Dependencies are declared only in `backend\pyproject.toml`. The `[dev]` extra adds `pytest`. Install in editable mode (`-e`): the application keeps its data, database, logs, and `.env` in `backend\`, whichever folder you run a command from.
 
 Verify the environment:
 
@@ -103,14 +107,14 @@ python -m pytest
 
 ## How to use (Milestone 1: simulation only)
 
-1. Put an image and a caption with the same name in `data\LinkedIn\incoming\`, e.g. `product-launch.jpg` + `product-launch.txt` (UTF-8 text; `.jpg`, `.jpeg`, or `.png`).
+1. Put an image and a caption with the same name in `backend\data\LinkedIn\incoming\`, e.g. `product-launch.jpg` + `product-launch.txt` (UTF-8 text; `.jpg`, `.jpeg`, or `.png`).
 2. Optional preview, changes nothing: `python -m social_media_auto_poster.main scan`
 3. Process: `python -m social_media_auto_poster.main run`
 
 Example `run` output:
 
 ```text
-Processing LinkedIn incoming: D:\social-media-auto-poster\data\LinkedIn\incoming
+Processing LinkedIn incoming: D:\social-media-auto-poster\backend\data\LinkedIn\incoming
 
 JOBS (3)
   animated         FAILED                      moved to LinkedIn\failed\20261025T153102Z_animated
@@ -138,7 +142,7 @@ What happens to each post:
 
 To retry a failed post: fix it, move its image and caption back to `incoming\`, and delete the old `failed\` folder. A failed job never blocks a retry; editing the caption (or image) of any post makes it a new job.
 
-`run` options: `--verbose` shows INFO logs in the terminal; `--interval 0` skips the 1-second change-watch wait. The full log is `logs\autoposter.log` (UTC timestamps, rotated at 1 MB, 5 backups; caption text is never logged). Each line carries the run's `run_id`; every run starts with `Run started` and ends with a `Run finished` line that counts each outcome and gives the exit code and duration. Only one `run` can work at a time.
+`run` options: `--verbose` shows INFO logs in the terminal; `--interval 0` skips the 1-second change-watch wait. The full log is `backend\logs\autoposter.log` (UTC timestamps, rotated at 1 MB, 5 backups; caption text is never logged). Each line carries the run's `run_id`; every run starts with `Run started` and ends with a `Run finished` line that counts each outcome and gives the exit code and duration. Only one `run` can work at a time.
 
 `run` exit codes (useful with Task Scheduler): `0` all simulated/duplicate/waiting or nothing to do, `1` setup error (including a job database that cannot be opened or crash recovery that cannot complete), `2` invalid command or option, `3` at least one job `FAILED`/`NEEDS_REVIEW`/`ERROR` (or a crashed job recovered as `NEEDS_REVIEW`), `4` another run is in progress.
 
@@ -179,34 +183,29 @@ Shows job ID, time (UTC), post name, mode (`simulated` or `real`), status, and a
 
 ## Manual testing
 
-### Interactive tester: `scripts/app.py`
+### Interactive tester: `backend/scripts/app.py`
 
 ```powershell
-python scripts/app.py                                 # sandbox: .\sandbox (ignored by Git)
-python scripts/app.py --sandbox D:\tmp\my-sandbox     # any other folder
+cd backend
+python scripts\app.py                                 # sandbox: backend\sandbox (ignored by Git)
+python scripts\app.py --sandbox D:\tmp\my-sandbox     # any other folder
 ```
 
 A terminal menu to add sample posts (valid JPEG/PNG, invalid kinds, lone files, ambiguous), run, scan, look at the folders, see job history (via the `jobs` command), simulate a crash during publish (to watch startup recovery), resolve a `NEEDS_REVIEW` job, and reset. Everything happens in a **sandbox** with its own `data\`, `database\app.db`, logs, and run lock; your real data and job database are never touched. It refuses to start if the sandbox is, contains, or is inside your real data, `database\`, or `logs\` folder, and it only uses a folder that is empty or already marked as a sandbox (`.autoposter-sandbox`), so Reset can never delete anything else. Publishing is always simulated; Run and Scan call the real `run` / `scan` commands. Valid sample posts share the same tiny image, so adding the same caption twice demonstrates a `DUPLICATE`.
 
-### Workflow notebook: `notebooks/workflow.ipynb`
-
-```powershell
-python -m pip install -e ".[dev,notebook]"            # once: ipykernel + jupyter
-jupyter notebook notebooks/workflow.ipynb             # or open it in VS Code
-```
-
-Shows the LangGraph workflow as a picture and as Mermaid text, then runs one sample post through it in a temporary sandbox and prints the final state. The picture is rendered by the **mermaid.ink** web service, which receives only node names and edges (no post content); offline, paste the printed Mermaid text into https://mermaid.live. Commit the notebook with outputs cleared (a test checks this).
-
 ## Configuration and security
 
-Copy `.env.example` to `.env` when local configuration is introduced. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, or logs. OAuth and API access are not configured by this scaffold. Future integrations must use official APIs and comply with their permissions and policies.
+Copy `backend\.env.example` to `backend\.env` for local configuration; the application reads `.env` only from `backend\`. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, logs, or the sandbox. OAuth and API access are not configured by this scaffold. Future integrations must use official APIs and comply with their permissions and policies.
 
-Job records live in `database\app.db` (SQLite, created by `run`; ignored by Git). Restart recovery arrives later in Milestone 2. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
+`AUTOPOSTER_DATA_DIR` moves the content folder (default `backend\data`). `database\`, `logs\`, and the run lock always stay in the base folder, `backend\`.
+
+Job records live in `backend\database\app.db` (SQLite, created by `run`; ignored by Git). A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
 
 ## Architecture decisions
 
 - **LangGraph is required** for orchestrating each post's workflow as an explicit, deterministic state graph. It does not use LLMs or autonomous agents; filesystem, validation, database, and API work live in ordinary Python modules that the graph's nodes call.
 - **SQLite first.** The application database (business records) and the LangGraph checkpoint store are kept logically separate and introduced in separate milestones. PostgreSQL is deferred until there is a concrete need.
+- **Web UI later.** A React frontend (`frontend/`) and a FastAPI API inside the Python package are planned, not built. The API will reuse the same functions as the CLI (`scan`, `run`, `jobs`, `resolve`) with no second storage layer, bind to `127.0.0.1` by default, and follow the same real-LinkedIn safety rules as the CLI (decision D32).
 
 See `CLAUDE.md` for the binding project rules.
 

@@ -1,8 +1,0 @@
-# Dependencies for the initial ingestion/configuration milestone.
-watchdog
-python-dotenv
-requests
-langchain
-langgraph
-langgraph-checkpoint-sqlite
-pytest

@@ -1,8 +1,8 @@
 """Interactive manual tester for the auto-poster.
 
-Run from the repository root (with the venv active):
+Run from the backend folder (with the venv active):
 
-    python scripts/app.py                    # sandbox: <repo>/sandbox
+    python scripts/app.py                    # sandbox: backend/sandbox
     python scripts/app.py --sandbox D:\\tmp\\autoposter-sandbox
 
 Everything happens inside a sandbox folder with its own data, job database,
@@ -24,13 +24,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from social_media_auto_poster import main as cli
-from social_media_auto_poster.config import DATA_DIR_VAR, Settings, load_settings
+from social_media_auto_poster.config import BASE_DIR_VAR, DATA_DIR_VAR, Settings, load_settings
 from social_media_auto_poster.models import JobStatus, Platform, PublishMode
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
 from social_media_auto_poster.storage.jobs import DuplicateJobError, JobRecord, JobRepository
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[1]  # backend/, the application's real base folder.
 DEFAULT_SANDBOX = REPO_ROOT / "sandbox"
 MARKER_NAME = ".autoposter-sandbox"  # Reset only ever deletes a folder that has this marker.
 PLATFORM = Platform.LINKEDIN
@@ -197,18 +197,17 @@ class Sandbox:
     @contextmanager
     def active(self) -> Generator[None, None, None]:
         """Run app commands with the sandbox as base folder and data folder, then restore both."""
-        previous_cwd = Path.cwd()
-        previous_env = os.environ.get(DATA_DIR_VAR)
-        os.chdir(self.root)
-        os.environ[DATA_DIR_VAR] = str(self.settings.data_dir)
+        sandbox_env = {BASE_DIR_VAR: str(self.root), DATA_DIR_VAR: str(self.settings.data_dir)}
+        previous_env = {name: os.environ.get(name) for name in sandbox_env}
+        os.environ.update(sandbox_env)
         try:
             yield
         finally:
-            os.chdir(previous_cwd)
-            if previous_env is None:
-                os.environ.pop(DATA_DIR_VAR, None)
-            else:
-                os.environ[DATA_DIR_VAR] = previous_env
+            for name, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     def run(self) -> int:
         with self.active():
