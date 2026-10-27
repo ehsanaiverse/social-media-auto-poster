@@ -31,6 +31,10 @@ class JobService:
         self._settings = settings
         self._interval_s = stability_interval_s
 
+    @property
+    def settings(self) -> Settings:
+        return self._settings
+
     def scan(self) -> dict:
         """Read-only report, like the ``scan`` command. Never creates folders or the database.
 

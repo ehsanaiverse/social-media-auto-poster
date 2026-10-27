@@ -89,8 +89,8 @@ LangGraph is a **required** part of this project, not an optional or future enha
 - **The API reuses the core and never re-implements it (D32).** `POST /api/run` calls `main.run_once`, the same function as the `run` command (run lock → 409 if held, crash recovery, per-mode duplicate check, run logging with run_id, same exit codes in the response). `GET /api/scan` is read-only like `scan` (shares `find_duplicate` and `unstable_files`; never creates folders or the DB; 404 if the incoming folder is missing). `GET /api/jobs` (`limit`, `status`) and `GET /api/jobs/{id or unique prefix}` read through `open_app_db_read_only` + `JobRepository`; they never create the DB. Job IDs are 32-hex UUID strings. There is no `resolve` endpoint yet; use the CLI.
 - `backend/app/services/job_service.py` is the only bridge to the core; routers are thin. Endpoints are plain `def`, so FastAPI runs them in worker threads. Responses carry file **names**, hashes, statuses, and errors, never file contents; every run response says `"simulated": true`.
 - `create_app()` creates nothing on disk and there is no module-level `app`; start it with `--factory`. CORS allows only `http://localhost:3000` and `http://127.0.0.1:3000` (the Vite dev server, which also proxies `/api`). The data folder is **not** served (`/media` was removed).
-- **Start it from the repository root**, like the CLI: settings resolve `data/`, `database/app.db`, `logs/`, and `autoposter.lock` against the current folder, so starting it from `backend/` would use a separate `backend/data` and `backend/database`.
-- Launch: `python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000` (or `python -m app`), from the repo root. Tests: `tests/integration/test_api.py` (`TestClient`, temporary folders; skipped if the `api` extra is not installed).
+- **One database: the project's own `database/app.db`.** `create_app()` with no arguments calls `load_settings(base_dir=PROJECT_ROOT)` (the folder above `backend/`), so the server uses the same `data/`, `database/app.db`, `logs/`, `.env`, and `autoposter.lock` as the CLI run from the project root, wherever it is started. Starting it from `backend/` must never create `backend/database` or `backend/data` (the old PR #1 location); a test checks this. Tests always pass their own temporary `Settings`.
+- Launch: `python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000` (or `python -m app`). Tests: `tests/integration/test_api.py` (`TestClient`, temporary folders; skipped if the `api` extra is not installed).
 
 ## Target code layout
 
@@ -179,7 +179,7 @@ py -3.14 -m venv .vevn               # once
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 python -m pip install -e ".[dev,api]"  # only for the local API in backend/app (see "Local API")
-python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000   # local API, from the repo root
+python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000   # local API (always uses database\app.db in the project)
 cd frontend; npm install; npm run dev   # dashboard at http://localhost:3000 (needs the API running)
 python -m pytest
 python -m social_media_auto_poster.main scan                 # read-only report of data\LinkedIn\incoming

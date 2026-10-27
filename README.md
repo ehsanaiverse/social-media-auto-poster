@@ -206,7 +206,7 @@ Shows the LangGraph workflow as a picture and as Mermaid text, then runs one sam
 
 `backend/app/` is a local FastAPI app and `frontend/` a React dashboard for it. The API calls the same code as the CLI (`run` uses the same run lock, crash recovery, duplicate check, and logging), so it is safe to use either. Publishing is still simulated.
 
-Start both **from the repository root** (the API uses `data\`, `database\app.db`, and `logs\` under the folder it is started from, just like the CLI):
+The API always uses the project's own `data\`, `database\app.db`, and `logs\` (the same ones as the CLI), even if it is started from inside `backend\`:
 
 ```powershell
 # Terminal 1: the API (http://127.0.0.1:8000, interactive docs at /docs)

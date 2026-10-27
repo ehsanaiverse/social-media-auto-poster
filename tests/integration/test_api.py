@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.main import create_app  # noqa: E402
+from app.main import PROJECT_ROOT, create_app  # noqa: E402
 from social_media_auto_poster.config import load_settings  # noqa: E402
 from social_media_auto_poster.services.run_lock import single_run_lock  # noqa: E402
 
@@ -33,7 +33,8 @@ def incoming(base) -> Path:
 
 @pytest.fixture
 def client(base) -> TestClient:
-    return TestClient(create_app(stability_interval_s=0))
+    # Explicit settings for the temporary folder: without them the app uses the real project database.
+    return TestClient(create_app(load_settings(), stability_interval_s=0))
 
 
 def add_post(folder: Path, stem: str, caption: bytes | None = None, media: bytes = JPEG_BYTES) -> None:
@@ -42,8 +43,17 @@ def add_post(folder: Path, stem: str, caption: bytes | None = None, media: bytes
 
 
 def test_creating_the_app_creates_nothing_on_disk(base):
-    create_app(stability_interval_s=0)
+    create_app(load_settings(), stability_interval_s=0)
     assert list(base.iterdir()) == []
+
+
+@pytest.mark.parametrize("start_in", [".", "backend"])
+def test_server_always_uses_the_project_database_wherever_it_starts(start_in, monkeypatch):
+    # Only inspects the configured path; the real database is never opened here.
+    monkeypatch.chdir(PROJECT_ROOT / start_in)
+    service = create_app().state.job_service
+    assert service.settings.base_dir == PROJECT_ROOT
+    assert service.settings.app_db_path == PROJECT_ROOT / "database" / "app.db"
 
 
 def test_jobs_is_empty_and_creates_no_database_before_the_first_run(base, client):

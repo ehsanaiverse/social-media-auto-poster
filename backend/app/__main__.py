@@ -1,7 +1,7 @@
-"""Start the local API: ``python -m app``, from the repository root.
+"""Start the local API: ``python -m app``.
 
-Run it from the repository root so it uses the same data folder, job database,
-and run lock as the CLI. It listens on 127.0.0.1 only.
+It always uses the project's own data folder, job database, and run lock (the
+same ones as the CLI), wherever it is started. It listens on 127.0.0.1 only.
 """
 
 import uvicorn
