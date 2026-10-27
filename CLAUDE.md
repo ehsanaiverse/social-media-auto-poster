@@ -134,10 +134,13 @@ The folder structure was migrated in Milestone 1, Slice 1, and moved from `src/`
 Work **one milestone at a time**. Do not start the next milestone until the current one is tested, its results are explained, and the user has reviewed it.
 
 | # | Milestone | Status |
-| --- | --------- | ------ |
+| --- | --- | --- |
 | 0 | Inspect, plan, establish this file | Done |
-| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | Complete, pending review: Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability), 4 (validation + archive), 5 (LangGraph workflow), 6 (`run` command, end-to-end tests) done and tested. Decisions in `docs/decisions.md` |
-| 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | Implemented, tested, and committed (see below); awaiting the developer's review sign-off |
+| 1 | Local simulation: package setup, typed state, initial deterministic graph, pairing/validation, simulated publish, tests | **Complete** (signed off 2026-10-28): Slices 0 (docs/packaging), 1 (layout migration), 2 (models + config), 3 (ingestion: scanning + stability), 4 (validation + archive), 5 (LangGraph workflow), 6 (`run` command, end-to-end tests). Decisions in `docs/decisions.md` |
+| 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | **Complete** (signed off 2026-10-28 after the M2 review; see the detail below) |
+| 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started; waits for the developer's go-ahead |
+| 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |
+| 5 | Reliability and expansion: logging/monitoring, operational docs, evaluate PostgreSQL, plan Facebook/Instagram adapters | Not started |
 
 ### Milestone 2 status detail
 
@@ -150,11 +153,8 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | 2.4 `jobs` command, duplicates + interrupted note in `scan`, tester history via `jobs` | yes | yes | `9c0e4be` |
 | M2 follow-up: `resolve` command (+ tester menu 12), run logging (run_id, start/finish, skipped lines, mode), sandbox hardening, `/database/` ignored, test isolation (`tests/conftest.py`) | yes | yes | `5e14b18` |
 | PR #1 (`backend/` move + FastAPI/React) undone: `main` restored to `5e14b18` (D31) | yes | yes | `ba79243` (PR #3) |
-| Restructure into `backend/`, base folder from the package location, notebook and `requirements.txt` removed (D32) | yes | yes | `chore/restructure` (pending review) |
-| Planned next: Milestone 3 (checkpointer) | no | no | no |
-| 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
-| 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |
-| 5 | Reliability and expansion: logging/monitoring, operational docs, evaluate PostgreSQL, plan Facebook/Instagram adapters | Not started |
+| Restructure into `backend/`, base folder from the package location, notebook and `requirements.txt` removed (D32) | yes | yes | `783d330` (PR #4) |
+| Legacy root runtime folders removed from `.gitignore` after the manual move | yes | n/a | `a4398b5` (PR #5) |
 
 ### Milestone 4 requirements (recorded early)
 
@@ -169,7 +169,6 @@ Tests must cover, as the features appear: normal execution, validation failures,
 - `backend/pyproject.toml` is the only source of truth for dependencies: runtime in `[project] dependencies`, test tooling in `[project.optional-dependencies] dev`. The supported install is `pip install -e ".[dev]"` from `backend/`. There is no `requirements.txt` (removed in D32); do not re-add one.
 - Add a dependency only in the milestone that uses it. Verify the package name, current version, and Python compatibility on PyPI or the official docs before adding or pinning it. Bounds are `>=` the version actually installed and tested, `<` the next major version.
 - Current: `langgraph`, `python-dotenv` (runtime); `pytest` (dev).
-
 - Expected later: `watchdog` (when folder watching is added), `langgraph-checkpoint-sqlite` (M3), `requests` or similar (M4). `langchain` is **not** a dependency (see "No LLMs" above).
 - **Python version:** the developer uses **Python 3.14**; minimum is 3.12 (`requires-python = ">=3.12"`). `langgraph` officially lists classifiers only through 3.13, so re-check 3.14 compatibility whenever a dependency is added (especially `langgraph-checkpoint-sqlite` in M3). Falling back to 3.13 is the remedy if something breaks.
 - **Virtual environment:** the project venv is named `.vevn` (developer's choice) and lives at the repo root, shared by the whole repo; the planned frontend uses Node, not Python.

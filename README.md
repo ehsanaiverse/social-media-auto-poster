@@ -18,7 +18,7 @@ There is no continuous folder watcher, database/repository, scheduler, OAuth flo
 
 ## Current status
 
-**Milestones 1 (local simulation) and 2 (job database) complete; Milestone 2 pending review.** What exists today:
+**Milestones 1 (local simulation) and 2 (job database) complete and signed off (2026-10-28).** What exists today:
 
 - Packaging (`backend/pyproject.toml`) with declared dependencies.
 - An environment-variable template (`backend/.env.example`).
