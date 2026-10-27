@@ -39,7 +39,9 @@ class Recovery:
     stem: str
     mode: PublishMode
     status: JobStatus  # The new status: FAILED (simulated) or NEEDS_REVIEW (real).
-    notes: tuple[str, ...]  # Human-readable, also stored in the job's errors.
+    # Human-readable, shown by run. Real recoveries store every note in the job's errors;
+    # simulated ones store only the first, as the follow-up describes this run, not the job.
+    notes: tuple[str, ...]
     destination: str | None = None  # failed/ folder, if the files were moved.
 
 
