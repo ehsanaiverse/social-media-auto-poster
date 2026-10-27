@@ -45,34 +45,29 @@ Facebook and Instagram are placeholders for future work, not supported integrati
 
 ## Project layout
 
-Current layout. PR #1 moved the package from `src/` to `backend/` and added a local API and a frontend (decision D31):
+Current layout, after the Milestone 1, Slice 1 migration. Packages marked "empty" contain only an `__init__.py` and get code in later slices:
 
 ```text
 data/                              Local platform content; ignored by Git
   LinkedIn/{incoming,archive,failed}/
   Facebook/{incoming,archive,failed}/
   Instagram/{incoming,archive,failed}/
-backend/social_media_auto_poster/  The core package (CLI, graph, storage)
+src/social_media_auto_poster/
   config.py                        Settings and data-folder creation
   models.py                        Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult
   platforms/                       Publisher protocol (base.py) and simulator (simulator.py)
   platforms/{linkedin,facebook,instagram}/   Empty
   graph/                           LangGraph workflow: state.py, nodes.py, workflow.py
   ingestion/                       Scanning/pairing, stability check, validation
-  services/                        Hashing, archive/failed moves, run lock, startup reconciliation
-  storage/                         SQLite app database: schema/migrations (database.py), JobRepository (jobs.py)
-  main.py                          CLI: run, scan, jobs, resolve
-backend/app/                       Local FastAPI app (not working yet; see "Local API")
-frontend/                          React/Vite dashboard for the API (see frontend/README.md)
+  services/                        Moving posts to archive/failed (archive.py), single-run lock (run_lock.py)
+  storage/                         Empty; SQLite repository (Milestone 2)
 tests/unit/, tests/integration/    Unit tests; full-graph and end-to-end run tests
 docs/decisions.md                  Decision records
-scripts/app.py                     Sandboxed interactive tester
-notebooks/workflow.ipynb           Graph picture and one sample run
-database/app.db                    Job records, created by run; ignored by Git
+scripts/                           Empty
 logs/                              Local application logs; ignored by Git
 ```
 
-`main.py` provides the `run`, `scan`, `jobs`, and `resolve` commands. The full target layout is in `CLAUDE.md` ("Target code layout").
+`main.py` provides the `run` and `scan` commands. The full target layout is in `CLAUDE.md` ("Target code layout").
 
 ## Content naming convention
 
@@ -202,22 +197,11 @@ jupyter notebook notebooks/workflow.ipynb             # or open it in VS Code
 
 Shows the LangGraph workflow as a picture and as Mermaid text, then runs one sample post through it in a temporary sandbox and prints the final state. The picture is rendered by the **mermaid.ink** web service, which receives only node names and edges (no post content); offline, paste the printed Mermaid text into https://mermaid.live. Commit the notebook with outputs cleared (a test checks this).
 
-## Local API and frontend (not working yet)
-
-`backend/app/` is a FastAPI app and `frontend/` is a React dashboard for it, added in PR #1. **The API does not work with the Milestone 2 core yet and must not be run**: it still uses an older storage layer that would conflict with the job database. It is being rewired in a follow-up change. Once that lands it will be installed with the optional `api` extra and started with:
-
-```powershell
-python -m pip install -e ".[dev,api]"
-cd backend; python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
-```
-
-The API is local only: it must bind to `127.0.0.1` and never expose secrets. The core CLI does not need the `api` extra.
-
 ## Configuration and security
 
 Copy `.env.example` to `.env` when local configuration is introduced. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, or logs. OAuth and API access are not configured by this scaffold. Future integrations must use official APIs and comply with their permissions and policies.
 
-Job records live in `database\app.db` (SQLite, created by `run`; ignored by Git). Publishes interrupted by a crash are recovered at the start of the next `run`. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
+Job records live in `database\app.db` (SQLite, created by `run`; ignored by Git). Restart recovery arrives later in Milestone 2. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
 
 ## Architecture decisions
 

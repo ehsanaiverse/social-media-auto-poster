@@ -151,7 +151,7 @@ def check_sandbox(sandbox: Path, *, repo_root: Path, real_data: Path) -> Path:
     Refuses the project folder itself, and any folder that is, is inside, or
     contains the real data folder, the real job database folder, or the real
     logs folder. ``Sandbox.prepare`` additionally refuses non-empty folders that
-    are not already sandboxes (for example ``backend``).
+    are not already sandboxes (for example ``src``).
     """
     sandbox, repo_root = sandbox.resolve(), repo_root.resolve()
     if sandbox == repo_root:

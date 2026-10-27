@@ -1,11 +1,8 @@
-# Runtime dependencies (same set as pyproject.toml).
-# Prefer: python -m pip install -e ".[dev]"
-langgraph>=1.2.17,<2
-python-dotenv>=1.2,<2
-fastapi>=0.110,<1
-uvicorn[standard]>=0.29,<1
-python-multipart>=0.0.9,<1
-
-# Tests
-pytest>=9.1,<10
-httpx>=0.27,<1
+# Dependencies for the initial ingestion/configuration milestone.
+watchdog
+python-dotenv
+requests
+langchain
+langgraph
+langgraph-checkpoint-sqlite
+pytest

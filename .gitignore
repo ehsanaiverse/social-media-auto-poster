@@ -1,9 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.pyd
-*.so
 .Python
 build/
 dist/
@@ -12,11 +10,12 @@ dist/
 .coverage
 htmlcov/
 
-# Virtual environments (the project venv is .vevn)
-.vevn/
+# Virtual environments
 .venv/
+.vevn/
 venv/
 env/
+.env/
 ENV/
 
 # Local secrets
@@ -24,35 +23,31 @@ ENV/
 .env.*
 !.env.example
 
-# Local data and state (never commit content, databases, logs, or the run lock)
+# Local data and state
 /data/**/*
 !/data/**/.gitkeep
-database/
+/database/
 *.db
-*.db-shm
-*.db-wal
 *.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
-autoposter.lock
-*.lock
-logs/
+
+# Logs
 *.log
 *.log.[0-9]*
-sandbox/
-.ipynb_checkpoints/
-
-# Frontend
-node_modules/
-frontend/dist/
-*.tsbuildinfo
-*.local
+autoposter.lock
+/logs/*
+!/logs/.gitkeep
 
 # Editors and operating systems
 .vscode/
 .idea/
-*.swp
-*.swo
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Developer tools
+/sandbox/
+.ipynb_checkpoints/
