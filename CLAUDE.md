@@ -86,9 +86,11 @@ LangGraph is a **required** part of this project, not an optional or future enha
 ## Local API (`backend/app/`)
 
 - The API is a **local** tool: it must bind to `127.0.0.1` only and never expose secrets (no tokens, `.env` values, or settings beyond paths in responses). CORS must be limited to the local frontend origins.
-- **Current state: not working, do not run it.** It was written against the Milestone 1 core and still uses its own `storage/db.py` + `storage/repository.py` (integer IDs, a different `jobs` schema, no `mode`) and `Settings.app_db`, which no longer exists, so it fails at startup. **Do not "fix" it by re-adding `app_db`:** its schema would then write to the same `jobs` table in `database/app.db` as `storage/database.py` and corrupt business records.
-- **Planned rewire (separate PR after PR #1 merges):** the API must reuse the core, never re-implement it: one shared `run` path with the run lock, reconciliation, per-mode dedupe, and run logging; job history via `storage.jobs.JobRepository` and `open_app_db_read_only`; job IDs are UUID strings. Then delete `storage/db.py` and `storage/repository.py`, restrict CORS and `/media`, remove the import-time `create_app()`, and add `TestClient` tests in temporary folders.
-- Launch (after the rewire): `cd backend; python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000`.
+- **The API reuses the core and never re-implements it (D32).** `POST /api/run` calls `main.run_once`, the same function as the `run` command (run lock → 409 if held, crash recovery, per-mode duplicate check, run logging with run_id, same exit codes in the response). `GET /api/scan` is read-only like `scan` (shares `find_duplicate` and `unstable_files`; never creates folders or the DB; 404 if the incoming folder is missing). `GET /api/jobs` (`limit`, `status`) and `GET /api/jobs/{id or unique prefix}` read through `open_app_db_read_only` + `JobRepository`; they never create the DB. Job IDs are 32-hex UUID strings. There is no `resolve` endpoint yet; use the CLI.
+- `backend/app/services/job_service.py` is the only bridge to the core; routers are thin. Endpoints are plain `def`, so FastAPI runs them in worker threads. Responses carry file **names**, hashes, statuses, and errors, never file contents; every run response says `"simulated": true`.
+- `create_app()` creates nothing on disk and there is no module-level `app`; start it with `--factory`. CORS allows only `http://localhost:3000` and `http://127.0.0.1:3000` (the Vite dev server, which also proxies `/api`). The data folder is **not** served (`/media` was removed).
+- **Start it from the repository root**, like the CLI: settings resolve `data/`, `database/app.db`, `logs/`, and `autoposter.lock` against the current folder, so starting it from `backend/` would use a separate `backend/data` and `backend/database`.
+- Launch: `python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000` (or `python -m app`), from the repo root. Tests: `tests/integration/test_api.py` (`TestClient`, temporary folders; skipped if the `api` extra is not installed).
 
 ## Target code layout
 
@@ -102,13 +104,13 @@ backend/social_media_auto_poster/
 ├── platforms/         # base.py (publisher protocol), simulator, linkedin/ adapter
 ├── services/          # Hashing, archiving, other plain-Python helpers used by nodes
 └── main.py            # CLI entry point
-backend/app/           # Local FastAPI app (PR #1): routers scan, run, jobs; not working yet (see "Local API")
+backend/app/           # Local FastAPI app: routers scan, run, jobs; services/job_service.py bridges to the core (see "Local API")
 frontend/              # React/Vite dashboard for the API (PR #1)
 ```
 
 **Layout change (PR #1, D31):** the package moved from `src/` to `backend/`; there is no `src/` folder any more. `pyproject.toml` installs only `social_media_auto_poster` and `app` from `backend/`.
 
-The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` has four commands (`run`, `scan`, `jobs`, `resolve`). `jobs` (Slice 2.4) is read-only history via `open_app_db_read_only` (`--last N`, `--status S`, `--id PREFIX`; prefix matching has no wildcards); it never creates or changes the DB and takes no lock. `scan` (added early, after Slice 3) must stay read-only: it reports stability, validation, and (for stable valid posts) `new` or `DUPLICATE of job …` using the same `sha256_file` + `find_blocking_duplicate` check and `RUN_MODE` as `run`, plus a note about interrupted `PUBLISHING` jobs; it never moves, publishes, reconciles, or creates folders or the DB. `run` (Slice 6) creates the data folders, takes the run lock, and runs each complete post once through the graph with the `Simulator` publisher (there is no real publisher to select in M1). It has no `--dir`: incoming, failed, and archive must come from the same settings. It is one-shot; continuous folder watching is not part of M1. One unexpected job error is logged and shown as `ERROR (unexpected)` without stopping other jobs.
+The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` has four commands (`run`, `scan`, `jobs`, `resolve`); `run` is `run_once` + printing its `RunReport`, so the API can call the same `run_once`. `jobs` (Slice 2.4) is read-only history via `open_app_db_read_only` (`--last N`, `--status S`, `--id PREFIX`; prefix matching has no wildcards); it never creates or changes the DB and takes no lock. `scan` (added early, after Slice 3) must stay read-only: it reports stability, validation, and (for stable valid posts) `new` or `DUPLICATE of job …` using the same `sha256_file` + `find_blocking_duplicate` check and `RUN_MODE` as `run`, plus a note about interrupted `PUBLISHING` jobs; it never moves, publishes, reconciles, or creates folders or the DB. `run` (Slice 6) creates the data folders, takes the run lock, and runs each complete post once through the graph with the `Simulator` publisher (there is no real publisher to select in M1). It has no `--dir`: incoming, failed, and archive must come from the same settings. It is one-shot; continuous folder watching is not part of M1. One unexpected job error is logged and shown as `ERROR (unexpected)` without stopping other jobs.
 
 **`run` exit codes:** 0 completed (all simulated, duplicate, or waiting, or nothing to do); 1 setup error (data folder, job database, or crash recovery); 2 usage error (argparse); 3 completed, but at least one job ended `FAILED`, `NEEDS_REVIEW`, or `ERROR`, or a crashed job was recovered as `NEEDS_REVIEW`; 4 another run is in progress. **`jobs` exit codes:** 0 ok (including "no jobs yet"); 1 database unreadable or `--id` matches no job or more than one; 2 usage error.
 
@@ -136,8 +138,8 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | 2.3 Startup reconciliation, `list_by_status`, tester crash simulation (menu 11) | yes | yes | `d30dc71` |
 | 2.4 `jobs` command, duplicates + interrupted note in `scan`, tester history via `jobs` | yes | yes | `9c0e4be` |
 | M2 follow-up: `resolve` command (+ tester menu 12), run logging (run_id, start/finish, skipped lines, mode), sandbox hardening, `/database/` ignored, test isolation (`tests/conftest.py`) | yes | yes | `5e14b18` |
-| PR #1 adoption: `src/` → `backend/`, FastAPI app and frontend added, M2 core and tests kept, `api` extra (D31) | yes | core yes; API no | on `mz-updation` (pending review) |
-| API rewire to the M2 core (see "Local API") | no | no | no |
+| PR #1 adoption: `src/` → `backend/`, FastAPI app and frontend added, M2 core and tests kept, `api` extra (D31) | yes | yes | merged in `2611952` |
+| API rewire to the M2 core: `run_once`, `JobService` bridge, old storage removed, CORS/`/media` locked down, frontend types, `test_api.py` (D32) | yes | yes | on `api-rewire` (pending review) |
 | Planned next: Milestone 3 (checkpointer) | no | no | no |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |
@@ -176,7 +178,9 @@ py -3.14 -m venv .vevn               # once
 .\.vevn\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
-python -m pip install -e ".[dev,api]"  # only for the local API in backend/app (not working yet; see "Local API")
+python -m pip install -e ".[dev,api]"  # only for the local API in backend/app (see "Local API")
+python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000   # local API, from the repo root
+cd frontend; npm install; npm run dev   # dashboard at http://localhost:3000 (needs the API running)
 python -m pytest
 python -m social_media_auto_poster.main scan                 # read-only report of data\LinkedIn\incoming
 python -m social_media_auto_poster.main scan --dir <folder> --interval 0

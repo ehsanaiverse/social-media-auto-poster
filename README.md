@@ -62,7 +62,7 @@ backend/social_media_auto_poster/  The core package (CLI, graph, storage)
   services/                        Hashing, archive/failed moves, run lock, startup reconciliation
   storage/                         SQLite app database: schema/migrations (database.py), JobRepository (jobs.py)
   main.py                          CLI: run, scan, jobs, resolve
-backend/app/                       Local FastAPI app (not working yet; see "Local API")
+backend/app/                       Local FastAPI app (see "Local API and frontend")
 frontend/                          React/Vite dashboard for the API (see frontend/README.md)
 tests/unit/, tests/integration/    Unit tests; full-graph and end-to-end run tests
 docs/decisions.md                  Decision records
@@ -202,16 +202,32 @@ jupyter notebook notebooks/workflow.ipynb             # or open it in VS Code
 
 Shows the LangGraph workflow as a picture and as Mermaid text, then runs one sample post through it in a temporary sandbox and prints the final state. The picture is rendered by the **mermaid.ink** web service, which receives only node names and edges (no post content); offline, paste the printed Mermaid text into https://mermaid.live. Commit the notebook with outputs cleared (a test checks this).
 
-## Local API and frontend (not working yet)
+## Local API and frontend
 
-`backend/app/` is a FastAPI app and `frontend/` is a React dashboard for it, added in PR #1. **The API does not work with the Milestone 2 core yet and must not be run**: it still uses an older storage layer that would conflict with the job database. It is being rewired in a follow-up change. Once that lands it will be installed with the optional `api` extra and started with:
+`backend/app/` is a local FastAPI app and `frontend/` a React dashboard for it. The API calls the same code as the CLI (`run` uses the same run lock, crash recovery, duplicate check, and logging), so it is safe to use either. Publishing is still simulated.
+
+Start both **from the repository root** (the API uses `data\`, `database\app.db`, and `logs\` under the folder it is started from, just like the CLI):
 
 ```powershell
-python -m pip install -e ".[dev,api]"
-cd backend; python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
+# Terminal 1: the API (http://127.0.0.1:8000, interactive docs at /docs)
+.\.vevn\Scripts\Activate.ps1
+python -m pip install -e ".[dev,api]"        # once
+python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
+
+# Terminal 2: the dashboard (http://localhost:3000)
+cd frontend
+npm install                                  # once
+npm run dev
 ```
 
-The API is local only: it must bind to `127.0.0.1` and never expose secrets. The core CLI does not need the `api` extra.
+| Endpoint | What it does |
+| --- | --- |
+| `GET /api/scan` | Read-only report of `data\LinkedIn\incoming` (like `scan`) |
+| `POST /api/run` | Process every complete post once (like `run`); 409 if a run is already in progress |
+| `GET /api/jobs?limit=20&status=FAILED` | Job history (like `jobs`) |
+| `GET /api/jobs/{job_id}` | One job, by full ID or a unique prefix |
+
+The API listens on `127.0.0.1` only, allows browser calls only from the local dashboard, and never serves file contents. To settle a `NEEDS_REVIEW` job, use the `resolve` command.
 
 ## Configuration and security
 
