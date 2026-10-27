@@ -26,6 +26,7 @@ Everything the application writes lives in `backend\`, whichever folder you star
 backend\.env                         Local settings (copy .env.example; never commit)
 backend\data\<Platform>\{incoming,archive,failed}\
 backend\database\app.db              Job database
+backend\database\langgraph_checkpoints.db   Graph checkpoints (interrupted jobs only)
 backend\logs\autoposter.log          Run log
 backend\autoposter.lock              Single-run lock
 backend\sandbox\                     Interactive tester sandbox
@@ -59,4 +60,4 @@ python scripts\app.py                               # sandbox: backend\sandbox
 python scripts\app.py --sandbox D:\tmp\my-sandbox   # any other empty folder
 ```
 
-A menu to add sample posts, run, scan, view folders and job history, simulate a crash during publish, and resolve a `NEEDS_REVIEW` job. It works only inside its sandbox, which has its own data, database, logs, and lock.
+A menu to add sample posts, run, scan, view folders and job history, simulate a crash during or right after publish (menu 13 shows a job resumed from its checkpoint), and resolve a `NEEDS_REVIEW` job. It works only inside its sandbox, which has its own data, database, logs, and lock.

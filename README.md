@@ -18,7 +18,7 @@ There is no continuous folder watcher, scheduler, OAuth flow, or live publishing
 
 ## Current status
 
-**Milestones 1 (local simulation) and 2 (job database) complete and signed off (2026-10-28).** What exists today:
+**Milestones 1 (local simulation) and 2 (job database) complete and signed off (2026-10-28); Milestone 3 (crash-safe checkpoints) implemented and awaiting review.** What exists today:
 
 - Packaging (`backend/pyproject.toml`) with declared dependencies.
 - An environment-variable template (`backend/.env.example`).
@@ -31,6 +31,7 @@ There is no continuous folder watcher, scheduler, OAuth flow, or live publishing
 - A LangGraph workflow (`graph/`) that takes one post through stability → validation → duplicate check → simulated publish → record, moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`.
 - A job database (`backend\database\app.db`, SQLite, via `storage/`): every processed post is recorded with SHA-256 hashes of its image and caption, so the same content is never processed twice.
 - Crash recovery: at the start of every `run`, jobs left half-published by a crash are resolved (see `RECOVERED` below).
+- Graph checkpoints (`backend\database\langgraph_checkpoints.db`, a separate SQLite file): each step of a job is saved before the next one starts, so a run that crashed **after** publishing is finished by the next run instead of being marked `NEEDS_REVIEW` (see `RESUMED` below). A crash during the publish itself is never retried.
 - Four commands (`main.py`): `run` processes every complete post once, the read-only `scan` (with duplicate check) and `jobs` (history), and `resolve` for jobs that need review. See "How to use" below.
 - Unit and integration tests under `backend/tests/`. Decisions are recorded in `docs/decisions.md`.
 
@@ -133,11 +134,12 @@ What happens to each post:
 | `DUPLICATE` | Same image and caption content as an earlier job (even under a different file name) | Untouched; reported on every run until you delete them |
 | `FAILED` | Invalid (or a definite publish failure) | Moved to `failed\<UTC time>_<name>\` with `error-report.txt` explaining why |
 | `NEEDS_REVIEW` | Publish outcome unknown (cannot happen with the simulator) | Moved to `failed\...`; check LinkedIn before re-posting |
+| `RESUMED` | Shown first when an earlier run crashed after a publish had returned (while recording the result or moving the files). The job is finished from its saved checkpoint; nothing is published again | Moved or kept as for any finished job; a half-finished move is completed |
 | `RECOVERED` | Shown before the jobs when an earlier run crashed mid-publish. A simulated job becomes `FAILED` (nothing was sent) and is processed again in the same run; a real one becomes `NEEDS_REVIEW` and is never retried | Simulated: stay in `incoming/`. Real: moved to `failed\...` with a report, if unchanged |
 | `WAITING (still copying)` | A file is still being written | Untouched; retried next run |
 | `PENDING` / `AMBIGUOUS` | No partner file yet / more than one file per name | Untouched |
 
-To retry a failed post: fix it, move its image and caption back to `incoming\`, and delete the old `failed\` folder. A failed job never blocks a retry; editing the caption (or image) of any post makes it a new job.
+Every folder in `failed\` and `archive\` contains a small `.autoposter-job` file with the job ID; it lets an interrupted move be finished safely. To retry a failed post: fix it, move its image and caption back to `incoming\`, and delete the old `failed\` folder. A failed job never blocks a retry; editing the caption (or image) of any post makes it a new job.
 
 `run` options: `--verbose` shows INFO logs in the terminal; `--interval 0` skips the 1-second change-watch wait. The full log is `backend\logs\autoposter.log` (UTC timestamps, rotated at 1 MB, 5 backups; caption text is never logged). Each line carries the run's `run_id`; every run starts with `Run started` and ends with a `Run finished` line that counts each outcome and gives the exit code and duration. Only one `run` can work at a time.
 
@@ -188,7 +190,7 @@ python scripts\app.py                                 # sandbox: backend\sandbox
 python scripts\app.py --sandbox D:\tmp\my-sandbox     # any other folder
 ```
 
-A terminal menu to add sample posts (valid JPEG/PNG, invalid kinds, lone files, ambiguous), run, scan, look at the folders, see job history (via the `jobs` command), simulate a crash during publish (to watch startup recovery), resolve a `NEEDS_REVIEW` job, and reset. Everything happens in a **sandbox** with its own `data\`, `database\app.db`, logs, and run lock; your real data and job database are never touched. It refuses to start if the sandbox is, contains, or is inside your real data, `database\`, or `logs\` folder, and it only uses a folder that is empty or already marked as a sandbox (`.autoposter-sandbox`), so Reset can never delete anything else. Publishing is always simulated; Run and Scan call the real `run` / `scan` commands. Valid sample posts share the same tiny image, so adding the same caption twice demonstrates a `DUPLICATE`.
+A terminal menu to add sample posts (valid JPEG/PNG, invalid kinds, lone files, ambiguous), run, scan, look at the folders, see job history (via the `jobs` command), simulate a crash during publish (to watch startup recovery) or right after it (menu 13, to watch a job resumed from its checkpoint), resolve a `NEEDS_REVIEW` job, and reset. Everything happens in a **sandbox** with its own `data\`, `database\app.db`, logs, and run lock; your real data and job database are never touched. It refuses to start if the sandbox is, contains, or is inside your real data, `database\`, or `logs\` folder, and it only uses a folder that is empty or already marked as a sandbox (`.autoposter-sandbox`), so Reset can never delete anything else. Publishing is always simulated; Run and Scan call the real `run` / `scan` commands. Valid sample posts share the same tiny image, so adding the same caption twice demonstrates a `DUPLICATE`.
 
 ## Configuration and security
 
@@ -196,7 +198,7 @@ Copy `backend\.env.example` to `backend\.env` for local configuration; the appli
 
 `AUTOPOSTER_DATA_DIR` moves the content folder (default `backend\data`). `database\`, `logs\`, and the run lock always stay in the base folder, `backend\`.
 
-Job records live in `backend\database\app.db` (SQLite, created by `run`; ignored by Git). A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
+Job records live in `backend\database\app.db` (SQLite, created by `run`; ignored by Git). Graph checkpoints live in a separate file, `backend\database\langgraph_checkpoints.db`; it only ever holds jobs that were interrupted, and never caption text. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
 
 ## Architecture decisions
 
@@ -211,7 +213,7 @@ See `CLAUDE.md` for the binding project rules.
 0. Inspect the scaffold, plan, and establish `CLAUDE.md` (done).
 1. Local simulation: typed LangGraph state, initial deterministic graph, pairing and validation, simulated publishing, tests.
 2. Durable application records: SQLite repository, job states, hashes, duplicate detection, restart reconciliation.
-3. Persistent LangGraph execution: SQLite checkpointer, resume and interruption tests.
+3. Persistent LangGraph execution: SQLite checkpointer, resume and interruption tests (implemented; awaiting review).
 4. Real LinkedIn publishing through official APIs, with safeguards for ambiguous outcomes.
 5. Reliability, operational docs, PostgreSQL evaluation, and Facebook/Instagram planning.
 
