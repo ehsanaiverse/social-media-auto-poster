@@ -1,7 +1,9 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyd
+*.so
 .Python
 build/
 dist/
@@ -11,12 +13,11 @@ dist/
 htmlcov/
 
 # Virtual environments
-.venv/
-.vevn/
 venv/
 env/
-.env/
 ENV/
+.venv/
+.venv
 
 # Local secrets
 .env
@@ -24,23 +25,29 @@ ENV/
 !.env.example
 
 # Local data and state
-/data/**/*
+data/**/*
 !/data/**/.gitkeep
+database/**/
 *.db
 *.sqlite
 *.sqlite3
 *.db-journal
-
-# Logs
+*.lock
 *.log
 *.log.[0-9]*
-autoposter.lock
-/logs/*
-!/logs/.gitkeep
+logs/**/*
+!logs/.gitkeep
+
+# Frontend
+node_modules/
+frontend/dist/
+*.local
 
 # Editors and operating systems
 .vscode/
 .idea/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
 Desktop.ini
