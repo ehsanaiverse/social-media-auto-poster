@@ -146,7 +146,12 @@ def move_to_failed(state: JobState, runtime: Runtime[WorkflowContext]) -> Update
     """Move a FAILED or NEEDS_REVIEW post out of incoming/ so it is not picked up again."""
     candidate = _candidate(state)
     try:
-        folder = archive_post(candidate, runtime.context.settings.failed_dir(candidate.platform))
+        folder = archive_post(
+            candidate,
+            runtime.context.settings.failed_dir(candidate.platform),
+            job_id=state["job_id"],
+            folder_name=state["folder_name"],
+        )
     except (OSError, ArchiveError) as error:
         logger.error("Could not move post to failed/; files left in place: %s error=%s", _fields(state), error)
         return {"errors": [*state["errors"], f"could not move files to failed/: {error}"]}
@@ -201,7 +206,12 @@ def archive(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
     """Archive a confirmed real publish. The status stays PUBLISHED even if the move fails."""
     candidate = _candidate(state)
     try:
-        folder = archive_post(candidate, runtime.context.settings.archive_dir(candidate.platform))
+        folder = archive_post(
+            candidate,
+            runtime.context.settings.archive_dir(candidate.platform),
+            job_id=state["job_id"],
+            folder_name=state["folder_name"],
+        )
     except (OSError, ArchiveError) as error:
         message = f"published, but could not move files to archive/: {error}"
         logger.error("Published, but could not archive files; left in place: %s error=%s", _fields(state), error)

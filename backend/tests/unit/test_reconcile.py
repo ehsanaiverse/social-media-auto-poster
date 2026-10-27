@@ -5,7 +5,7 @@ import pytest
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import JobStatus, Platform, PublishMode
 from social_media_auto_poster.services import reconcile
-from social_media_auto_poster.services.archive import ERROR_REPORT_NAME, ArchiveError
+from social_media_auto_poster.services.archive import ERROR_REPORT_NAME, JOB_MARKER_NAME, ArchiveError
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.services.reconcile import (
     REAL_INTERRUPTED,
@@ -82,7 +82,7 @@ def test_real_publishing_becomes_needs_review_and_moves_files_with_report(repo, 
     assert recovery.status is JobStatus.NEEDS_REVIEW
     [folder] = settings.failed_dir(LINKEDIN).iterdir()
     assert recovery.destination == str(folder)
-    assert sorted(p.name for p in folder.iterdir()) == [ERROR_REPORT_NAME, "launch.jpg", "launch.txt"]
+    assert sorted(p.name for p in folder.iterdir()) == [JOB_MARKER_NAME, ERROR_REPORT_NAME, "launch.jpg", "launch.txt"]
     report = (folder / ERROR_REPORT_NAME).read_text(encoding="utf-8")
     assert "Status: NEEDS_REVIEW" in report
     assert "Check LinkedIn before re-posting" in report
@@ -120,7 +120,7 @@ def test_real_recovery_leaves_files_with_changed_content_alone(repo, settings):
 def test_real_recovery_move_failure_still_records_needs_review(repo, settings, monkeypatch):
     media, _ = stuck_job(repo, settings, mode=PublishMode.REAL)
 
-    def broken_move(candidate, dest_dir):
+    def broken_move(candidate, dest_dir, **_):
         raise ArchiveError("disk full")
 
     monkeypatch.setattr(reconcile, "archive_post", broken_move)
@@ -139,7 +139,7 @@ def test_status_is_written_before_files_are_touched(repo, settings, monkeypatch)
     stuck_job(repo, settings, mode=PublishMode.REAL)
     seen = []
 
-    def spying_move(candidate, dest_dir):
+    def spying_move(candidate, dest_dir, **_):
         seen.append(repo.get("job-1").status)
         raise ArchiveError("stop here")
 

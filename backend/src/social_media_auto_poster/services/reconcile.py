@@ -18,10 +18,11 @@ blocking a re-publish.
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode
-from social_media_auto_poster.services.archive import ArchiveError, archive_post, write_error_report
+from social_media_auto_poster.services.archive import ArchiveError, archive_post, post_folder_name, write_error_report
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.storage.jobs import JobRecord, JobRepository
 
@@ -87,7 +88,12 @@ def _recover_real(record: JobRecord, repository: JobRepository, settings: Settin
         notes.append(file_note)
     else:
         try:
-            folder = archive_post(candidate, settings.failed_dir(candidate.platform))
+            folder = archive_post(
+                candidate,
+                settings.failed_dir(candidate.platform),
+                job_id=record.job_id,
+                folder_name=post_folder_name(record.stem, datetime.now(UTC)),
+            )
         except (OSError, ArchiveError) as error:
             notes.append(f"could not move files to failed/: {error}")
         else:

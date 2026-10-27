@@ -8,11 +8,13 @@ repository) are passed as LangGraph run context instead, via
 """
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TypedDict
 
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode
 from social_media_auto_poster.platforms.base import Publisher
+from social_media_auto_poster.services.archive import post_folder_name
 from social_media_auto_poster.storage.jobs import JobRepository
 
 
@@ -34,6 +36,9 @@ class JobState(TypedDict):
     simulated: bool | None  # Set by the publish node; None if publish never ran.
     platform_post_id: str | None
     destination: str | None  # Folder the files were moved to, if they were moved.
+    # Name of the post's folder in failed/ or archive/, fixed when the job starts so a
+    # resumed move (after a crash) finds the folder an interrupted move began.
+    folder_name: str
 
 
 @dataclass(frozen=True)
@@ -47,7 +52,9 @@ class WorkflowContext:
     stability_interval_s: float
 
 
-def new_job_state(job_id: str, candidate: PostCandidate, mode: PublishMode) -> JobState:
+def new_job_state(
+    job_id: str, candidate: PostCandidate, mode: PublishMode, *, now: datetime | None = None
+) -> JobState:
     """The starting state for a newly discovered candidate."""
     return JobState(
         job_id=job_id,
@@ -65,4 +72,5 @@ def new_job_state(job_id: str, candidate: PostCandidate, mode: PublishMode) -> J
         simulated=None,
         platform_post_id=None,
         destination=None,
+        folder_name=post_folder_name(candidate.stem, now or datetime.now(UTC)),
     )

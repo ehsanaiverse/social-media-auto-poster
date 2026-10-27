@@ -17,7 +17,7 @@ from social_media_auto_poster.graph.state import WorkflowContext, new_job_state
 from social_media_auto_poster.graph.workflow import build_workflow, run_job
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, PublishResult
 from social_media_auto_poster.platforms.simulator import Simulator
-from social_media_auto_poster.services.archive import ERROR_REPORT_NAME, ArchiveError
+from social_media_auto_poster.services.archive import ERROR_REPORT_NAME, JOB_MARKER_NAME, ArchiveError
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.storage.database import open_app_db
 from social_media_auto_poster.storage.jobs import DuplicateJobError, JobRepository
@@ -175,7 +175,7 @@ def test_invalid_post_fails_and_moves_to_failed_with_report(settings, context, r
     assert publisher.calls == 0
     folder = only_folder(settings.failed_dir(LINKEDIN))
     assert final["destination"] == str(folder)
-    assert sorted(p.name for p in folder.iterdir()) == [ERROR_REPORT_NAME, "launch.jpg", "launch.txt"]
+    assert sorted(p.name for p in folder.iterdir()) == [JOB_MARKER_NAME, ERROR_REPORT_NAME, "launch.jpg", "launch.txt"]
     report = (folder / ERROR_REPORT_NAME).read_text(encoding="utf-8")
     assert "Status: FAILED" in report
     assert "- caption is empty" in report
@@ -387,7 +387,7 @@ def test_unreadable_file_during_hashing_waits_for_next_run(settings, context, mo
 def test_archive_failure_after_publish_keeps_published_status(settings, context, repo, monkeypatch):
     candidate = make_candidate(settings)
 
-    def broken_archive(candidate, dest_dir):
+    def broken_archive(candidate, dest_dir, **_):
         raise ArchiveError("disk full")
 
     monkeypatch.setattr(nodes, "archive_post", broken_archive)
@@ -427,7 +427,7 @@ def test_database_failure_after_archive_move_is_logged_not_raised(settings, cont
 def test_failed_move_to_failed_keeps_status_and_files(settings, context, monkeypatch):
     candidate = make_candidate(settings, caption=b"")
 
-    def locked_move(candidate, dest_dir):
+    def locked_move(candidate, dest_dir, **_):
         raise OSError("locked")
 
     monkeypatch.setattr(nodes, "archive_post", locked_move)
