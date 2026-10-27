@@ -416,7 +416,7 @@ def test_scan_never_reconciles(base, incoming):
 def test_recovery_database_failure_stops_the_run(base, incoming, finals, monkeypatch, capsys):
     add_post(incoming, "launch")
 
-    def broken(repository, settings):
+    def broken(repository, settings, **_):
         raise sqlite3.OperationalError("disk I/O error")
 
     monkeypatch.setattr(cli, "reconcile_interrupted_jobs", broken)

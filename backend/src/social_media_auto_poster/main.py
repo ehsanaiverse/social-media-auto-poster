@@ -27,6 +27,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from social_media_auto_poster.config import DATA_DIR_VAR, Settings, ensure_data_dirs, load_settings
 from social_media_auto_poster.graph.checkpoints import open_checkpointer
+from social_media_auto_poster.graph.resume import ResumeResult, resume_interrupted_jobs
 from social_media_auto_poster.graph.state import JobState, WorkflowContext
 from social_media_auto_poster.graph.workflow import run_job
 from social_media_auto_poster.ingestion.scanner import scan_incoming
@@ -57,7 +58,7 @@ EXIT_LOCKED = 4
 # Outcome counters reported on the "Run finished" log line, in this order.
 RUN_COUNTS = (
     "simulated", "published", "failed", "needs_review", "duplicates",
-    "waiting", "pending", "ambiguous", "recovered", "errors",
+    "waiting", "pending", "ambiguous", "recovered", "resumed", "errors",
 )
 MIN_JOB_ID_PREFIX = 6
 
@@ -69,8 +70,9 @@ exit codes:
   0  run completed; every job was simulated, a duplicate, or waiting, or there was nothing to do
   1  setup error (data folder, job database, or crash recovery could not complete)
   2  invalid command or option
-  3  run completed, but at least one job ended FAILED, NEEDS_REVIEW, or ERROR,
-     or an interrupted job was recovered as NEEDS_REVIEW
+  3  run completed, but at least one job ended FAILED, NEEDS_REVIEW, or ERROR
+     (including jobs resumed after a crash), or an interrupted job was recovered
+     as NEEDS_REVIEW
   4  another run is in progress
 """
 
@@ -489,15 +491,34 @@ def _run_locked(settings: Settings, interval_s: float, counts: Counter[str]) -> 
             return EXIT_SETUP_ERROR
         repository = JobRepository(conn)
         try:
-            recoveries = reconcile_interrupted_jobs(repository, settings)
+            # Resume first: it settles what checkpoints can prove; reconciliation handles the rest.
+            resumed = resume_interrupted_jobs(checkpointer, repository, settings)
+            recoveries = resumed.recoveries + reconcile_interrupted_jobs(
+                repository, settings, skip=resumed.skip_reconcile
+            )
         except sqlite3.Error:
             # Never process on top of an unknown state.
             logger.exception("Could not recover interrupted jobs; nothing was processed")
             return EXIT_SETUP_ERROR
+        resumed_lines = _resumed_lines(resumed)
+        counts["resumed"] = len(resumed_lines)
+        counts.update(line.outcome for line in resumed_lines)
         counts["recovered"] = len(recoveries)
+        if resumed_lines:
+            _print_jobs(resumed_lines, title="RESUMED", note="jobs finished after an earlier crash")
         if recoveries:
             _print_recoveries(recoveries)
-        return _process(settings, repository, checkpointer, interval_s, recoveries, counts)
+        earlier_problems = any(line.problem for line in resumed_lines)
+        return _process(settings, repository, checkpointer, interval_s, recoveries, earlier_problems, counts)
+
+
+def _resumed_lines(resumed: ResumeResult) -> list[_JobLine]:
+    lines = [_describe(final, context) for final, context in resumed.resumed]
+    lines += [
+        _JobLine(stem, "ERROR (unexpected)", "resume failed; kept for the next run", (), problem=True, outcome="errors")
+        for _, stem in resumed.failed
+    ]
+    return lines
 
 
 def _process(
@@ -506,6 +527,7 @@ def _process(
     checkpointer: BaseCheckpointSaver,
     interval_s: float,
     recoveries: list[Recovery],
+    earlier_problems: bool,
     counts: Counter[str],
 ) -> int:
     platform = Platform.LINKEDIN
@@ -543,7 +565,8 @@ def _process(
         print("Duplicates stay in incoming/; delete them when you no longer need them.")
     print(f"Log: {settings.log_file}")
     needs_human = any(r.status is JobStatus.NEEDS_REVIEW for r in recoveries)
-    return EXIT_JOB_PROBLEMS if needs_human or any(line.problem for line in lines) else EXIT_OK
+    problems = needs_human or earlier_problems or any(line.problem for line in lines)
+    return EXIT_JOB_PROBLEMS if problems else EXIT_OK
 
 
 def _print_recoveries(recoveries: list[Recovery]) -> None:
@@ -612,10 +635,10 @@ def _relative_to_data(destination: str | None, settings: Settings) -> str | None
         return destination
 
 
-def _print_jobs(lines: list[_JobLine]) -> None:
+def _print_jobs(lines: list[_JobLine], *, title: str = "JOBS", note: str = "") -> None:
     stem_width = max(len(line.stem) for line in lines)
     label_width = max(len(line.label) for line in lines)
-    print(f"\nJOBS ({len(lines)})")
+    print(f"\n{title} ({len(lines)})" + (f" - {note}" if note else ""))
     for line in lines:
         print(f"  {line.stem:<{stem_width}}   {line.label:<{label_width}}   {line.note}")
         for detail in line.details:

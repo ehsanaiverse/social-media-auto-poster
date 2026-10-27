@@ -14,6 +14,11 @@ a process that crashed or was killed mid-publish.
 
 The status is always written first, so even if moving files fails, the row keeps
 blocking a re-publish.
+
+With checkpoints (Milestone 3), startup resume runs first. When a job's saved
+checkpoint proves publish never started, it settles the row with
+``settle_crashed_before_publish`` (FAILED in both modes). Jobs whose resume failed
+are passed in ``skip`` and left for the next run's resume.
 """
 
 import logging
@@ -30,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 SIMULATED_INTERRUPTED = "simulated publish was interrupted by a crash; nothing was sent"
 REAL_INTERRUPTED = "publish was interrupted by a crash; the outcome is unknown - check the platform before re-posting"
+BEFORE_PUBLISH_INTERRUPTED = "interrupted by a crash before publishing; nothing was sent"
 
 
 @dataclass(frozen=True)
@@ -46,10 +52,14 @@ class Recovery:
     destination: str | None = None  # failed/ folder, if the files were moved.
 
 
-def reconcile_interrupted_jobs(repository: JobRepository, settings: Settings) -> list[Recovery]:
-    """Resolve every PUBLISHING job. Database errors propagate; file errors are recorded."""
+def reconcile_interrupted_jobs(
+    repository: JobRepository, settings: Settings, *, skip: frozenset[str] = frozenset()
+) -> list[Recovery]:
+    """Resolve every PUBLISHING job except those in ``skip``. Database errors propagate; file errors are recorded."""
     recoveries = []
     for record in repository.list_by_status(JobStatus.PUBLISHING):
+        if record.job_id in skip:
+            continue
         if record.mode is PublishMode.SIMULATED:
             recovery = _recover_simulated(record, repository, settings)
         else:
@@ -67,12 +77,35 @@ def reconcile_interrupted_jobs(repository: JobRepository, settings: Settings) ->
     return recoveries
 
 
+def settle_crashed_before_publish(record: JobRecord, repository: JobRepository, settings: Settings) -> Recovery:
+    """A PUBLISHING job whose checkpoint proves publish never started: FAILED in either mode.
+
+    FAILED never blocks, so the same run processes the post again if its files are
+    still in incoming/.
+    """
+    recovery = _mark_failed(record, repository, settings, BEFORE_PUBLISH_INTERRUPTED)
+    logger.warning(
+        "Recovered interrupted job: job_id=%s platform=%s stem=%s mode=%s status=%s notes=%s",
+        record.job_id,
+        record.platform,
+        record.stem,
+        record.mode,
+        recovery.status,
+        list(recovery.notes),
+    )
+    return recovery
+
+
 def _recover_simulated(record: JobRecord, repository: JobRepository, settings: Settings) -> Recovery:
+    return _mark_failed(record, repository, settings, SIMULATED_INTERRUPTED)
+
+
+def _mark_failed(record: JobRecord, repository: JobRepository, settings: Settings, reason: str) -> Recovery:
     candidate = _candidate(record, settings)
     in_incoming = candidate.media_path.is_file() and candidate.caption_path.is_file()
     follow_up = "will be processed again now" if in_incoming else "its files are no longer in incoming/"
-    repository.update(record.job_id, status=JobStatus.FAILED, errors=(*record.errors, SIMULATED_INTERRUPTED))
-    return Recovery(record.job_id, record.stem, record.mode, JobStatus.FAILED, (SIMULATED_INTERRUPTED, follow_up))
+    repository.update(record.job_id, status=JobStatus.FAILED, errors=(*record.errors, reason))
+    return Recovery(record.job_id, record.stem, record.mode, JobStatus.FAILED, (reason, follow_up))
 
 
 def _recover_real(record: JobRecord, repository: JobRepository, settings: Settings) -> Recovery:

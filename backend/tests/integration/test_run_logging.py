@@ -93,7 +93,7 @@ def test_run_finished_has_counts_exit_code_and_duration(base, incoming, monkeypa
     finished = log_lines(base)[-1]
     assert (
         "simulated=0 published=0 failed=0 needs_review=0 duplicates=1 waiting=1 "
-        "pending=1 ambiguous=1 recovered=0 errors=0 exit_code=0 duration_s=" in finished
+        "pending=1 ambiguous=1 recovered=0 resumed=0 errors=0 exit_code=0 duration_s=" in finished
     )
 
 
