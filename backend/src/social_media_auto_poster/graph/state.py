@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TypedDict
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode
 from social_media_auto_poster.platforms.base import Publisher
@@ -50,6 +52,8 @@ class WorkflowContext:
     repository: JobRepository
     settings: Settings
     stability_interval_s: float
+    # The checkpoint store (M3). None runs the graph without saving checkpoints (tests, tools).
+    checkpointer: BaseCheckpointSaver | None = None
 
 
 def new_job_state(

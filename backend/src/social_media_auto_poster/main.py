@@ -15,7 +15,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,7 +23,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+
 from social_media_auto_poster.config import DATA_DIR_VAR, Settings, ensure_data_dirs, load_settings
+from social_media_auto_poster.graph.checkpoints import open_checkpointer
 from social_media_auto_poster.graph.state import JobState, WorkflowContext
 from social_media_auto_poster.graph.workflow import run_job
 from social_media_auto_poster.ingestion.scanner import scan_incoming
@@ -470,12 +473,20 @@ def _run(args: argparse.Namespace) -> int:
 def _run_locked(settings: Settings, interval_s: float, counts: Counter[str]) -> int:
     """Everything a run does while holding the lock, after "Run started" is logged."""
     ensure_data_dirs(settings)
-    try:
-        conn = open_app_db(settings.app_db_path)
-    except (SchemaTooNewError, sqlite3.Error) as error:
-        logger.error("Could not open the job database %s: %s", settings.app_db_path, error)
-        return EXIT_SETUP_ERROR
-    try:
+    with ExitStack() as stack:
+        try:
+            conn = stack.enter_context(closing(open_app_db(settings.app_db_path)))
+        except (SchemaTooNewError, sqlite3.Error) as error:
+            logger.error("Could not open the job database %s: %s", settings.app_db_path, error)
+            return EXIT_SETUP_ERROR
+        try:
+            checkpointer = stack.enter_context(
+                open_checkpointer(settings.checkpoint_db_path, app_db_path=settings.app_db_path)
+            )
+        except (sqlite3.Error, ValueError) as error:
+            # Fail closed: without checkpoints, a crash could not be resumed safely.
+            logger.error("Could not open the checkpoint store %s: %s", settings.checkpoint_db_path, error)
+            return EXIT_SETUP_ERROR
         repository = JobRepository(conn)
         try:
             recoveries = reconcile_interrupted_jobs(repository, settings)
@@ -486,14 +497,13 @@ def _run_locked(settings: Settings, interval_s: float, counts: Counter[str]) -> 
         counts["recovered"] = len(recoveries)
         if recoveries:
             _print_recoveries(recoveries)
-        return _process(settings, repository, interval_s, recoveries, counts)
-    finally:
-        conn.close()
+        return _process(settings, repository, checkpointer, interval_s, recoveries, counts)
 
 
 def _process(
     settings: Settings,
     repository: JobRepository,
+    checkpointer: BaseCheckpointSaver,
     interval_s: float,
     recoveries: list[Recovery],
     counts: Counter[str],
@@ -517,6 +527,7 @@ def _process(
         repository=repository,
         settings=settings,
         stability_interval_s=interval_s,
+        checkpointer=checkpointer,
     )
     lines = [_run_one(candidate, context) for candidate in result.candidates]
     counts.update(line.outcome for line in lines)

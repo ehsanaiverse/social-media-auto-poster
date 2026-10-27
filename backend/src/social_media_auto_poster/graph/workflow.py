@@ -13,11 +13,17 @@ Routes:
 The job row is committed as PUBLISHING in mark_publishing, before publish.
 Only a confirmed real ``PUBLISHED`` result reaches ``archive``, and only after
 ``record_result`` has recorded it.
+
+Checkpoints (Milestone 3): with a checkpointer, every step's state is saved with
+``durability="sync"``, i.e. on disk *before* the next step starts, so the
+checkpoint that says "publish is next" exists before publish is called. A
+finished job's thread is deleted: its business record lives in the job database.
 """
 
-from functools import cache
+import logging
 from uuid import uuid4
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -25,10 +31,14 @@ from social_media_auto_poster.graph import nodes
 from social_media_auto_poster.graph.state import JobState, WorkflowContext, new_job_state
 from social_media_auto_poster.models import PostCandidate
 
+logger = logging.getLogger(__name__)
 
-@cache
-def build_workflow() -> CompiledStateGraph:
-    """Build and compile the graph once; the compiled graph is reusable."""
+# Every graph run, first or resumed, saves each step before starting the next.
+DURABILITY = "sync"
+
+
+def build_workflow(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStateGraph:
+    """Build and compile the graph, saving checkpoints to ``checkpointer`` if given."""
     graph = StateGraph(JobState, context_schema=WorkflowContext)
 
     graph.add_node(nodes.CHECK_STABILITY, nodes.check_stability)
@@ -74,7 +84,7 @@ def build_workflow() -> CompiledStateGraph:
     )
     graph.add_edge(nodes.ARCHIVE, END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def run_job(candidate: PostCandidate, context: WorkflowContext) -> JobState:
@@ -82,12 +92,36 @@ def run_job(candidate: PostCandidate, context: WorkflowContext) -> JobState:
 
     The job ID is a random UUID. It becomes the database job ID if the job is
     recorded (duplicates and files still being copied are never recorded), and
-    it is the graph thread ID, which matters once a checkpointer is added in
-    Milestone 3.
+    it is the graph thread ID in the checkpoint store. If the run ends normally,
+    the thread is deleted; if it raises (or the process dies), the thread stays
+    for startup resume to find.
     """
     job_id = uuid4().hex
-    return build_workflow().invoke(
+    final = build_workflow(context.checkpointer).invoke(
         new_job_state(job_id, candidate, context.mode),
         config={"configurable": {"thread_id": job_id}},
         context=context,
+        **durability_for(context.checkpointer),
     )
+    forget_thread(context.checkpointer, job_id)
+    return final
+
+
+def durability_for(checkpointer: BaseCheckpointSaver | None) -> dict[str, str]:
+    """``durability="sync"`` when checkpoints are saved; nothing otherwise.
+
+    Durability only means something with a checkpointer, and langgraph 1.2.18
+    raises AttributeError for ``durability="sync"`` on a graph without one.
+    """
+    return {"durability": DURABILITY} if checkpointer is not None else {}
+
+
+def forget_thread(checkpointer: BaseCheckpointSaver | None, thread_id: str) -> None:
+    """Delete a finished job's checkpoints. A failure is logged, never raised: the job itself is done."""
+    if checkpointer is None:
+        return
+    try:
+        checkpointer.delete_thread(thread_id)
+    except Exception:  # Deliberately broad: a leftover thread is only cleaned up by the next run.
+        # No ID: a skipped job's thread ID is never stored, and only stored job IDs are logged.
+        logger.exception("Could not delete a finished checkpoint thread; the next run deletes it")
