@@ -16,6 +16,15 @@ class Platform(StrEnum):
     FACEBOOK = "Facebook"
     INSTAGRAM = "Instagram"
 
+    @classmethod
+    def _missing_(cls, value: object):
+        if isinstance(value, str):
+            val_upper = value.upper()
+            for member in cls:
+                if member.name.upper() == val_upper or member.value.upper() == val_upper:
+                    return member
+        return None
+
 
 class JobStatus(StrEnum):
     """Lifecycle of one post job. Values are plain strings, safe for graph state and SQLite."""
