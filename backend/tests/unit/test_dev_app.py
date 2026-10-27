@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from social_media_auto_poster.config import DATA_DIR_VAR
+from social_media_auto_poster.config import BASE_DIR_VAR, DATA_DIR_VAR
 from social_media_auto_poster.ingestion.scanner import scan_incoming
 from social_media_auto_poster.ingestion.validation import validate_candidate
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode
@@ -145,6 +145,7 @@ def test_bad_post_names_are_rejected(tmp_path, stem):
 def test_run_writes_only_inside_the_sandbox(layout, monkeypatch, capsys):
     repo, _ = layout
     monkeypatch.chdir(repo)
+    monkeypatch.setenv(BASE_DIR_VAR, str(repo))
     monkeypatch.delenv(DATA_DIR_VAR, raising=False)
     sandbox = dev_app.Sandbox(repo / "sandbox")
     sandbox.prepare()
@@ -158,7 +159,8 @@ def test_run_writes_only_inside_the_sandbox(layout, monkeypatch, capsys):
     assert not (repo / "database").exists()
     assert not (repo / "logs").exists()
     assert not (repo / "autoposter.lock").exists()
-    assert Path.cwd() == repo  # Restored.
+    assert Path.cwd() == repo  # Unchanged.
+    assert os.environ[BASE_DIR_VAR] == str(repo)  # Restored.
     assert DATA_DIR_VAR not in os.environ  # Restored.
     [record] = sandbox.history()
     assert (record.stem, record.status) == ("launch", JobStatus.SIMULATED)
@@ -186,6 +188,7 @@ def test_folder_contents_lists_each_folder(tmp_path):
 def test_simulated_crash_is_recovered_by_the_next_run(layout, monkeypatch, capsys):
     repo, _ = layout
     monkeypatch.chdir(repo)
+    monkeypatch.setenv(BASE_DIR_VAR, str(repo))
     monkeypatch.delenv(DATA_DIR_VAR, raising=False)
     sandbox = dev_app.Sandbox(repo / "sandbox")
     sandbox.prepare()
@@ -213,6 +216,7 @@ def test_simulate_crash_needs_a_complete_post(tmp_path):
 def test_history_menu_uses_the_jobs_command(layout, monkeypatch, capsys):
     repo, _ = layout
     monkeypatch.chdir(repo)
+    monkeypatch.setenv(BASE_DIR_VAR, str(repo))
     monkeypatch.delenv(DATA_DIR_VAR, raising=False)
     sandbox = dev_app.Sandbox(repo / "sandbox")
     sandbox.prepare()
@@ -280,6 +284,7 @@ def test_main_refuses_to_start_in_a_non_empty_unmarked_folder(tmp_path, monkeypa
 def test_resolve_a_needs_review_job_through_the_tester(layout, monkeypatch, capsys):
     repo, _ = layout
     monkeypatch.chdir(repo)
+    monkeypatch.setenv(BASE_DIR_VAR, str(repo))
     monkeypatch.delenv(DATA_DIR_VAR, raising=False)
     sandbox = dev_app.Sandbox(repo / "sandbox")
     sandbox.prepare()

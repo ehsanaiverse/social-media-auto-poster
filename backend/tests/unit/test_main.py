@@ -9,10 +9,11 @@ from social_media_auto_poster import main as cli
 
 @pytest.fixture(autouse=True)
 def isolated_base(tmp_path, monkeypatch):
-    """Run every test from an empty folder, so the real .env and database/app.db are never read."""
+    """Run every test in an empty base folder, so the real .env and database/app.db are never read."""
     base = tmp_path / "base"
     base.mkdir()
     monkeypatch.chdir(base)
+    monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(base))
     monkeypatch.delenv("AUTOPOSTER_DATA_DIR", raising=False)
     return base
 
@@ -48,6 +49,7 @@ def test_scan_defaults_to_configured_linkedin_incoming(tmp_path, monkeypatch, ca
     incoming = tmp_path / "content" / "LinkedIn" / "incoming"
     touch(incoming, "launch.jpg", "launch.txt")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "content")
 
     exit_code = cli.main(["scan", "--interval", "0"])

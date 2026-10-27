@@ -1,7 +1,20 @@
 """Tests for settings loading and content-folder creation, using temporary directories only."""
 
-from social_media_auto_poster.config import DATA_DIR_VAR, ensure_data_dirs, load_settings
+from pathlib import Path
+
+import pytest
+
+from social_media_auto_poster import config
+from social_media_auto_poster.config import (
+    BASE_DIR_VAR,
+    DATA_DIR_VAR,
+    ProjectDirNotFoundError,
+    ensure_data_dirs,
+    load_settings,
+)
 from social_media_auto_poster.models import Platform
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 def test_data_dir_defaults_to_data_under_base_dir(tmp_path):
@@ -82,3 +95,52 @@ def test_log_and_lock_files_live_under_base_dir(tmp_path):
 def test_app_db_lives_under_base_dir(tmp_path):
     settings = load_settings(base_dir=tmp_path, environ={DATA_DIR_VAR: "elsewhere"})
     assert settings.app_db_path == tmp_path.resolve() / "database" / "app.db"
+
+
+# Base folder
+
+
+def test_default_base_dir_is_backend_whatever_the_current_folder(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    settings = load_settings(environ={})  # No AUTOPOSTER_BASE_DIR.
+    assert BACKEND_DIR.name == "backend" and (BACKEND_DIR / "pyproject.toml").is_file()
+    assert settings.base_dir == BACKEND_DIR
+    assert settings.data_dir == BACKEND_DIR / "data"
+    assert settings.app_db_path == BACKEND_DIR / "database" / "app.db"
+    assert settings.log_file == BACKEND_DIR / "logs" / "autoposter.log"
+    assert settings.lock_file == BACKEND_DIR / "autoposter.lock"
+    assert not (tmp_path / "data").exists()  # Loading settings creates nothing.
+
+
+def test_base_dir_variable_moves_every_runtime_path(tmp_path):
+    settings = load_settings(environ={BASE_DIR_VAR: str(tmp_path)})
+    assert settings.base_dir == tmp_path.resolve()
+    assert settings.data_dir == tmp_path.resolve() / "data"
+    assert settings.app_db_path == tmp_path.resolve() / "database" / "app.db"
+    assert settings.lock_file == tmp_path.resolve() / "autoposter.lock"
+
+
+def test_env_file_is_read_from_the_base_folder_not_the_current_folder(tmp_path, monkeypatch):
+    base, elsewhere = tmp_path / "base", tmp_path / "elsewhere"
+    base.mkdir()
+    elsewhere.mkdir()
+    (base / ".env").write_text(f"{DATA_DIR_VAR}=from-base\n", encoding="utf-8")
+    (elsewhere / ".env").write_text(f"{DATA_DIR_VAR}=from-current-folder\n", encoding="utf-8")
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv(BASE_DIR_VAR, str(base))
+    monkeypatch.delenv(DATA_DIR_VAR, raising=False)
+
+    assert load_settings().data_dir == base.resolve() / "from-base"
+
+
+def test_base_dir_is_not_read_from_env_file(tmp_path, monkeypatch):
+    monkeypatch.setenv(BASE_DIR_VAR, str(tmp_path))
+    monkeypatch.delenv(DATA_DIR_VAR, raising=False)
+    (tmp_path / ".env").write_text(f"{BASE_DIR_VAR}={tmp_path / 'other'}\n", encoding="utf-8")
+    assert load_settings().base_dir == tmp_path.resolve()
+
+
+def test_missing_backend_folder_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "PROJECT_DIR", tmp_path)  # No pyproject.toml here.
+    with pytest.raises(ProjectDirNotFoundError, match="Cannot find the backend folder"):
+        load_settings(environ={})

@@ -1,9 +1,13 @@
 """Application settings and the platform content-folder layout.
 
-Settings come from environment variables, optionally read from a ``.env`` file
+Settings come from environment variables, optionally read from the ``.env`` file
 in the base directory. Real environment variables take precedence over ``.env``
-values. Relative paths are resolved against the base directory, which defaults
-to the current working directory (run the application from the project root).
+values. Relative paths are resolved against the base directory.
+
+The base directory is ``backend/``, found from this file's location, so every
+command uses the same ``data/``, ``database/``, and ``logs/`` whichever folder it
+is started from. ``AUTOPOSTER_BASE_DIR`` (a real environment variable, never read
+from ``.env``) points it elsewhere; the tests and the sandbox tester use it.
 """
 
 import os
@@ -16,6 +20,9 @@ from dotenv import dotenv_values
 from social_media_auto_poster.models import Platform
 
 DATA_DIR_VAR = "AUTOPOSTER_DATA_DIR"
+BASE_DIR_VAR = "AUTOPOSTER_BASE_DIR"
+# backend/, from backend/src/social_media_auto_poster/config.py.
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = "data"
 CONTENT_FOLDERS = ("incoming", "archive", "failed")
 
@@ -52,16 +59,39 @@ class Settings:
         return self.base_dir / "database" / "app.db"
 
 
+class ProjectDirNotFoundError(RuntimeError):
+    """The package is not installed from a backend/ folder (see ``default_base_dir``)."""
+
+
+def default_base_dir() -> Path:
+    """The ``backend/`` folder this package was installed from (editable install).
+
+    Refuses instead of guessing: without ``backend/pyproject.toml`` the package is
+    not an editable install, and its runtime folders would land in site-packages.
+    """
+    if not (PROJECT_DIR / "pyproject.toml").is_file():
+        raise ProjectDirNotFoundError(
+            f"Cannot find the backend folder: no pyproject.toml in {PROJECT_DIR}. "
+            'Install from the backend folder with: python -m pip install -e ".[dev]"'
+        )
+    return PROJECT_DIR
+
+
 def load_settings(
     base_dir: Path | None = None,
     environ: Mapping[str, str | None] | None = None,
 ) -> Settings:
     """Build settings from ``environ``, or from ``.env`` plus ``os.environ`` if not given.
 
-    Passing ``environ`` explicitly (as tests do) skips ``.env`` and ``os.environ``.
-    ``.env`` is read without modifying ``os.environ``.
+    The base directory is ``base_dir`` if given, else ``AUTOPOSTER_BASE_DIR``, else
+    ``default_base_dir()``. Passing ``environ`` explicitly (as tests do) skips ``.env``
+    and ``os.environ``. ``.env`` is read by its path in the base directory, without
+    modifying ``os.environ``.
     """
-    base = (base_dir or Path.cwd()).resolve()
+    if base_dir is None:
+        override = (os.environ if environ is None else environ).get(BASE_DIR_VAR)
+        base_dir = Path(override) if override else default_base_dir()
+    base = base_dir.resolve()
     if environ is None:
         environ = {**dotenv_values(base / ".env"), **os.environ}
 

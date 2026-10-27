@@ -28,8 +28,9 @@ LINKEDIN = Platform.LINKEDIN
 
 @pytest.fixture
 def base(tmp_path, monkeypatch) -> Path:
-    """Run from an empty temporary base folder with its own data folder."""
+    """Use an empty temporary base folder with its own data folder."""
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
     return tmp_path
 
@@ -360,6 +361,7 @@ def test_crash_mid_publish_is_recovered_and_processed_on_next_run(base, incoming
     assert job_rows(base) == [("launch", "PUBLISHING")]  # Left behind by the "crash".
     monkeypatch.undo()
     monkeypatch.chdir(base)
+    monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(base))
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
     capsys.readouterr()
 
