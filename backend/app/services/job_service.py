@@ -1,169 +1,170 @@
-"""Service layer: wraps ingestion, workflow, and repository calls for the API."""
+"""Service layer: the API's thin bridge to the core package.
+
+It never re-implements the workflow. ``run`` calls the same ``run_once`` as the
+``run`` command (run lock, crash recovery, per-mode duplicate check, run logging),
+and job history uses the same read-only repository access as the ``jobs`` command.
+"""
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass
-from pathlib import Path
+import sqlite3
 
 from social_media_auto_poster.config import Settings
-from social_media_auto_poster.graph.state import WorkflowContext
-from social_media_auto_poster.graph.workflow import run_job
 from social_media_auto_poster.ingestion.scanner import scan_incoming
+from social_media_auto_poster.ingestion.validation import validate_candidate
+from social_media_auto_poster.main import DEFAULT_INTERVAL_S, RunReport, find_duplicate, run_once, unstable_files
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, ScanResult
-from social_media_auto_poster.platforms.simulator import Simulator
-from social_media_auto_poster.services.hashing import sha256_file
-from social_media_auto_poster.services.run_lock import RunLockHeldError, single_run_lock
-from social_media_auto_poster.storage.db import connect as connect_db
-from social_media_auto_poster.storage.repository import JobRepository, JobRecord
+from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db_read_only
+from social_media_auto_poster.storage.jobs import JobRecord, JobRepository
 
-logger = logging.getLogger(__name__)
+PLATFORM = Platform.LINKEDIN  # The only platform in scope, as in the CLI.
 
 
-@dataclass
-class JobOutcome:
-    """Result of running one candidate through the graph."""
-
-    stem: str
-    status: str
-    errors: list[str]
-    simulated: bool
-    platform_post_id: str | None
-    destination: str | None
-    retry_later: bool
+class JobDatabaseError(Exception):
+    """The job database exists but cannot be read."""
 
 
 class JobService:
-    """Orchestrates scanning, running jobs, and reading job records."""
+    """Scan, run, and read job history for the API. Holds no open connection between requests."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, stability_interval_s: float = DEFAULT_INTERVAL_S):
         self._settings = settings
-        self._conn = connect_db(settings.app_db)
-        self._repo = JobRepository(self._conn)
+        self._interval_s = stability_interval_s
 
-    @property
-    def settings(self) -> Settings:
-        return self._settings
+    def scan(self) -> dict:
+        """Read-only report, like the ``scan`` command. Never creates folders or the database.
 
-    def close(self) -> None:
-        """Release the SQLite connection held by this service."""
-        self._conn.close()
-
-    def scan(self, platform: Platform = Platform.LINKEDIN) -> ScanResult:
-        """Scan the incoming folder for a platform."""
-        return scan_incoming(self._settings.incoming_dir(platform), platform)
-
-    def run(self, platform: Platform = Platform.LINKEDIN) -> dict:
-        """Process every complete post once. Returns a summary dict."""
+        Raises FileNotFoundError if the incoming folder does not exist.
+        """
+        result = scan_incoming(self._settings.incoming_dir(PLATFORM), PLATFORM)
+        conn = self._open_read_only_or_none()
         try:
-            with single_run_lock(self._settings.lock_file):
-                return self._process(platform)
-        except RunLockHeldError:
-            return {"error": "Another run is in progress", "jobs": []}
-
-    def _process(self, platform: Platform) -> dict:
-        result = self.scan(platform)
-        context = WorkflowContext(
-            publisher=Simulator(),
-            settings=self._settings,
-            stability_interval_s=1.0,
-        )
-        outcomes: list[JobOutcome] = []
-        for candidate in result.candidates:
-            outcomes.append(self._run_one(candidate, context))
+            repository = JobRepository(conn) if conn is not None else None
+            candidates = [self._describe_candidate(c, repository) for c in result.candidates]
+            interrupted = len(repository.list_by_status(JobStatus.PUBLISHING)) if repository else 0
+        finally:
+            if conn is not None:
+                conn.close()
         return {
-            "platform": platform.value,
-            "candidates": len(result.candidates),
-            "pending": [str(p) for p in result.pending],
-            "ambiguous": [[str(p) for p in group] for group in result.ambiguous],
-            "jobs": [_outcome_dict(o) for o in outcomes],
+            "platform": PLATFORM.value,
+            "candidates": candidates,
+            **_pending_and_ambiguous(result),
+            "interrupted_jobs": interrupted,
         }
 
-    def _run_one(self, candidate: PostCandidate, context: WorkflowContext) -> JobOutcome:
-        media_hash = sha256_file(candidate.media_path)
-        caption_hash = sha256_file(candidate.caption_path)
-        existing = self._repo.find_by_hashes(candidate.platform, media_hash, caption_hash)
-        if existing is not None:
-            return JobOutcome(
-                stem=candidate.stem,
-                status="DUPLICATE",
-                errors=[],
-                simulated=False,
-                platform_post_id=None,
-                destination=None,
-                retry_later=False,
-            )
-        job_id = self._repo.create(
-            candidate.platform, candidate.stem, candidate.media_path, candidate.caption_path,
-            media_hash, caption_hash,
-        )
+    def run(self) -> RunReport:
+        """One run through the core. Raises RunLockHeldError if a run is already in progress."""
+        return run_once(self._settings, self._interval_s)
+
+    def list_jobs(self, limit: int, status: JobStatus | None) -> list[dict]:
+        """Recent jobs, newest first. An empty list if there is no job database yet."""
+        conn = self._open_read_only_or_none()
+        if conn is None:
+            return []
         try:
-            final = run_job(candidate, context)
-        except Exception as error:
-            logger.exception("Unexpected error; job abandoned")
-            self._repo.update_status(job_id, JobStatus.NEEDS_REVIEW, error=str(error))
-            return JobOutcome(
-                stem=candidate.stem,
-                status=JobStatus.NEEDS_REVIEW.value,
-                errors=[f"unexpected error: {error}"],
-                simulated=False,
-                platform_post_id=None,
-                destination=None,
-                retry_later=False,
-            )
-        status = JobStatus(final["status"])
-        self._repo.update_status(
-            job_id, status,
-            error="; ".join(final["errors"]) or None,
-            platform_post_id=final.get("platform_post_id"),
-        )
-        return JobOutcome(
-            stem=final["stem"],
-            status=final["status"],
-            errors=list(final["errors"]),
-            simulated=bool(final["simulated"]),
-            platform_post_id=final.get("platform_post_id"),
-            destination=final.get("destination"),
-            retry_later=bool(final["retry_later"]),
-        )
+            return [job_dict(r) for r in JobRepository(conn).list_recent(limit, status=status)]
+        except sqlite3.Error as error:
+            raise JobDatabaseError(str(error)) from error
+        finally:
+            conn.close()
 
-    def list_jobs(self, platform: Platform | None = None, limit: int = 100) -> list[dict]:
-        """Return recent job records as dicts."""
-        if platform is None:
-            rows = self._repo.list_all(limit=limit)
-        else:
-            rows = self._repo.list_by_platform(platform, limit=limit)
-        return [_job_dict(r) for r in rows]
+    def find_jobs(self, prefix: str) -> list[dict]:
+        """Every job whose ID starts with ``prefix`` (no wildcards), like ``jobs --id``."""
+        conn = self._open_read_only_or_none()
+        if conn is None:
+            return []
+        try:
+            return [job_dict(r) for r in JobRepository(conn).find_by_id_prefix(prefix)]
+        except sqlite3.Error as error:
+            raise JobDatabaseError(str(error)) from error
+        finally:
+            conn.close()
 
-    def get_job(self, job_id: int) -> dict | None:
-        record = self._repo.get(job_id)
-        return _job_dict(record) if record else None
+    def _describe_candidate(self, candidate: PostCandidate, repository: JobRepository | None) -> dict:
+        unstable = unstable_files(candidate, self._interval_s)
+        validation = validate_candidate(candidate)
+        duplicate_of = None
+        # Like scan: only a stable, valid post is hashed for the duplicate check.
+        if repository is not None and not unstable and validation.is_valid:
+            try:
+                match = find_duplicate(candidate, repository)
+            except OSError:
+                match = None
+            duplicate_of = match.job_id if match else None
+        return {
+            "stem": candidate.stem,
+            "media_name": candidate.media_path.name,
+            "caption_name": candidate.caption_path.name,
+            "stable": not unstable,
+            "unstable_files": unstable,
+            "valid": validation.is_valid,
+            "errors": list(validation.errors),
+            "duplicate_of": duplicate_of,
+        }
+
+    def _open_read_only_or_none(self) -> sqlite3.Connection | None:
+        try:
+            return open_app_db_read_only(self._settings.app_db_path)
+        except FileNotFoundError:
+            return None
+        except (SchemaTooNewError, sqlite3.Error) as error:
+            raise JobDatabaseError(str(error)) from error
 
 
-def _outcome_dict(outcome: JobOutcome) -> dict:
+def run_dict(report: RunReport) -> dict:
+    """JSON for one run. Every run is simulated until Milestone 4, and says so."""
     return {
-        "stem": outcome.stem,
-        "status": outcome.status,
-        "errors": outcome.errors,
-        "simulated": outcome.simulated,
-        "platform_post_id": outcome.platform_post_id,
-        "destination": outcome.destination,
-        "retry_later": outcome.retry_later,
+        "exit_code": report.exit_code,
+        "simulated": True,
+        "completed": report.scan is not None,
+        "candidates": len(report.jobs),
+        "recovered": [
+            {
+                "job_id": r.job_id,
+                "stem": r.stem,
+                "mode": r.mode.value,
+                "status": r.status.value,
+                "notes": list(r.notes),
+                "destination": r.destination,
+            }
+            for r in report.recoveries
+        ],
+        "jobs": [
+            {
+                "stem": line.stem,
+                "result": line.label,
+                "note": line.note,
+                "details": list(line.details),
+                "outcome": line.outcome,
+                "problem": line.problem,
+            }
+            for line in report.jobs
+        ],
+        **(_pending_and_ambiguous(report.scan) if report.scan else {"pending": [], "ambiguous": []}),
     }
 
 
-def _job_dict(record: JobRecord) -> dict:
+def job_dict(record: JobRecord) -> dict:
     return {
-        "id": record.id,
+        "job_id": record.job_id,
         "platform": record.platform.value,
+        "mode": record.mode.value,
         "stem": record.stem,
-        "media_path": str(record.media_path),
-        "caption_path": str(record.caption_path),
-        "media_hash": record.media_hash,
-        "caption_hash": record.caption_hash,
+        "media_name": record.media_name,
+        "caption_name": record.caption_name,
+        "media_sha256": record.media_sha256,
+        "caption_sha256": record.caption_sha256,
         "status": record.status.value,
-        "error": record.error,
         "platform_post_id": record.platform_post_id,
+        "destination": record.destination,
+        "errors": list(record.errors),
         "created_at": record.created_at,
         "updated_at": record.updated_at,
+    }
+
+
+def _pending_and_ambiguous(result: ScanResult) -> dict:
+    return {
+        "pending": [p.name for p in result.pending],
+        "ambiguous": [[p.name for p in group] for group in result.ambiguous],
     }

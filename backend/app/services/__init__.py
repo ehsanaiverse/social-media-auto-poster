@@ -1,5 +1,5 @@
 """Service layer package."""
 
-from .job_service import JobService, JobOutcome
+from .job_service import JobDatabaseError, JobService, job_dict, run_dict
 
-__all__ = ["JobService", "JobOutcome"]
+__all__ = ["JobDatabaseError", "JobService", "job_dict", "run_dict"]

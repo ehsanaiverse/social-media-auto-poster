@@ -1,70 +1,82 @@
-"""Data models and Pydantic schemas for the API."""
+"""Pydantic response models for the API. They mirror the core's records; file names only, no file contents."""
 
 from datetime import datetime
-from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class CandidateResponse(BaseModel):
-    """A paired image + caption candidate from a scan."""
+    """A paired image + caption found by a scan, with what ``run`` would do with it."""
 
     stem: str
-    media_path: str
-    caption_path: str
+    media_name: str
+    caption_name: str
+    stable: bool
+    unstable_files: list[str]  # "media" and/or "caption" while still being copied.
+    valid: bool
+    errors: list[str]
+    duplicate_of: str | None  # Job ID that already handles this content, if any.
 
 
 class ScanResponse(BaseModel):
-    """Result of scanning an incoming folder."""
+    """Read-only report of the LinkedIn incoming folder."""
 
     platform: str
-    candidates: list[CandidateResponse] = Field(default_factory=list)
-    pending: list[str] = Field(default_factory=list)
-    ambiguous: list[list[str]] = Field(default_factory=list)
+    candidates: list[CandidateResponse]
+    pending: list[str]
+    ambiguous: list[list[str]]
+    interrupted_jobs: int  # PUBLISHING jobs the next run will recover.
 
 
-class JobOutcome(BaseModel):
-    """Result of running one candidate through the graph."""
+class RecoveryResponse(BaseModel):
+    """A job interrupted by an earlier crash, resolved at the start of this run."""
+
+    job_id: str
+    stem: str
+    mode: str
+    status: str
+    notes: list[str]
+    destination: str | None
+
+
+class RunJobResponse(BaseModel):
+    """One post's result in a run, as the ``run`` command prints it."""
 
     stem: str
-    status: str
-    errors: list[str] = Field(default_factory=list)
-    simulated: bool
-    platform_post_id: Optional[str] = None
-    destination: Optional[str] = None
-    retry_later: bool = False
+    result: str  # e.g. "SIMULATED (not published)", "DUPLICATE", "FAILED".
+    note: str
+    details: list[str]
+    outcome: str  # simulated, published, failed, needs_review, duplicates, waiting, or errors.
+    problem: bool
 
 
 class RunResponse(BaseModel):
-    """Result of processing all candidates in a run."""
+    """Result of one run. Same exit codes as the ``run`` command."""
 
-    platform: str
-    candidates: int = 0
-    pending: list[str] = Field(default_factory=list)
-    ambiguous: list[list[str]] = Field(default_factory=list)
-    jobs: list[JobOutcome] = Field(default_factory=list)
-    error: Optional[str] = None
+    exit_code: int
+    simulated: bool  # Always true until Milestone 4: nothing is sent to LinkedIn.
+    completed: bool  # False if the run stopped at setup; see the log.
+    candidates: int
+    recovered: list[RecoveryResponse]
+    jobs: list[RunJobResponse]
+    pending: list[str]
+    ambiguous: list[list[str]]
 
 
 class JobResponse(BaseModel):
-    """A job record from the database."""
+    """A job record from the job database."""
 
-    id: int
+    job_id: str
     platform: str
+    mode: str  # "simulated" or "real".
     stem: str
-    media_path: str
-    caption_path: str
-    media_hash: Optional[str] = None
-    caption_hash: Optional[str] = None
+    media_name: str
+    caption_name: str
+    media_sha256: str | None
+    caption_sha256: str | None
     status: str
-    error: Optional[str] = None
-    platform_post_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-
-class JobListResponse(BaseModel):
-    """A list of job records."""
-
-    jobs: list[JobResponse]
-    total: int
+    platform_post_id: str | None
+    destination: str | None
+    errors: list[str]
+    created_at: datetime
+    updated_at: datetime

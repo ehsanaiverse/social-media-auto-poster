@@ -1,63 +1,40 @@
-"""FastAPI application factory."""
+"""FastAPI application factory.
+
+A local tool only: start it with ``--host 127.0.0.1`` (see ``__main__.py``), from the
+repository root so it uses the same data folder, job database, and run lock as the CLI.
+"""
 
 from __future__ import annotations
 
-import logging
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-
-from social_media_auto_poster.config import ensure_data_dirs, load_settings
+from social_media_auto_poster.config import Settings, load_settings
+from social_media_auto_poster.main import DEFAULT_INTERVAL_S
 
 from .routers import jobs, run, scan
 from .services import JobService
 
-logger = logging.getLogger(__name__)
+# The Vite dev server (frontend/vite.config.ts). It proxies /api, so this only matters for direct calls.
+FRONTEND_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup/shutdown: build the shared job service and release it on exit."""
-    service = JobService(app.state.settings)
-    app.state.job_service = service
-    logger.info("Backend started: data_dir=%s", app.state.settings.data_dir)
-    yield
-    service.close()
-    logger.info("Backend stopped")
-
-
-def create_app() -> FastAPI:
-    """Build the FastAPI application with CORS, routers, and static files."""
-    settings = load_settings()
-    # Create data/<Platform>/{incoming,archive,failed} before anything serves them.
-    ensure_data_dirs(settings)
+def create_app(settings: Settings | None = None, *, stability_interval_s: float = DEFAULT_INTERVAL_S) -> FastAPI:
+    """Build the app. Nothing is created on disk until a request needs it (``run`` creates the folders)."""
+    settings = settings if settings is not None else load_settings()
 
     app = FastAPI(
         title="Social Media Auto-Poster API",
-        description="REST API for the folder-driven social media auto-poster.",
+        description="Local REST API for the folder-driven social media auto-poster. Publishing is simulated.",
         version="0.1.0",
-        lifespan=lifespan,
     )
-
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=FRONTEND_ORIGINS,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
     )
-
     app.include_router(scan.router)
     app.include_router(run.router)
     app.include_router(jobs.router)
-
-    # Serve uploaded media and status images from the data directory.
-    app.state.settings = settings
-    app.mount("/media", StaticFiles(directory=str(settings.data_dir)), name="media")
-
+    app.state.job_service = JobService(settings, stability_interval_s)
     return app
-
-
-app = create_app()
-

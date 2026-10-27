@@ -1,19 +1,19 @@
-"""Domain models re-exported from the core package."""
+"""Response models for the API."""
 
-from social_media_auto_poster.models import (
-    JobStatus,
-    Platform,
-    PostCandidate,
-    PublishResult,
-    ScanResult,
-    ValidationResult,
+from .schemas import (
+    CandidateResponse,
+    JobResponse,
+    RecoveryResponse,
+    RunJobResponse,
+    RunResponse,
+    ScanResponse,
 )
 
 __all__ = [
-    "JobStatus",
-    "Platform",
-    "PostCandidate",
-    "PublishResult",
-    "ScanResult",
-    "ValidationResult",
+    "CandidateResponse",
+    "JobResponse",
+    "RecoveryResponse",
+    "RunJobResponse",
+    "RunResponse",
+    "ScanResponse",
 ]

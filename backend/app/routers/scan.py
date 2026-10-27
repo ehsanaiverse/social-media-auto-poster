@@ -1,41 +1,22 @@
-"""Scan endpoint: read-only report of incoming folder contents."""
+"""Scan endpoint: read-only report of the LinkedIn incoming folder."""
 
 from __future__ import annotations
 
-import logging
-
-from fastapi import APIRouter, Depends, HTTPException, Query
-from social_media_auto_poster.models import Platform
+from fastapi import APIRouter, Depends, HTTPException
 
 from ..dependencies import get_job_service
-from ..services import JobService
-
-logger = logging.getLogger(__name__)
+from ..models import ScanResponse
+from ..services import JobDatabaseError, JobService
 
 router = APIRouter(prefix="/api/scan", tags=["scan"])
 
 
-@router.get("")
-async def scan_folder(
-    platform: Platform = Query(default=Platform.LINKEDIN, description="Platform to scan"),
-    dir: str | None = Query(default=None, description="Override incoming folder"),
-    service: JobService = Depends(get_job_service),
-):
-    """Scan the incoming folder for a platform. Read-only."""
+@router.get("", response_model=ScanResponse)
+def scan_folder(service: JobService = Depends(get_job_service)):
+    """Like the ``scan`` command: never moves, publishes, or creates anything."""
     try:
-        result = service.scan(platform)
+        return service.scan()
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Incoming folder not found")
-    return {
-        "platform": platform.value,
-        "candidates": [
-            {
-                "stem": c.stem,
-                "media_path": str(c.media_path),
-                "caption_path": str(c.caption_path),
-            }
-            for c in result.candidates
-        ],
-        "pending": [str(p) for p in result.pending],
-        "ambiguous": [[str(p) for p in group] for group in result.ambiguous],
-    }
+        raise HTTPException(status_code=404, detail="Incoming folder not found") from None
+    except JobDatabaseError:
+        raise HTTPException(status_code=500, detail="Could not read the job database") from None
