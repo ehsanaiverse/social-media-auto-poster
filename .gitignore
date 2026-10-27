@@ -29,13 +29,6 @@ ENV/
 /backend/logs/
 /backend/sandbox/
 
-# Legacy runtime folders at the repo root, from before the backend/ move.
-# Kept ignored until they are moved into backend/; then these lines can go.
-/data/
-/database/
-/logs/
-/sandbox/
-
 # Databases, logs, and the run lock, wherever they are
 *.db
 *.db-journal
