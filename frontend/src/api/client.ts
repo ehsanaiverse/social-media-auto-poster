@@ -1,39 +1,63 @@
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
+// Shapes match backend/app/models/schemas.py.
 export interface Job {
-  id: number
+  job_id: string // UUID as 32 hex characters
   platform: string
+  mode: 'simulated' | 'real'
   stem: string
-  media_path: string
-  caption_path: string
-  media_hash: string | null
-  caption_hash: string | null
+  media_name: string
+  caption_name: string
+  media_sha256: string | null
+  caption_sha256: string | null
   status: string
-  error: string | null
   platform_post_id: string | null
+  destination: string | null
+  errors: string[]
+  created_at: string
+  updated_at: string
 }
 
 export interface ScanResult {
   platform: string
-  candidates: Array<{ stem: string; media_path: string; caption_path: string }>
+  candidates: Array<{
+    stem: string
+    media_name: string
+    caption_name: string
+    stable: boolean
+    unstable_files: string[]
+    valid: boolean
+    errors: string[]
+    duplicate_of: string | null
+  }>
   pending: string[]
   ambiguous: string[][]
+  interrupted_jobs: number
 }
 
 export interface RunResult {
-  platform: string
+  exit_code: number
+  simulated: boolean
+  completed: boolean
   candidates: number
-  pending: string[]
-  ambiguous: string[][]
+  recovered: Array<{
+    job_id: string
+    stem: string
+    mode: string
+    status: string
+    notes: string[]
+    destination: string | null
+  }>
   jobs: Array<{
     stem: string
-    status: string
-    errors: string[]
-    simulated: boolean
-    platform_post_id: string | null
-    destination: string | null
-    retry_later: boolean
+    result: string
+    note: string
+    details: string[]
+    outcome: string
+    problem: boolean
   }>
+  pending: string[]
+  ambiguous: string[][]
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -50,26 +74,26 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  scan(platform: string = 'LINKEDIN'): Promise<ScanResult> {
-    return request(`/scan?platform=${platform}`)
+  // LinkedIn is the only platform; the backend scans its incoming folder.
+  scan(): Promise<ScanResult> {
+    return request(`/scan`)
   },
 
-  run(platform: string = 'LINKEDIN'): Promise<RunResult> {
-    return request(`/run`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    })
+  // Publishing is simulated until Milestone 4. 409 if another run is in progress.
+  run(): Promise<RunResult> {
+    return request(`/run`, { method: 'POST' })
   },
 
-  listJobs(platform?: string, limit: number = 100): Promise<Job[]> {
+  listJobs(limit: number = 20, status?: string): Promise<Job[]> {
     const params = new URLSearchParams()
-    if (platform) params.set('platform', platform)
     params.set('limit', String(limit))
+    if (status) params.set('status', status)
     return request(`/jobs?${params}`)
   },
 
-  getJob(id: number): Promise<Job> {
-    return request(`/jobs/${id}`)
+  // A full job ID, or a unique prefix of it.
+  getJob(jobId: string): Promise<Job> {
+    return request(`/jobs/${encodeURIComponent(jobId)}`)
   },
 }
 
