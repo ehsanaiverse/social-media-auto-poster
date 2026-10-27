@@ -48,16 +48,7 @@ class Settings:
         return self.base_dir / "autoposter.lock"
 
     @property
-    def app_db(self) -> Path:
-        for candidate in [
-            self.base_dir / "database" / "app.db",
-            self.base_dir / "app" / "database" / "app.db",
-            self.base_dir / "backend" / "app" / "database" / "app.db",
-        ]:
-            if candidate.exists():
-                return candidate
-        if (self.base_dir / "app").is_dir():
-            return self.base_dir / "app" / "database" / "app.db"
+    def app_db_path(self) -> Path:
         return self.base_dir / "database" / "app.db"
 
 
