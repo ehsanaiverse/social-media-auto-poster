@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "social-media-auto-poster"
 version = "0.1.0"
-description = "Folder-driven social media auto-poster: LangGraph core, FastAPI backend, React frontend."
+description = "A local, folder-driven social media publishing automation tool."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -16,13 +16,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.1,<10",
-    "httpx>=0.28.1,<1",  # For FastAPI's TestClient in the planned API tests.
-]
-# Optional: only for the local API in backend/app. The core CLI never imports these.
-api = [
-    "fastapi>=0.162,<1",
-    "uvicorn[standard]>=0.54,<1",
-    "python-multipart>=0.0.32,<1",
 ]
 # Optional: only for notebooks/workflow.ipynb. ipykernel alone is enough for VS Code notebooks.
 notebook = [
@@ -30,11 +23,8 @@ notebook = [
     "jupyter>=1.1.1,<2",
 ]
 
-# The core package and the API both live in backend/. List them explicitly so
-# nothing else in backend/ (such as database/) is installed as a package.
 [tool.setuptools.packages.find]
-where = ["backend"]
-include = ["social_media_auto_poster*", "app*"]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

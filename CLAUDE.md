@@ -83,17 +83,10 @@ LangGraph is a **required** part of this project, not an optional or future enha
 - Secrets come from environment variables (loaded from `.env` via `python-dotenv` locally). `.env.example` contains placeholder names only.
 - Real LinkedIn integration must use official APIs, current documented permissions, and secure OAuth handling, verified against current official LinkedIn docs when Milestone 4 starts.
 
-## Local API (`backend/app/`)
-
-- The API is a **local** tool: it must bind to `127.0.0.1` only and never expose secrets (no tokens, `.env` values, or settings beyond paths in responses). CORS must be limited to the local frontend origins.
-- **Current state: not working, do not run it.** It was written against the Milestone 1 core and still uses its own `storage/db.py` + `storage/repository.py` (integer IDs, a different `jobs` schema, no `mode`) and `Settings.app_db`, which no longer exists, so it fails at startup. **Do not "fix" it by re-adding `app_db`:** its schema would then write to the same `jobs` table in `database/app.db` as `storage/database.py` and corrupt business records.
-- **Planned rewire (separate PR after PR #1 merges):** the API must reuse the core, never re-implement it: one shared `run` path with the run lock, reconciliation, per-mode dedupe, and run logging; job history via `storage.jobs.JobRepository` and `open_app_db_read_only`; job IDs are UUID strings. Then delete `storage/db.py` and `storage/repository.py`, restrict CORS and `/media`, remove the import-time `create_app()`, and add `TestClient` tests in temporary folders.
-- Launch (after the rewire): `cd backend; python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000`.
-
 ## Target code layout
 
 ```text
-backend/social_media_auto_poster/
+src/social_media_auto_poster/
 ├── config.py          # Settings loaded from env/.env; paths for data/ and database/
 ├── models.py          # Shared dataclasses/enums (Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult)
 ├── graph/             # LangGraph only: state.py, nodes.py, workflow.py
@@ -102,11 +95,7 @@ backend/social_media_auto_poster/
 ├── platforms/         # base.py (publisher protocol), simulator, linkedin/ adapter
 ├── services/          # Hashing, archiving, other plain-Python helpers used by nodes
 └── main.py            # CLI entry point
-backend/app/           # Local FastAPI app (PR #1): routers scan, run, jobs; not working yet (see "Local API")
-frontend/              # React/Vite dashboard for the API (PR #1)
 ```
-
-**Layout change (PR #1, D31):** the package moved from `src/` to `backend/`; there is no `src/` folder any more. `pyproject.toml` installs only `social_media_auto_poster` and `app` from `backend/`.
 
 The folder structure was migrated in Milestone 1, Slice 1; `config.py` and `models.py` were added in Slice 2. Frozen models hold collections as tuples, not lists, so they are truly immutable. **Contract (changed from the original `list` spec):** `ScanResult.candidates`, `.pending`, `.ambiguous` (and each group inside it), and `ValidationResult.errors` are tuples; passing a list raises `TypeError`. `main.py` has four commands (`run`, `scan`, `jobs`, `resolve`). `jobs` (Slice 2.4) is read-only history via `open_app_db_read_only` (`--last N`, `--status S`, `--id PREFIX`; prefix matching has no wildcards); it never creates or changes the DB and takes no lock. `scan` (added early, after Slice 3) must stay read-only: it reports stability, validation, and (for stable valid posts) `new` or `DUPLICATE of job …` using the same `sha256_file` + `find_blocking_duplicate` check and `RUN_MODE` as `run`, plus a note about interrupted `PUBLISHING` jobs; it never moves, publishes, reconciles, or creates folders or the DB. `run` (Slice 6) creates the data folders, takes the run lock, and runs each complete post once through the graph with the `Simulator` publisher (there is no real publisher to select in M1). It has no `--dir`: incoming, failed, and archive must come from the same settings. It is one-shot; continuous folder watching is not part of M1. One unexpected job error is logged and shown as `ERROR (unexpected)` without stopping other jobs.
 
@@ -135,9 +124,7 @@ Work **one milestone at a time**. Do not start the next milestone until the curr
 | Dev tools: `scripts/app.py` sandbox tester, `notebooks/workflow.ipynb`, `open_app_db_read_only`, `list_recent` | yes | yes | `04ce5cb` (notebook outputs cleared in `d30dc71`) |
 | 2.3 Startup reconciliation, `list_by_status`, tester crash simulation (menu 11) | yes | yes | `d30dc71` |
 | 2.4 `jobs` command, duplicates + interrupted note in `scan`, tester history via `jobs` | yes | yes | `9c0e4be` |
-| M2 follow-up: `resolve` command (+ tester menu 12), run logging (run_id, start/finish, skipped lines, mode), sandbox hardening, `/database/` ignored, test isolation (`tests/conftest.py`) | yes | yes | `5e14b18` |
-| PR #1 adoption: `src/` → `backend/`, FastAPI app and frontend added, M2 core and tests kept, `api` extra (D31) | yes | core yes; API no | on `mz-updation` (pending review) |
-| API rewire to the M2 core (see "Local API") | no | no | no |
+| M2 follow-up: `resolve` command (+ tester menu 12), run logging (run_id, start/finish, skipped lines, mode), sandbox hardening, `/database/` ignored, test isolation (`tests/conftest.py`) | yes | yes | not yet (pending review) |
 | Planned next: Milestone 3 (checkpointer) | no | no | no |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | Not started |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | Not started |
@@ -156,8 +143,7 @@ Tests must cover, as the features appear: normal execution, validation failures,
 - `pyproject.toml` is the source of truth for dependencies: runtime in `[project] dependencies`, test tooling in `[project.optional-dependencies] dev`. The supported install is `pip install -e ".[dev]"`, which reads only `pyproject.toml`.
 - `requirements.txt` is kept by the developer's choice but is **not** used by the documented install. It currently lists unpinned packages beyond the agreed set (including `langchain`, which is excluded above); do not treat it as authoritative or install from it.
 - Add a dependency only in the milestone that uses it. Verify the package name, current version, and Python compatibility on PyPI or the official docs before adding or pinning it. Bounds are `>=` the version actually installed and tested, `<` the next major version.
-- Current: `langgraph`, `python-dotenv` (runtime); `pytest`, `httpx` (dev; `httpx` is for FastAPI's `TestClient`); `ipykernel`, `jupyter` (optional `notebook` extra, only for `notebooks/`; verified on Python 3.14). Application and test code must never import from the `notebook` extra.
-- `fastapi`, `uvicorn[standard]`, `python-multipart` are the optional **`api`** extra (verified on Python 3.14, PR #1). Only `backend/app/` may import them; the core package `social_media_auto_poster` must never import them, so the CLI works with `.[dev]` alone.
+- Current: `langgraph`, `python-dotenv` (runtime); `pytest` (dev); `ipykernel`, `jupyter` (optional `notebook` extra, only for `notebooks/`; verified on Python 3.14). Application and test code must never import from the `notebook` extra.
 
 - Expected later: `watchdog` (when folder watching is added), `langgraph-checkpoint-sqlite` (M3), `requests` or similar (M4). `langchain` is **not** a dependency (see "No LLMs" above).
 - **Python version:** the developer uses **Python 3.14**; minimum is 3.12 (`requires-python = ">=3.12"`). `langgraph` officially lists classifiers only through 3.13, so re-check 3.14 compatibility whenever a dependency is added (especially `langgraph-checkpoint-sqlite` in M3). Falling back to 3.13 is the remedy if something breaks.
@@ -165,7 +151,7 @@ Tests must cover, as the features appear: normal execution, validation failures,
 
 ## Developer tools
 
-- **`scripts/app.py`** (stdlib only): interactive manual tester. It always works in a sandbox (default `<repo>/sandbox`, Git-ignored) that acts as both the base folder and the data folder, so its database, logs, and run lock never touch the real ones. It refuses a sandbox that is the project folder, or that is, contains, or is inside the real data folder, the real `database/` folder, or the real `logs/` folder. It only adopts a folder that is **empty or already holds the `.autoposter-sandbox` marker** (so `--sandbox backend` is refused), and Reset deletes only a marked folder. Run, Scan, Show job history, and Resolve call `main(["run"])`, `main(["scan"])`, `main(["jobs"])`, and `main(["resolve", ...])`; never duplicate app logic in the script. Menu 11 simulates a crash during publish; menu 12 resolves a `NEEDS_REVIEW` job.
+- **`scripts/app.py`** (stdlib only): interactive manual tester. It always works in a sandbox (default `<repo>/sandbox`, Git-ignored) that acts as both the base folder and the data folder, so its database, logs, and run lock never touch the real ones. It refuses a sandbox that is the project folder, or that is, contains, or is inside the real data folder, the real `database/` folder, or the real `logs/` folder. It only adopts a folder that is **empty or already holds the `.autoposter-sandbox` marker** (so `--sandbox src` is refused), and Reset deletes only a marked folder. Run, Scan, Show job history, and Resolve call `main(["run"])`, `main(["scan"])`, `main(["jobs"])`, and `main(["resolve", ...])`; never duplicate app logic in the script. Menu 11 simulates a crash during publish; menu 12 resolves a `NEEDS_REVIEW` job.
 - **`notebooks/workflow.ipynb`**: graph picture (`draw_mermaid_png`, via the mermaid.ink web service, which receives the graph structure only), Mermaid text, and one sample post through `run_job` in a temporary sandbox. It reuses the sample helpers from `scripts/app.py`. **Commit it with outputs cleared**; `tests/unit/test_notebook.py` enforces this.
 - **Test isolation (`tests/conftest.py`):** every test runs from its own empty temporary folder with `AUTOPOSTER_DATA_DIR` unset, and a session-wide check fails the run if the real `database/app.db` was changed or created.
 
@@ -176,7 +162,6 @@ py -3.14 -m venv .vevn               # once
 .\.vevn\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
-python -m pip install -e ".[dev,api]"  # only for the local API in backend/app (not working yet; see "Local API")
 python -m pytest
 python -m social_media_auto_poster.main scan                 # read-only report of data\LinkedIn\incoming
 python -m social_media_auto_poster.main scan --dir <folder> --interval 0
