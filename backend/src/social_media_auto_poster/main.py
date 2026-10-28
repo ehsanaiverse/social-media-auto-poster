@@ -6,6 +6,7 @@
   recording each job in ``database/app.db``. Publishing is simulated unless
   ``--real`` is given; real mode is never a default or a setting (D36).
 - ``resolve``: manually settle a NEEDS_REVIEW job as PUBLISHED or FAILED.
+- ``linkedin-check``: check the LinkedIn token and setup; never creates a post.
 """
 
 import argparse
@@ -18,7 +19,7 @@ from collections.abc import Generator
 from contextlib import ExitStack, closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
@@ -33,6 +34,14 @@ from social_media_auto_poster.ingestion.stability import is_file_stable
 from social_media_auto_poster.ingestion.validation import validate_candidate
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, ScanResult
 from social_media_auto_poster.platforms.base import Publisher
+from social_media_auto_poster.platforms.linkedin.check import run_check
+from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
+from social_media_auto_poster.platforms.linkedin.credentials import (
+    CredentialsError,
+    TokenState,
+    load_linkedin_credentials,
+)
+from social_media_auto_poster.platforms.linkedin.publisher import LinkedInPublisher
 from social_media_auto_poster.platforms.simulator import Simulator
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.services.real_mode import (
@@ -72,8 +81,9 @@ exit codes:
   0  run completed; every job was simulated, a duplicate, or waiting, or there was nothing to do
   1  setup error (data folder, job database, checkpoint store, or crash recovery
      could not complete), or run --real refused before publishing anything
-     (real publishing not set up, posts only simulated so far, or published
-     posts in archive/ that the job database does not know about)
+     (LinkedIn token missing, expired, or rejected; posts only simulated so
+     far; or published posts in archive/ that the job database does not
+     know about)
   2  invalid command or option
   3  run completed, but at least one job ended FAILED, NEEDS_REVIEW, or ERROR
      (including jobs resumed after a crash), or an interrupted job was recovered
@@ -177,6 +187,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="With --real: also publish posts whose content was already simulated (refused otherwise).",
     )
     run.set_defaults(handler=_run)
+
+    check = commands.add_parser(
+        "linkedin-check",
+        help="Check the LinkedIn token and setup. Never creates a post.",
+        description=(
+            "Check that the access token in backend\\.env is set, not expired, and accepted by LinkedIn. "
+            "With --upload-test, also upload a small test image (never used in a post) and check that "
+            "its processing status can be read."
+        ),
+    )
+    check.add_argument(
+        "--upload-test",
+        action="store_true",
+        help="Also upload a generated test image (no post) and read its processing status.",
+    )
+    check.set_defaults(handler=_linkedin_check)
     return parser
 
 
@@ -537,7 +563,7 @@ def _run_locked(settings: Settings, args: argparse.Namespace, mode: PublishMode,
             return EXIT_SETUP_ERROR
         repository = JobRepository(conn)
         # Real-mode checks come before anything changes, so a refused run leaves everything as it was.
-        publisher = _publisher_for(mode, settings, repository)
+        publisher = _publisher_for(mode, settings, repository, stack)
         if publisher is None:
             return EXIT_SETUP_ERROR
         try:
@@ -570,19 +596,47 @@ def _run_locked(settings: Settings, args: argparse.Namespace, mode: PublishMode,
         return _process(context, args.publish_simulated, recoveries, earlier_problems, counts)
 
 
-def _real_publisher(settings: Settings) -> Publisher | None:
-    """The LinkedIn publisher, or None while real publishing is not set up (it arrives in slices 4.3-4.4)."""
-    return None
+class RealPublishingUnavailable(Exception):
+    """Real publishing cannot start; the message says why."""
 
 
-def _publisher_for(mode: PublishMode, settings: Settings, repository: JobRepository) -> Publisher | None:
+def _today() -> date:
+    return date.today()
+
+
+def _linkedin_client(access_token: str) -> LinkedInClient:
+    return LinkedInClient(access_token)
+
+
+def _real_publisher(settings: Settings) -> Publisher:
+    """The LinkedIn publisher, once the token in backend/.env is present, not expired, and accepted.
+
+    The token is checked with LinkedIn (``/v2/userinfo``) here, before anything changes.
+    """
+    today = _today()
+    try:
+        credentials = load_linkedin_credentials(settings.base_dir, today=today)
+    except CredentialsError as error:
+        raise RealPublishingUnavailable(str(error)) from None
+    state = credentials.state(today)
+    if state is TokenState.EXPIRED:
+        raise RealPublishingUnavailable(credentials.describe(today))
+    if state in (TokenState.EXPIRING, TokenState.UNKNOWN):
+        logger.warning("LinkedIn token: %s", credentials.describe(today))
+    publisher = LinkedInPublisher(_linkedin_client(credentials.access_token))
+    problem = publisher.check_access()
+    if problem is not None:
+        publisher.close()
+        raise RealPublishingUnavailable(problem)
+    return publisher
+
+
+def _publisher_for(
+    mode: PublishMode, settings: Settings, repository: JobRepository, stack: ExitStack
+) -> Publisher | None:
     """The publisher for this run, or None (with the reason printed) if a real run must not start."""
     if mode is PublishMode.SIMULATED:
         return Simulator()
-    publisher = _real_publisher(settings)
-    if publisher is None:
-        print("Error: real publishing is not set up yet; nothing was published.", file=sys.stderr)
-        return None
     unknown = archive_without_history(settings, repository, Platform.LINKEDIN)
     if unknown:
         logger.error("Real run refused: archive holds %d post folder(s) but the job database has no real jobs", len(unknown))
@@ -597,6 +651,15 @@ def _publisher_for(mode: PublishMode, settings: Settings, repository: JobReposit
         for folder in unknown[:10]:
             print(f"  {folder.name}", file=sys.stderr)
         return None
+    try:
+        publisher = _real_publisher(settings)
+    except RealPublishingUnavailable as error:
+        logger.error("Real run refused: %s", error)
+        print(f"Error: {error}; nothing was published.", file=sys.stderr)
+        return None
+    close = getattr(publisher, "close", None)
+    if close is not None:
+        stack.callback(close)
     return publisher
 
 
@@ -751,6 +814,25 @@ def _print_jobs(lines: list[_JobLine], *, title: str = "JOBS", note: str = "") -
         print(f"  {line.stem:<{stem_width}}   {line.label:<{label_width}}   {line.note}")
         for detail in line.details:
             print(f"  {'':<{stem_width}}     - {detail}")
+
+
+# linkedin-check
+
+
+def _linkedin_check(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    print("LinkedIn check (no post is ever created)")
+    try:
+        credentials = load_linkedin_credentials(settings.base_dir, today=_today())
+    except CredentialsError as error:
+        print(f"  PROBLEM  {error}")
+        print("\nNot ready for run --real: fix the problem above.")
+        return EXIT_SETUP_ERROR
+    with _logging_to(verbose=False, log_file=None), closing(_linkedin_client(credentials.access_token)) as client:
+        report = run_check(credentials, client, today=_today(), upload_test=args.upload_test)
+    print("\n".join(report.lines))
+    print("\nReady for run --real." if report.ok else "\nNot ready for run --real: fix the problems above.")
+    return EXIT_OK if report.ok else EXIT_SETUP_ERROR
 
 
 # shared

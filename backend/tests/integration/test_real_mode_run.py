@@ -68,13 +68,13 @@ def rows(settings: Settings) -> list[tuple[str, str, str]]:
 # Choosing the mode
 
 
-def test_real_mode_is_refused_while_no_real_publisher_is_set_up(settings, capsys):
+def test_real_mode_is_refused_without_a_linkedin_token(settings, capsys):
     add_post(settings, "launch")
 
     assert run("--real") == 1
 
     captured = capsys.readouterr()
-    assert "real publishing is not set up yet; nothing was published" in captured.err
+    assert "LINKEDIN_ACCESS_TOKEN is not set in backend\.env; nothing was published" in captured.err
     assert (settings.incoming_dir(LINKEDIN) / "launch.jpg").exists()
     assert rows(settings) == []
 

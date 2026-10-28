@@ -66,6 +66,20 @@ class LinkedInPublisher:
     def __repr__(self) -> str:
         return "LinkedInPublisher()"
 
+    def check_access(self) -> str | None:
+        """Look up the member once (``/v2/userinfo``): None if the token works, else why not.
+
+        ``run --real`` calls this before anything changes, so a rejected token stops the run early.
+        """
+        try:
+            self._member()
+        except _NotPosted as error:
+            return str(error)
+        return None
+
+    def close(self) -> None:
+        self._client.close()
+
     def publish(self, post: PostContent, /) -> PublishResult:
         problem = caption_problem(post.caption) or image_problem(post.media)
         if problem is not None:
