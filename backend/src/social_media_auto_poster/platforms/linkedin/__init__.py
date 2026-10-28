@@ -1,1 +1,1 @@
-"""Reserved for the first platform integration milestone: LinkedIn."""
+"""LinkedIn: caption and image checks, the HTTP client, and the publisher (personal profile only)."""
