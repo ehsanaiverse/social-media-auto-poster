@@ -123,7 +123,7 @@ JOBS (3)
 PENDING (1) - waiting for a partner file
   lonely.jpg
 
-Simulation mode: nothing was sent to LinkedIn.
+Simulation mode: nothing was sent to LinkedIn in this run.
 ```
 
 What happens to each post:
@@ -144,6 +144,17 @@ Every folder in `failed\` and `archive\` contains a small `.autoposter-job` file
 `run` options: `--verbose` shows INFO logs in the terminal; `--interval 0` skips the 1-second change-watch wait. The full log is `backend\logs\autoposter.log` (UTC timestamps, rotated at 1 MB, 5 backups; caption text is never logged). Each line carries the run's `run_id`; every run starts with `Run started` and ends with a `Run finished` line that counts each outcome and gives the exit code and duration. Only one `run` can work at a time.
 
 `run` exit codes (useful with Task Scheduler): `0` all simulated/duplicate/waiting or nothing to do, `1` setup error (including a job database that cannot be opened or crash recovery that cannot complete), `2` invalid command or option, `3` at least one job `FAILED`/`NEEDS_REVIEW`/`ERROR` (or a crashed job recovered as `NEEDS_REVIEW`), `4` another run is in progress.
+
+### Real mode: `run --real` (Milestone 4, in progress)
+
+Real publishing is only ever chosen on the command line with `--real`; there is no setting for it, so a scheduled task can never switch to real posting by accident. Until the LinkedIn publisher is added (Milestone 4, slices 4.3-4.4), `run --real` stops with "real publishing is not set up yet" and publishes nothing.
+
+Before publishing anything, `run --real` refuses (exit code 1, nothing published) when:
+
+- `incoming\` holds posts that were **only simulated** so far. They are listed; remove the ones you do not want on LinkedIn, or confirm with `run --real --publish-simulated`.
+- `archive\` holds published posts but the job database has **no record of any real job** (it may have been replaced or lost). Restore your backup of `backend\database\app.db`; without it, posts could be published twice.
+
+`scan --real` previews this: it checks duplicates against real-mode history and marks the posts `run --real` would refuse.
 
 ### `scan` (read-only)
 

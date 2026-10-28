@@ -39,6 +39,7 @@ All of them are ignored by Git. `AUTOPOSTER_DATA_DIR` in `backend\.env` moves on
 ```powershell
 python -m social_media_auto_poster.main scan --interval 0   # read-only preview of data\LinkedIn\incoming
 python -m social_media_auto_poster.main run                 # process every complete post once (simulated)
+python -m social_media_auto_poster.main run --real          # publish to LinkedIn (Milestone 4; refused until set up)
 python -m social_media_auto_poster.main jobs                # read-only job history
 python -m social_media_auto_poster.main resolve <id> --failed   # settle a NEEDS_REVIEW job (or --published <post_id>)
 ```
