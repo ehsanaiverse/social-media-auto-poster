@@ -195,6 +195,11 @@ class JobRepository:
         ).fetchone()
         return self._to_record(row) if row else None
 
+    def has_jobs(self, *, mode: PublishMode) -> bool:
+        """Whether any job (in any status) was ever recorded in ``mode``."""
+        row = self._conn.execute("SELECT 1 FROM jobs WHERE mode = ? LIMIT 1", (mode.value,)).fetchone()
+        return row is not None
+
     def list_by_status(self, status: JobStatus) -> list[JobRecord]:
         """All jobs with ``status``, oldest first."""
         rows = self._conn.execute(f"{_SELECT} WHERE status = ? ORDER BY created_at, rowid", (status.value,)).fetchall()
