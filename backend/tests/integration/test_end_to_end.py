@@ -82,7 +82,7 @@ def test_mixed_folder_end_to_end(base, incoming, capsys):
     assert "unsupported image type '.gif'" in out
     assert "PENDING (1)" in out
     assert "AMBIGUOUS (1)" in out
-    assert "Simulation mode: nothing was sent to LinkedIn." in out
+    assert "Simulation mode: nothing was sent to LinkedIn in this run." in out
 
     assert (incoming / "launch.jpg").exists()  # Simulated: stays in incoming.
     assert not (incoming / "animated.gif").exists()  # Invalid: moved to failed.
