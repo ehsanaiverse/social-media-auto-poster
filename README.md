@@ -210,11 +210,21 @@ python scripts\app.py --sandbox D:\tmp\my-sandbox     # any other folder
 
 A terminal menu to add sample posts (valid JPEG/PNG, invalid kinds, lone files, ambiguous), run, scan, look at the folders, see job history (via the `jobs` command), simulate a crash during publish (to watch startup recovery) or right after it (menu 13, to watch a job resumed from its checkpoint), resolve a `NEEDS_REVIEW` job, and reset. Everything happens in a **sandbox** with its own `data\`, `database\app.db`, logs, and run lock; your real data and job database are never touched. It refuses to start if the sandbox is, contains, or is inside your real data, `database\`, or `logs\` folder, and it only uses a folder that is empty or already marked as a sandbox (`.autoposter-sandbox`), so Reset can never delete anything else. Publishing is always simulated; Run and Scan call the real `run` / `scan` commands. Valid sample posts share the same tiny image, so adding the same caption twice demonstrates a `DUPLICATE`.
 
+## Backups
+
+The job database, `backend\database\app.db`, is the only record of what was published and the only protection against posting the same content twice. Back it up regularly, and always before a real run:
+
+```powershell
+Copy-Item backend\database\app.db "backend\database\app.db.backup-$(Get-Date -Format yyyyMMdd-HHmm)"
+```
+
+Copy it while no `run` is in progress. To restore, make sure no `run` is in progress, then copy the backup back over `backend\database\app.db`. If the database is lost while `archive\` still holds published posts, `run --real` refuses to start until it is restored. The checkpoint store (`langgraph_checkpoints.db`) does not need a backup: it only holds work interrupted by a crash.
+
 ## Configuration and security
 
 Copy `backend\.env.example` to `backend\.env` for local configuration; the application reads `.env` only from `backend\`. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, logs, or the sandbox. OAuth and API access are not configured by this scaffold. Future integrations must use official APIs and comply with their permissions and policies.
 
-`AUTOPOSTER_DATA_DIR` moves the content folder (default `backend\data`). `database\`, `logs\`, and the run lock always stay in the base folder, `backend\`.
+`AUTOPOSTER_DATA_DIR` moves the content folder (default `backend\data`). If it points outside `backend\`, `scan` and `run` print a warning with the folder they use, and `run --real` refuses to start if that folder does not already have its `LinkedIn\incoming`, `archive`, and `failed` folders (a real run never creates them; run once without `--real` on a new setup). `database\`, `logs\`, and the run lock always stay in the base folder, `backend\`.
 
 Job records live in `backend\database\app.db` (SQLite, created by `run`; ignored by Git). Graph checkpoints live in a separate file, `backend\database\langgraph_checkpoints.db`; it only ever holds jobs that were interrupted, and never caption text. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
 
