@@ -13,6 +13,8 @@ dependencies = [
     # 3.1.2: newest release, verified on Python 3.14; past the CVE-2025-67644 fix (3.0.1). It requires
     # langgraph-checkpoint>=4.3.0, past the CVE-2025-64439 fix (3.0.0).
     "langgraph-checkpoint-sqlite>=3.1.2,<4",
+    # LinkedIn API calls (Milestone 4). 0.28.1 is the newest release, verified on Python 3.14.
+    "httpx>=0.28.1,<1",
     "python-dotenv>=1.2,<2",
 ]
 
