@@ -62,6 +62,15 @@ def _detect_image_type(head: bytes) -> str | None:
     return None
 
 
+def decode_caption(data: bytes) -> str:
+    """The caption text in ``data``: strict UTF-8, with the BOM that Notepad may add removed.
+
+    The single place captions are decoded, so what is validated is what is published.
+    Raises ``UnicodeDecodeError`` for anything that is not valid UTF-8.
+    """
+    return data.decode("utf-8-sig")
+
+
 def _caption_errors(path: Path) -> list[str]:
     try:
         with path.open("rb") as f:
@@ -74,8 +83,7 @@ def _caption_errors(path: Path) -> list[str]:
     if len(data) > MAX_CAPTION_BYTES:
         return [f"caption file too large (over {MAX_CAPTION_BYTES // 1024} KB)"]
     try:
-        # utf-8-sig accepts and strips the BOM that Notepad may add.
-        text = data.decode("utf-8-sig")
+        text = decode_caption(data)
     except UnicodeDecodeError:
         return ["caption is not valid UTF-8 text"]
     if not text.strip():

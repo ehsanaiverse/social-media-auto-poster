@@ -20,7 +20,7 @@ class FakeLinkedIn:
         self.published: list[str] = []
 
     def publish(self, post, /):
-        self.published.append(post.stem)
+        self.published.append(post.candidate.stem)
         return PublishResult(success=True, simulated=False, platform_post_id=f"urn:li:share:{len(self.published)}")
 
 

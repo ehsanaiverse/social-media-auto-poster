@@ -493,3 +493,73 @@ def test_graph_has_expected_nodes():
         "__start__", "check_stability", "validate", "check_duplicate", "mark_publishing", "publish",
         "move_to_failed", "record_result", "archive", "__end__",
     }
+
+
+# Publishing exactly the bytes that were hashed
+
+
+class CapturingPublisher:
+    """Keeps what it was given and returns a confirmed real post."""
+
+    def __init__(self):
+        self.received = []
+
+    def publish(self, post, /):
+        self.received.append(post)
+        return REAL_SUCCESS
+
+
+def change_after_marking(monkeypatch, change):
+    """Run ``change`` right after mark_publishing: after hashing, just before publish."""
+    real_mark = nodes.mark_publishing
+
+    def mark_then_change(state, runtime):
+        update = real_mark(state, runtime)
+        change()
+        return update
+
+    monkeypatch.setattr(nodes, "mark_publishing", mark_then_change)
+
+
+def test_publisher_receives_exactly_the_hashed_bytes(settings, context):
+    candidate = make_candidate(settings, caption="Launch (beta) #news".encode("utf-8"))
+    publisher = CapturingPublisher()
+
+    final = run_job(candidate, context(publisher))
+
+    [content] = publisher.received
+    assert content.media == JPEG_BYTES
+    assert content.caption == "Launch (beta) #news"
+    assert (content.media_sha256, content.caption_sha256) == (final["media_sha256"], final["caption_sha256"])
+    assert final["status"] == JobStatus.PUBLISHED
+
+
+@pytest.mark.parametrize("publisher_type", [CapturingPublisher, Simulator])
+def test_a_file_replaced_after_hashing_is_failed_and_never_sent(settings, context, repo, monkeypatch, publisher_type):
+    candidate = make_candidate(settings)
+    change_after_marking(monkeypatch, lambda: candidate.caption_path.write_text("Swapped in", encoding="utf-8"))
+    publisher = publisher_type()
+    calls = []
+    monkeypatch.setattr(Simulator, "publish", lambda self, post: calls.append(post))
+
+    final = run_job(candidate, context(publisher))
+
+    assert final["status"] == JobStatus.FAILED  # Definite: nothing was sent, so never NEEDS_REVIEW.
+    assert "not published: caption changed after the duplicate check" in final["errors"]
+    assert getattr(publisher, "received", calls) == [] and calls == []
+    assert repo.get(final["job_id"]).status is JobStatus.FAILED
+    folder = Path(final["destination"])
+    assert (folder / ERROR_REPORT_NAME).read_text(encoding="utf-8").count("caption changed after the duplicate check") == 1
+
+
+def test_a_file_gone_before_publish_is_failed_and_never_sent(settings, context, repo, monkeypatch):
+    candidate = make_candidate(settings)
+    change_after_marking(monkeypatch, candidate.media_path.unlink)
+    publisher = CapturingPublisher()
+
+    final = run_job(candidate, context(publisher))
+
+    assert final["status"] == JobStatus.FAILED
+    assert any(e.startswith("not published: could not read the files") for e in final["errors"])
+    assert publisher.received == []
+    assert repo.get(final["job_id"]).status is JobStatus.FAILED  # FAILED never blocks: a fixed post can be retried.

@@ -13,3 +13,8 @@ def sha256_file(path: Path, *, chunk_size: int = DEFAULT_CHUNK_SIZE) -> str:
         while chunk := f.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_bytes(data: bytes) -> str:
+    """The lowercase hex SHA-256 of ``data``, in the same form as ``sha256_file``."""
+    return hashlib.sha256(data).hexdigest()

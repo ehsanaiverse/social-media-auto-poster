@@ -38,7 +38,7 @@ from social_media_auto_poster.graph import nodes
 from social_media_auto_poster.graph.checkpoints import saved_thread_ids
 from social_media_auto_poster.graph.state import JobState, WorkflowContext
 from social_media_auto_poster.graph.workflow import build_workflow, durability_for, forget_thread
-from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode, PublishResult
+from social_media_auto_poster.models import JobStatus, PostContent, PublishMode, PublishResult
 from social_media_auto_poster.services.reconcile import Recovery, settle_crashed_before_publish
 from social_media_auto_poster.storage.jobs import JobRepository
 
@@ -51,7 +51,7 @@ RESUMABLE = frozenset({nodes.RECORD_RESULT, nodes.MOVE_TO_FAILED, nodes.ARCHIVE}
 class _NeverPublish:
     """The publisher for resumed jobs. Resumed steps never reach publish; if one did, it fails loudly."""
 
-    def publish(self, post: PostCandidate, /) -> PublishResult:
+    def publish(self, post: PostContent, /) -> PublishResult:
         raise RuntimeError("A resumed job must never publish again.")
 
 

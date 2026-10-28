@@ -25,6 +25,7 @@ from social_media_auto_poster.ingestion.stability import is_file_stable
 from social_media_auto_poster.ingestion.validation import validate_candidate
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate
 from social_media_auto_poster.services.archive import ArchiveError, archive_post, write_error_report
+from social_media_auto_poster.services.content import ContentNotReadyError, read_post_content
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.storage.jobs import DuplicateJobError
 
@@ -126,8 +127,18 @@ def mark_publishing(state: JobState, runtime: Runtime[WorkflowContext]) -> Updat
 
 
 def publish(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
+    """Hand the publisher exactly the bytes the duplicate check hashed, then record its answer."""
     try:
-        result = runtime.context.publisher.publish(_candidate(state))
+        content = read_post_content(
+            _candidate(state), media_sha256=state["media_sha256"], caption_sha256=state["caption_sha256"]
+        )
+    except ContentNotReadyError as error:
+        # Nothing was sent, so this is a definite FAILED, never NEEDS_REVIEW.
+        logger.warning("Not published, nothing was sent: %s reason=%s", _fields(state), error)
+        return {"status": JobStatus.FAILED.value, "errors": [*state["errors"], f"not published: {error}"]}
+
+    try:
+        result = runtime.context.publisher.publish(content)
     except Exception as error:  # Deliberately broad: any surprise means "outcome unknown".
         logger.exception("Publish outcome unknown; marking NEEDS_REVIEW, not retrying: %s", _fields(state))
         message = f"publish outcome unknown ({type(error).__name__}: {error}); not retried"

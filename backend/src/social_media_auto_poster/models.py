@@ -1,6 +1,6 @@
 """Shared data types used by ingestion, the workflow graph, and publishers."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -51,6 +51,21 @@ class PostCandidate:
     stem: str
     media_path: Path
     caption_path: Path
+
+
+@dataclass(frozen=True)
+class PostContent:
+    """What a publisher sends: a post's exact bytes, read once and checked against its recorded hashes.
+
+    Built right before publishing and never stored in graph state. The image bytes
+    and the caption text are left out of ``repr`` so they can never reach a log line.
+    """
+
+    candidate: PostCandidate
+    media_sha256: str
+    caption_sha256: str
+    media: bytes = field(repr=False)
+    caption: str = field(repr=False)  # Decoded exactly as validation decodes it (UTF-8, BOM removed).
 
 
 @dataclass(frozen=True)

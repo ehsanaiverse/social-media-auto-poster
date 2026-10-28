@@ -31,7 +31,7 @@ from social_media_auto_poster.graph.checkpoints import open_checkpointer, saved_
 from social_media_auto_poster.graph.state import WorkflowContext
 from social_media_auto_poster.graph.workflow import run_job
 from social_media_auto_poster.ingestion.validation import validate_candidate
-from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, PublishResult
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PostContent, PublishMode, PublishResult
 from social_media_auto_poster.platforms.simulator import Simulator
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
@@ -189,7 +189,7 @@ def _killed_before_recording(state, runtime):
 class _SandboxRealPublisher:
     """Sandbox only: pretends a real publish succeeded. Sends nothing anywhere."""
 
-    def publish(self, post: PostCandidate, /) -> PublishResult:
+    def publish(self, post: PostContent, /) -> PublishResult:
         return PublishResult(success=True, simulated=False, platform_post_id=f"urn:li:share:sandbox-{uuid4().hex[:8]}")
 
 
