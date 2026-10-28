@@ -35,6 +35,14 @@ Scope: posting **one image with a caption** to the **developer's own personal pr
 - Latest on 2026-10-28: **`202610`** (October 2026). This project keeps it in **one constant** in the LinkedIn adapter.
 - **When to update the constant:** at least once a year (before the version is 12 months old), or immediately when LinkedIn announces its sunset. Update it, run the tests, then run `linkedin-check` before the next real run. Deprecation notices appear at the top of the API pages (for example, version `202511` sunsets on 2026-11-16).
 
+## Verified with the developer's own token (2026-10-28)
+
+`linkedin-check --upload-test`, run against the real LinkedIn with a token from the Developer Portal's token generator:
+
+- `GET /v2/userinfo` accepted the token and returned the member (`sub`).
+- `POST /rest/images?action=initializeUpload` and the `PUT` upload worked.
+- `GET /rest/images/{urn}` **could be read** with this token and returned `AVAILABLE`. So the Images API is used for real posts; the Assets API fallback is not needed.
+
 ## Uploading the image (Images API)
 
 1. `POST https://api.linkedin.com/rest/images?action=initializeUpload` with `{"initializeUploadRequest": {"owner": "urn:li:person:{sub}"}}`. The response `value` has `uploadUrl`, `uploadUrlExpiresAt`, and `image` (`urn:li:image:...`).

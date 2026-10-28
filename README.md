@@ -147,7 +147,14 @@ Every folder in `failed\` and `archive\` contains a small `.autoposter-job` file
 
 ### Real mode: `run --real` (Milestone 4, in progress)
 
-Real publishing is only ever chosen on the command line with `--real`; there is no setting for it, so a scheduled task can never switch to real posting by accident. Until the LinkedIn publisher is added (Milestone 4, slices 4.3-4.4), `run --real` stops with "real publishing is not set up yet" and publishes nothing.
+Real publishing is only ever chosen on the command line with `--real`; there is no setting for it, so a scheduled task can never switch to real posting by accident. Real posts go to your own LinkedIn profile, with the access token from `backend\.env` (see `backend\.env.example`: `LINKEDIN_ACCESS_TOKEN`, and `LINKEDIN_TOKEN_CREATED` for expiry warnings; tokens last 60 days). Check the setup first, without posting anything:
+
+```powershell
+python -m social_media_auto_poster.main linkedin-check                 # token, expiry, and who posts would be published as
+python -m social_media_auto_poster.main linkedin-check --upload-test   # also uploads a test image (never used in a post)
+```
+
+A real run checks the token with LinkedIn before anything else; a missing, expired, or rejected token stops it (exit code 1, nothing published). It warns from 7 days before the token expires. A post whose outcome is uncertain (for example, a timeout after sending) is marked `NEEDS_REVIEW` and never retried: check your LinkedIn profile, then use `resolve`.
 
 Before publishing anything, `run --real` refuses (exit code 1, nothing published) when:
 
