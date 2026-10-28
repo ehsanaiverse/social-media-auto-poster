@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from social_media_auto_poster import main as cli
-from social_media_auto_poster.config import Settings
+from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.graph import nodes
 from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
 from social_media_auto_poster.platforms.linkedin.publisher import LinkedInPublisher
@@ -33,8 +33,8 @@ def base(tmp_path, monkeypatch) -> Path:
 @pytest.fixture
 def settings(base) -> Settings:
     settings = Settings(base_dir=base, data_dir=base / "data")
+    ensure_data_dirs(settings)  # As on any set-up machine: real runs never create them.
     incoming = settings.incoming_dir(cli.Platform.LINKEDIN)
-    incoming.mkdir(parents=True)
     (incoming / "launch.jpg").write_bytes(JPEG)
     (incoming / "launch.txt").write_text(CAPTION, encoding="utf-8")
     return settings

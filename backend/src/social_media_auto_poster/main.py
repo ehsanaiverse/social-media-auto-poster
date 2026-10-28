@@ -24,7 +24,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
 
-from social_media_auto_poster.config import DATA_DIR_VAR, Settings, ensure_data_dirs, load_settings
+from social_media_auto_poster.config import (
+    DATA_DIR_VAR,
+    Settings,
+    data_dir_outside_base,
+    ensure_data_dirs,
+    load_settings,
+    missing_platform_dirs,
+)
 from social_media_auto_poster.graph.checkpoints import open_checkpointer
 from social_media_auto_poster.graph.resume import ResumeResult, resume_interrupted_jobs
 from social_media_auto_poster.graph.state import JobState, WorkflowContext
@@ -238,6 +245,8 @@ def _scan(args: argparse.Namespace) -> int:
         conn = _open_history_or_none(settings)
         try:
             repository = JobRepository(conn) if conn is not None else None
+            if args.dir is None and data_dir_outside_base(settings):
+                print(_outside_warning(settings), file=sys.stderr)
             print(f"Scanning LinkedIn incoming: {folder}" + ("   (duplicate check: real mode)" if args.real else ""))
             if not (result.candidates or result.pending or result.ambiguous):
                 print("\nNothing found.")
@@ -523,6 +532,8 @@ def _run(args: argparse.Namespace) -> int:
             counts: Counter[str] = Counter()
             exit_code = EXIT_SETUP_ERROR
             logger.info("Run started: platform=%s mode=%s", Platform.LINKEDIN, mode)
+            if data_dir_outside_base(settings):
+                logger.warning(_outside_warning(settings).removeprefix("Warning: "))
             banner = "   (REAL MODE: posts are published to LinkedIn)" if mode is PublishMode.REAL else ""
             # flush: when output is piped, stdout is buffered and stderr warnings would overtake it.
             print(f"Processing LinkedIn incoming: {settings.incoming_dir(Platform.LINKEDIN)}{banner}", flush=True)
@@ -546,6 +557,20 @@ def _run(args: argparse.Namespace) -> int:
 
 def _run_locked(settings: Settings, args: argparse.Namespace, mode: PublishMode, counts: Counter[str]) -> int:
     """Everything a run does while holding the lock, after "Run started" is logged."""
+    if mode is PublishMode.REAL:
+        # A real run never creates the data folder: a missing one usually means a wrong AUTOPOSTER_DATA_DIR.
+        missing = missing_platform_dirs(settings, Platform.LINKEDIN)
+        if missing:
+            logger.error("Real run refused: data folders missing: %s", ", ".join(str(path) for path in missing))
+            print(
+                f"\nREFUSED: the data folder {settings.data_dir} does not have its LinkedIn folders:",
+                *(f"  {path}" for path in missing),
+                f"Real runs never create them. Check {DATA_DIR_VAR} in backend\\.env; for a new setup, run once "
+                "without --real to create them. Nothing was published.",
+                sep="\n",
+                file=sys.stderr,
+            )
+            return EXIT_SETUP_ERROR
     ensure_data_dirs(settings)
     with ExitStack() as stack:
         try:
@@ -602,6 +627,13 @@ class RealPublishingUnavailable(Exception):
 
 def _today() -> date:
     return date.today()
+
+
+def _outside_warning(settings: Settings) -> str:
+    return (
+        f"Warning: the data folder is outside backend\\: {settings.data_dir} "
+        f"(check {DATA_DIR_VAR} in backend\\.env)"
+    )
 
 
 def _linkedin_client(access_token: str) -> LinkedInClient:

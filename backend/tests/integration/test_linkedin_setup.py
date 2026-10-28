@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from social_media_auto_poster import main as cli
-from social_media_auto_poster.config import Settings
+from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.platforms.linkedin import check
 from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
 
@@ -41,8 +41,8 @@ def write_env(base: Path, created: str | None = "2026-10-01") -> None:
 
 def add_post(base: Path) -> Settings:
     settings = Settings(base_dir=base, data_dir=base / "data")
+    ensure_data_dirs(settings)  # As on any set-up machine: real runs never create them.
     incoming = settings.incoming_dir(cli.Platform.LINKEDIN)
-    incoming.mkdir(parents=True)
     (incoming / "launch.jpg").write_bytes(JPEG)
     (incoming / "launch.txt").write_text("Hello LinkedIn", encoding="utf-8")
     return settings

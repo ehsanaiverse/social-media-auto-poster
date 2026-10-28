@@ -108,6 +108,21 @@ def load_settings(
     return Settings(base_dir=base, data_dir=data_dir.resolve())
 
 
+def data_dir_outside_base(settings: Settings) -> bool:
+    """Whether the data folder resolves outside the base folder (``backend/``).
+
+    Allowed, but usually a leftover ``AUTOPOSTER_DATA_DIR`` pointing at an old location,
+    so ``scan`` and ``run`` print a warning with the resolved path.
+    """
+    return not settings.data_dir.is_relative_to(settings.base_dir)
+
+
+def missing_platform_dirs(settings: Settings, platform: Platform) -> list[Path]:
+    """The platform's ``incoming``, ``archive``, and ``failed`` folders that do not exist."""
+    return [settings.platform_dir(platform) / folder for folder in CONTENT_FOLDERS
+            if not (settings.platform_dir(platform) / folder).is_dir()]
+
+
 def ensure_data_dirs(settings: Settings) -> None:
     """Create ``incoming``, ``archive``, and ``failed`` for every platform.
 

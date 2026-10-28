@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
-from social_media_auto_poster.config import Settings
+from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.models import JobStatus, Platform, PublishResult
 
 JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
@@ -34,7 +34,10 @@ def base(tmp_path, monkeypatch) -> Path:
 
 @pytest.fixture
 def settings(base) -> Settings:
-    return Settings(base_dir=base, data_dir=base / "data")
+    """The data folders as any set-up machine has them (real runs never create them)."""
+    settings = Settings(base_dir=base, data_dir=base / "data")
+    ensure_data_dirs(settings)
+    return settings
 
 
 @pytest.fixture
