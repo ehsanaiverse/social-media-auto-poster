@@ -1,6 +1,6 @@
 # API plan (FastAPI, for the React frontend)
 
-**Status:** plan only, no code yet (2026-10-28). To be built by Mouzan. Binding rules for the project are in `CLAUDE.md` ("3. Web UI later", D32); decisions are in `docs/decisions.md`.
+**Status:** implemented in `backend/app/` (2026-10-29, D42), on the existing core functions: `scan_preview`, `run_once`, `resolve_job`, `linkedin_status`, and `ingestion/intake.add_post`. Mouzan Raza wrote the first version of the API and the frontend. The rules below stay binding (`CLAUDE.md`, section 3). Decisions on the open questions are in `docs/decisions.md` (D43). Where the code differs from this plan, the decision record says so.
 
 ## Rules
 

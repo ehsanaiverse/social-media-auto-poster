@@ -47,6 +47,17 @@ python -m social_media_auto_poster.main resolve <id> --failed   # settle a NEEDS
 
 Each command has `--help`. Exit codes and options are described in the root README and in `CLAUDE.md`.
 
+## Local API
+
+The dashboard in `frontend/` talks to a small local API, in `backend/app/`. It uses the same functions as the commands above, so a run from the API is the same run. It is optional: the commands work without it.
+
+```powershell
+python -m pip install -e ".[dev,api]"   # once: adds FastAPI, uvicorn and python-multipart
+python -m app                           # http://127.0.0.1:8000 (Ctrl+C to stop)
+```
+
+Open `http://127.0.0.1:8000/docs` for the list of endpoints. Runs are simulated unless a request says `"real": true` **and** `"confirm": "publish to LinkedIn"`. Real runs have the same safeguards as `run --real`, and they need the same run lock as the commands (a second run gets `409`).
+
 ## Test
 
 ```powershell

@@ -10,7 +10,7 @@ A Windows-first, folder-driven social media auto-poster. A user drops an image a
 - **LinkedIn** is the only platform in scope. Facebook and Instagram have folders only; do not implement them.
 - **Publishing is simulated** until Milestone 4. No code may contact LinkedIn (or any platform) before then.
 - The developer has intermediate Python/AI experience: favour readable code, explain design decisions, and build incrementally.
-- The Python application lives in `backend/`; a React frontend and a FastAPI API are planned but **not built yet** (see "3. Web UI later" below, D32).
+- The Python application lives in `backend/`. A local FastAPI API (`backend/app/`) and a React dashboard (`frontend/`) are built (see "3. Web UI" below, D32 and D42). Both are optional; the CLI does not need them.
 
 ## Mandatory architectural decisions
 
@@ -46,12 +46,14 @@ LangGraph is a **required** part of this project, not an optional or future enha
 - **Duplicates (M2 decisions):** checked per mode, so simulated history never blocks a real publish (D20). A duplicate creates no job row; its files stay in `incoming/` and it is reported each run as `DUPLICATE of job <id8> (<status>, <date>)`, exit code 0 (D19). `WAITING` (still copying or unreadable while hashing) creates no row either. Duplicates are by content, not name: two posts with identical image and caption bytes under different names are duplicates of each other.
 - All SQL lives in `storage/` (`database.py`, `jobs.py`); `JobRepository` exposes `create`, `update`, `get`, `find_blocking_duplicate` (each write a committed transaction), and `list_recent`. `open_app_db_read_only` opens an existing database without write access and never creates one.
 
-### 3. Web UI later: FastAPI API + React frontend (D32)
+### 3. Web UI: FastAPI API + React frontend (D32, built in D42)
 
-A React frontend and a FastAPI API are planned. Neither exists yet; do not create `frontend/` or `api/` until that work is agreed and started.
+The local FastAPI API (`backend/app/`) and the React dashboard (`frontend/`) are built. Both are optional: the CLI never imports FastAPI, and the API needs the `api` extra. Mouzan Raza wrote the first version of both; see D42 for what changed.
 
-- The API will live **inside the Python package**, at `backend/src/social_media_auto_poster/api/`, and reuse the same functions as the CLI (`scan`, `run`, `jobs`, `resolve`): one run path with the run lock, reconciliation, per-mode dedupe, and run logging. **No duplicated logic and no second storage layer**: job data only through `storage/` (`JobRepository`, `open_app_db_read_only`), job IDs are UUID strings.
-- FastAPI binds to `127.0.0.1` by default, exposes no secrets (no tokens, `.env` values, or settings beyond paths), and limits CORS to the local frontend origins.
+- The API lives in **`backend/app/`** (next to `src/`, as Mouzan's layout had it). Its services call the same functions as the CLI: `scan_preview`, `run_once`, `resolve_job`, `linkedin_status` and `ingestion.intake.add_post` in `main.py`/`ingestion/`, and `JobRepository` for history. **No duplicated logic and no second storage layer.** Job IDs are UUID strings.
+- Start it from `backend/` with `python -m app` (binds to `127.0.0.1:8000`). Install the extra with `python -m pip install -e ".[dev,api]"`.
+- It exposes no secrets (no token, `.env` values, or absolute paths; destinations are relative to the data folder), and CORS allows only the Vite origins. State-changing calls need a JSON body, or the `X-AutoPoster: 1` header for uploads (api-plan rule 7).
+- A real run through the API needs `"real": true` **and** `"confirm": "publish to LinkedIn"` in the request (D43). Without both, it is simulated.
 - The React app lives in `frontend/` at the repo root; `frontend/node_modules/` and `frontend/dist/` are Git-ignored.
 - Every real-LinkedIn safety rule in this file applies equally to the CLI and the UI: simulated results labelled as simulated, no blind retries, `NEEDS_REVIEW` for ambiguous outcomes, archive only after a confirmed `PUBLISHED`.
 - The earlier FastAPI/React code from PR #1 is kept in the tag `archive/pr1-merged-main` (and the unpublished rewire in `archive/api-rewire`) for reference; it is not part of `main` (D31).
@@ -113,9 +115,9 @@ social-media-auto-poster/
 │   │   ├── storage/               # SQLite repository layer
 │   │   ├── platforms/             # base.py (publisher protocol), simulator, linkedin/ (caption.py, image_size.py, client.py, publisher.py)
 │   │   ├── services/              # Hashing, archiving, reconciliation, run lock
-│   │   └── main.py                # CLI entry point
-│   │                              # (api/ — FastAPI, added later, not now)
-│   ├── tests/unit/, tests/integration/, tests/conftest.py
+│   │   └── main.py                # CLI entry point and the functions the API calls (scan_preview, run_once, resolve_job, linkedin_status)
+│   ├── app/                       # Local API (FastAPI; optional "api" extra): main.py, routers/, services/job_service.py
+│   ├── tests/unit/, tests/integration/, tests/api/, tests/conftest.py
 │   ├── scripts/app.py             # Sandbox tester
 │   └── data/ database/ logs/ sandbox/ .env autoposter.lock   # Runtime, Git-ignored
 ├── docs/decisions.md              # Decision records
@@ -234,7 +236,9 @@ py -3.14 -m venv .vevn               # once, from the repo root
 cd backend
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,api]"                        # also for the local API (backend\app)
 python -m pytest
+python -m app                                                # local API on http://127.0.0.1:8000 (run from backend\)
 python scripts\app.py                                        # sandbox tester (backend\sandbox)
 python -m social_media_auto_poster.main scan                 # read-only report of data\LinkedIn\incoming
 python -m social_media_auto_poster.main scan --dir <folder> --interval 0
