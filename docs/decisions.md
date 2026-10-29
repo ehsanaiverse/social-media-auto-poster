@@ -284,3 +284,9 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
   - A duplicate is reported as `duplicate_of` with the stored job's ID, the same job the CLI names.
   - Status codes follow the plan, with 412 for a real-mode safeguard, 413 for size, and 422 for `--published` on a simulated job.
 - **Consequences:** The LinkedIn token is only read by the core functions and is never in a response or log line; a test asserts this for each LinkedIn endpoint. Log handlers are attached per request, and concurrent requests share the root logger; the run lock keeps runs and resolves from overlapping, but the log lines of two concurrent reads could be mixed. The ambiguous-prefix response (409) is not covered by an API test: it needs two jobs whose IDs share the prefix, and random IDs make that unlikely.
+
+## D44. Project roles recorded in the README (2026-10-29)
+
+- **Decision:** The README has a "Project roles" section. Ehsan Ullah leads the project (architecture, safety rules, workflow, database, checkpoints, real publishing, CLI, tester, tests, review and integration). Mouzan Raza wrote the initial FastAPI prototype (`scan`, `run`, `jobs` routers) and the React dashboard, which Ehsan adapted and integrated (D42, D43).
+- **Why:** The roles were not recorded in one place. The wording follows the existing docs (CLAUDE.md, D42, `api-plan.md`) and the git history: Mouzan's commits `6193262` (API) and `19d03a4` (dashboard, cherry-picked with his authorship).
+- **Consequences:** Update the README section and this note if the roles change.

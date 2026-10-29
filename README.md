@@ -43,6 +43,11 @@ Platform order:
 
 Facebook and Instagram are placeholders for future work, not supported integrations.
 
+## Project roles
+
+- **Ehsan Ullah: project lead.** Architecture and milestone plan; the safety rules (duplicate prevention, `NEEDS_REVIEW`, crash recovery); the LangGraph workflow; the SQLite job database; checkpointing; real LinkedIn publishing; the CLI, the sandbox tester and the test suite (more than 400 tests); code review and integration of all parts, including the local API.
+- **Mouzan Raza: initial FastAPI prototype and React dashboard.** Wrote the first FastAPI routers (`scan`, `run`, `jobs`) and the dashboard in `frontend/`. Ehsan adapted both to the current backend: the API calls the same functions as the CLI, and the upload, resolve, LinkedIn status and health endpoints were added. See `docs/decisions.md` (D42 and D43).
+
 ## Project layout
 
 Packages marked "empty" contain only an `__init__.py`:
