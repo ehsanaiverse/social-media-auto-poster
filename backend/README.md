@@ -1,6 +1,6 @@
 # Social Media Auto-Poster: backend
 
-The Python package `social_media_auto_poster`: folder scanning, validation, the LangGraph workflow, the SQLite job database, and the command-line interface. The project overview is in the [root README](../README.md).
+The Python package `social_media_auto_poster`: folder scanning, validation, the LangGraph workflow, the SQLite job database, and the command-line interface. The project overview is in the [root README](../README.md)
 
 Publishing is **simulated**: nothing contacts LinkedIn or any other platform.
 

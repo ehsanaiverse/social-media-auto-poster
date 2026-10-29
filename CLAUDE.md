@@ -48,9 +48,9 @@ LangGraph is a **required** part of this project, not an optional or future enha
 
 ### 3. Web UI: FastAPI API + React frontend (D32, built in D42)
 
-The local FastAPI API (`backend/app/`) and the React dashboard (`frontend/`) are built. Both are optional: the CLI never imports FastAPI, and the API needs the `api` extra. Mouzan Raza wrote the first version of both; see D42 for what changed.
+The local FastAPI app lives in `backend/app/` and calls the core package functions; the React dashboard lives in `frontend/`. Both are optional: the CLI never imports FastAPI, and the API needs the `api` extra. See D42 for what changed. Project roles: see the root README.md.
 
-- The API lives in **`backend/app/`** (next to `src/`, as Mouzan's layout had it). Its services call the same functions as the CLI: `scan_preview`, `run_once`, `resolve_job`, `linkedin_status` and `ingestion.intake.add_post` in `main.py`/`ingestion/`, and `JobRepository` for history. **No duplicated logic and no second storage layer.** Job IDs are UUID strings.
+- The API lives in **`backend/app/`** (next to `src/`). Its services call the same functions as the CLI: `scan_preview`, `run_once`, `resolve_job`, `linkedin_status` and `ingestion.intake.add_post` in `main.py`/`ingestion/`, and `JobRepository` for history. **No duplicated logic and no second storage layer.** Job IDs are UUID strings.
 - Start it from `backend/` with `python -m app` (binds to `127.0.0.1:8000`). Install the extra with `python -m pip install -e ".[dev,api]"`.
 - It exposes no secrets (no token, `.env` values, or absolute paths; destinations are relative to the data folder), and CORS allows only the Vite origins. State-changing calls need a JSON body, or the `X-AutoPoster: 1` header for uploads (api-plan rule 7).
 - A real run through the API needs `"real": true` **and** `"confirm": "publish to LinkedIn"` in the request (D43). Without both, it is simulated.
