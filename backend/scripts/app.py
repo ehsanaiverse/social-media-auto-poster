@@ -25,6 +25,7 @@ from unittest import mock
 from uuid import uuid4
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.ingestion.intake import check_post_name as check_stem
 from social_media_auto_poster.config import BASE_DIR_VAR, DATA_DIR_VAR, Settings, load_settings
 from social_media_auto_poster.graph import nodes
 from social_media_auto_poster.graph.checkpoints import open_checkpointer, saved_thread_ids
@@ -60,7 +61,6 @@ INVALID_KINDS = {
     "renamed-text": "text file renamed to .jpg",
 }
 
-FORBIDDEN_STEM_CHARS = set('<>:"/\\|?*')
 
 
 class SandboxError(Exception):
@@ -81,16 +81,7 @@ def png_1x1(rgb: tuple[int, int, int] = (10, 102, 194)) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
 
 
-def check_stem(stem: str) -> str:
-    """Return a cleaned stem, or raise ``ValueError`` if it cannot be a post name."""
-    stem = stem.strip()
-    if not stem:
-        raise ValueError("The name must not be empty.")
-    if FORBIDDEN_STEM_CHARS & set(stem):
-        raise ValueError(f"The name must not contain any of {''.join(sorted(FORBIDDEN_STEM_CHARS))}.")
-    if stem.startswith((".", "~$")):
-        raise ValueError("Names starting with '.' or '~$' are ignored by the scanner.")
-    return stem
+
 
 
 def _write_new(path: Path, data: bytes) -> None:
