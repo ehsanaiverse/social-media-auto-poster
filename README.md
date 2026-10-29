@@ -233,6 +233,20 @@ Copy `backend\.env.example` to `backend\.env` for local configuration; the appli
 
 Job records live in `backend\database\app.db` (SQLite, created by `run`; ignored by Git). Graph checkpoints live in a separate file, `backend\database\langgraph_checkpoints.db`; it only ever holds jobs that were interrupted, and never caption text. A publishing request with an unknown outcome must not be retried automatically without a platform-safe way to establish whether it succeeded. Content should be archived only after success is confirmed.
 
+## Workflow diagram
+
+Each paired post runs through one LangGraph graph (`backend/src/social_media_auto_poster/graph/workflow.py`). Edge labels show the routing decision at each step.
+
+![LangGraph workflow for one post](docs/langgraph_workflow.png)
+
+To regenerate the image after changing the graph (run from `backend\`):
+
+```powershell
+python -c "from social_media_auto_poster.graph.workflow import build_workflow; open('../docs/langgraph_workflow.png', 'wb').write(build_workflow().get_graph().draw_mermaid_png())"
+```
+
+`draw_mermaid_png()` renders the diagram through the Mermaid.ink web service, so it needs internet access.
+
 ## Architecture decisions
 
 - **LangGraph is required** for orchestrating each post's workflow as an explicit, deterministic state graph. It does not use LLMs or autonomous agents; filesystem, validation, database, and API work live in ordinary Python modules that the graph's nodes call.

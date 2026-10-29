@@ -54,33 +54,37 @@ def build_workflow(checkpointer: BaseCheckpointSaver | None = None) -> CompiledS
     graph.add_conditional_edges(
         nodes.CHECK_STABILITY,
         nodes.route_after_stability,
-        {nodes.VALIDATE: nodes.VALIDATE, nodes.RECORD_RESULT: nodes.RECORD_RESULT},
+        {"stable": nodes.VALIDATE, "waiting": nodes.RECORD_RESULT},
     )
     graph.add_conditional_edges(
         nodes.VALIDATE,
         nodes.route_after_validate,
-        {nodes.CHECK_DUPLICATE: nodes.CHECK_DUPLICATE, nodes.MOVE_TO_FAILED: nodes.MOVE_TO_FAILED},
+        {"valid": nodes.CHECK_DUPLICATE, "invalid": nodes.MOVE_TO_FAILED},
     )
     graph.add_conditional_edges(
         nodes.CHECK_DUPLICATE,
         nodes.route_after_duplicate_check,
-        {nodes.MARK_PUBLISHING: nodes.MARK_PUBLISHING, nodes.RECORD_RESULT: nodes.RECORD_RESULT},
+        {
+            "new": nodes.MARK_PUBLISHING,
+            "duplicate": nodes.RECORD_RESULT,
+            "waiting": nodes.RECORD_RESULT,
+        },
     )
     graph.add_conditional_edges(
         nodes.MARK_PUBLISHING,
         nodes.route_after_mark_publishing,
-        {nodes.PUBLISH: nodes.PUBLISH, nodes.RECORD_RESULT: nodes.RECORD_RESULT},
+        {"new": nodes.PUBLISH, "duplicate": nodes.RECORD_RESULT},
     )
     graph.add_conditional_edges(
         nodes.PUBLISH,
         nodes.route_after_publish,
-        {nodes.MOVE_TO_FAILED: nodes.MOVE_TO_FAILED, nodes.RECORD_RESULT: nodes.RECORD_RESULT},
+        {"failed": nodes.MOVE_TO_FAILED, "recorded": nodes.RECORD_RESULT},
     )
     graph.add_edge(nodes.MOVE_TO_FAILED, nodes.RECORD_RESULT)
     graph.add_conditional_edges(
         nodes.RECORD_RESULT,
         nodes.route_after_record,
-        {nodes.ARCHIVE: nodes.ARCHIVE, "end": END},
+        {"published": nodes.ARCHIVE, "end": END},
     )
     graph.add_edge(nodes.ARCHIVE, END)
 

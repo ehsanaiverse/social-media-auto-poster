@@ -238,32 +238,38 @@ def archive(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
 # Routing
 
 
+# Each router returns a short label. workflow.py maps the label to the next node,
+# so the labels are the edge names shown in the workflow diagram.
+
+
 def route_after_stability(state: JobState) -> str:
-    return RECORD_RESULT if state["retry_later"] else VALIDATE
+    return "waiting" if state["retry_later"] else "stable"
 
 
 def route_after_validate(state: JobState) -> str:
-    return CHECK_DUPLICATE if state["status"] == JobStatus.VALIDATED.value else MOVE_TO_FAILED
+    return "valid" if state["status"] == JobStatus.VALIDATED.value else "invalid"
 
 
 def route_after_duplicate_check(state: JobState) -> str:
-    return RECORD_RESULT if state["retry_later"] or state["duplicate_of"] else MARK_PUBLISHING
+    if state["retry_later"]:
+        return "waiting"
+    return "duplicate" if state["duplicate_of"] else "new"
 
 
 def route_after_mark_publishing(state: JobState) -> str:
-    return RECORD_RESULT if state["duplicate_of"] else PUBLISH
+    return "duplicate" if state["duplicate_of"] else "new"
 
 
 def route_after_publish(state: JobState) -> str:
     if state["status"] in (JobStatus.FAILED.value, JobStatus.NEEDS_REVIEW.value):
-        return MOVE_TO_FAILED
-    return RECORD_RESULT  # PUBLISHED and SIMULATED are recorded first.
+        return "failed"
+    return "recorded"  # PUBLISHED and SIMULATED are recorded first.
 
 
 def route_after_record(state: JobState) -> str:
     # Only a confirmed, real publish is archived. SIMULATED files stay in incoming/.
     is_real_publish = state["status"] == JobStatus.PUBLISHED.value and state["simulated"] is False
-    return ARCHIVE if is_real_publish else "end"
+    return "published" if is_real_publish else "end"
 
 
 # Helpers
