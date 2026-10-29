@@ -40,9 +40,10 @@ ENV/
 *.log.[0-9]*
 autoposter.lock
 
-# Frontend (React; not created yet)
+# Frontend (React)
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 # Editors and operating systems
 .vscode/
