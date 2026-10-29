@@ -13,6 +13,7 @@
 """
 
 import hashlib
+import sys
 from pathlib import Path
 
 import httpx
@@ -21,6 +22,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REAL_DB = REPO_ROOT / "database" / "app.db"
 REAL_CHECKPOINTS = REPO_ROOT / "database" / "langgraph_checkpoints.db"
+
+# The local API is the ``app`` package in backend/ (not installed), so the API tests import it from here.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def _fingerprint(path: Path) -> str | None:
