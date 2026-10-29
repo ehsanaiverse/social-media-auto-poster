@@ -29,6 +29,10 @@ POLL_INTERVAL_S = 2.0
 class CheckReport:
     lines: list[str] = field(default_factory=list)
     ok: bool = True
+    # Structured results for the API (the CLI prints ``lines`` only).
+    member: tuple[str, str] | None = None  # (display name, author URN) once LinkedIn accepts the token.
+    unreachable: bool = False  # LinkedIn could not be reached at all (network error).
+    problems: list[str] = field(default_factory=list)  # The PROBLEM texts, without the "PROBLEM" label.
 
     def good(self, text: str) -> None:
         self.lines.append(f"  OK       {text}")
@@ -38,6 +42,7 @@ class CheckReport:
 
     def bad(self, text: str) -> None:
         self.lines.append(f"  PROBLEM  {text}")
+        self.problems.append(text)
         self.ok = False
 
 
@@ -73,6 +78,7 @@ def _check_member(report: CheckReport, client: LinkedInClient) -> str | None:
     try:
         response = client.userinfo()
     except httpx.HTTPError as error:
+        report.unreachable = True
         report.bad(f"could not reach LinkedIn ({type(error).__name__})")
         return None
     if response.status_code == 401:
@@ -87,7 +93,9 @@ def _check_member(report: CheckReport, client: LinkedInClient) -> str | None:
         report.bad("LinkedIn did not return a member ID")
         return None
     author = f"urn:li:person:{member_id}"
-    report.good(f"token accepted; posts would be published as {data.get('name') or 'this member'} ({author})")
+    name = data.get("name") or "this member"
+    report.member = (name, author)
+    report.good(f"token accepted; posts would be published as {name} ({author})")
     return author
 
 

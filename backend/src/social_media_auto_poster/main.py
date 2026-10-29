@@ -7,6 +7,11 @@
   ``--real`` is given; real mode is never a default or a setting (D36).
 - ``resolve``: manually settle a NEEDS_REVIEW job as PUBLISHED or FAILED.
 - ``linkedin-check``: check the LinkedIn token and setup; never creates a post.
+
+The same operations are available to the local API (``backend/app``). They live
+here as functions that return data (``scan_preview``, ``run_once``,
+``resolve_job``, ``linkedin_status``); the command functions only print them and
+map the result to an exit code, so the API and the CLI share one implementation.
 """
 
 import argparse
@@ -63,6 +68,7 @@ from social_media_auto_poster.storage.jobs import JobNotFoundError, JobRecord, J
 
 logger = logging.getLogger(__name__)
 
+PLATFORM = Platform.LINKEDIN  # The only platform in scope.
 DEFAULT_INTERVAL_S = 1.0
 LOG_MAX_BYTES = 1_000_000
 LOG_BACKUP_COUNT = 5
@@ -79,6 +85,8 @@ RUN_COUNTS = (
     "waiting", "pending", "ambiguous", "recovered", "resumed", "errors",
 )
 MIN_JOB_ID_PREFIX = 6
+DUPLICATE_LABEL = "DUPLICATE"
+REAL_CONFIRMATION = "publish to LinkedIn"  # The API requires this text to start a real run.
 
 # The current run's short ID, added to every log-file line by _RunIdFilter. "-" outside a run.
 _RUN_ID: ContextVar[str] = ContextVar("run_id", default="-")
@@ -106,6 +114,105 @@ exit codes:
   2  invalid command or option (e.g. an ID prefix shorter than 6 characters)
   4  a run is in progress
 """
+
+
+# Data returned by the functions below (the API serializes these; the CLI prints them).
+
+
+@dataclass(frozen=True)
+class JobLine:
+    """One job's outcome in a run: what happened, and the job's stored details when it has them."""
+
+    stem: str
+    label: str
+    note: str
+    details: tuple[str, ...]
+    problem: bool  # Counts toward exit code 3.
+    outcome: str  # One of RUN_COUNTS, for the "Run finished" log line.
+    job_id: str | None = None  # Only for jobs that are stored (duplicates and waiting posts have none).
+    status: str | None = None
+    mode: str | None = None
+    post_id: str | None = None
+    destination: str | None = None
+
+
+@dataclass(frozen=True)
+class RunRefusal:
+    """Why a run stopped before processing posts. ``kind``: data_folders, archive_history, token, simulated_only, setup."""
+
+    kind: str
+    text: str  # What the terminal shows; empty for "setup" (the log explains it).
+
+
+@dataclass(frozen=True)
+class RunReport:
+    mode: PublishMode
+    exit_code: int
+    refusal: RunRefusal | None
+    resumed: tuple[JobLine, ...]
+    recoveries: tuple[Recovery, ...]
+    jobs: tuple[JobLine, ...]
+    scan: ScanResult | None  # None when the run stopped before scanning.
+    footer: str
+
+
+@dataclass(frozen=True)
+class CandidateView:
+    """What a read-only scan knows about one candidate post."""
+
+    candidate: PostCandidate
+    unstable: tuple[str, ...]  # "media" and/or "caption" while still changing or locked.
+    errors: tuple[str, ...]  # Validation errors; empty when valid.
+    duplicate: JobRecord | None  # A live job with the same content in this mode.
+    duplicate_check_failed: bool  # The files could not be read to check.
+    simulated: JobRecord | None  # Real mode only: this content was simulated and a real run refuses it.
+
+    @property
+    def stable(self) -> bool:
+        return not self.unstable
+
+    @property
+    def valid(self) -> bool:
+        return not self.errors
+
+
+@dataclass(frozen=True)
+class ScanPreview:
+    folder: Path
+    candidates: tuple[CandidateView, ...]
+    scan: ScanResult
+    interrupted_jobs: int  # Jobs in PUBLISHING: a crash left them, and the next run recovers them.
+    unknown_archive: tuple[Path, ...]  # Real mode only: archive folders the job database cannot account for.
+
+
+@dataclass(frozen=True)
+class ResolveResult:
+    job: JobRecord
+    status: JobStatus
+    post_id: str | None
+    note: str
+
+
+class ResolveError(Exception):
+    """A resolve was refused. ``kind`` is one of: blank_post_id, no_database, not_found, ambiguous,
+    not_needs_review, simulated_published, no_longer_needs_review."""
+
+    def __init__(self, kind: str, message: str, details: tuple[str, ...] = ()):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.details = details
+
+
+@dataclass(frozen=True)
+class LinkedInStatus:
+    token_set: bool
+    state: str  # missing, expired, expiring, valid, or unknown (no creation date given).
+    expires_on: date | None
+    days_left: int | None
+    member: tuple[str, str] | None  # (name, author URN); only after a check that LinkedIn accepted.
+    problems: tuple[str, ...]  # Plain texts; never contains the token.
+    unreachable: bool  # check=True and LinkedIn could not be reached.
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -222,49 +329,98 @@ def _add_interval_option(command: argparse.ArgumentParser) -> None:
     )
 
 
+# Shared checks (used by scan, run, and the API)
+
+
+def unstable_files(candidate: PostCandidate, interval_s: float) -> tuple[str, ...]:
+    """Which of the two files ("media", "caption") is still changing or locked. Both must be complete to post."""
+    files = {"media": candidate.media_path, "caption": candidate.caption_path}
+    return tuple(role for role, path in files.items() if not is_file_stable(path, interval_s))
+
+
+def find_duplicate(candidate: PostCandidate, repository: JobRepository, mode: PublishMode) -> JobRecord | None:
+    """The live job that already handles this content in ``mode``, if any. Raises OSError if a file cannot be read."""
+    media_sha256 = sha256_file(candidate.media_path)
+    caption_sha256 = sha256_file(candidate.caption_path)
+    return repository.find_blocking_duplicate(
+        platform=candidate.platform, mode=mode, media_sha256=media_sha256, caption_sha256=caption_sha256
+    )
+
+
 # scan
 
 
-def _mode(args: argparse.Namespace) -> PublishMode:
-    """Real only when --real was given on this command line (D36)."""
-    return PublishMode.REAL if args.real else PublishMode.SIMULATED
+def scan_preview(
+    settings: Settings, *, folder: Path, mode: PublishMode, interval_s: float, check_archive: bool
+) -> ScanPreview:
+    """Read-only report of ``folder``. Never moves, publishes, or creates anything.
+
+    Raises FileNotFoundError if the folder does not exist. ``check_archive`` adds the
+    real-mode archive check (only meaningful for the configured incoming folder).
+    """
+    result = scan_incoming(folder, PLATFORM)
+    conn = _open_history_or_none(settings)
+    try:
+        repository = JobRepository(conn) if conn is not None else None
+        views = tuple(_view_candidate(c, repository, mode, interval_s) for c in result.candidates)
+        interrupted = len(repository.list_by_status(JobStatus.PUBLISHING)) if repository is not None else 0
+        unknown: tuple[Path, ...] = ()
+        if mode is PublishMode.REAL and check_archive:
+            unknown = tuple(archive_without_history(settings, repository, PLATFORM))
+    finally:
+        if conn is not None:
+            conn.close()
+    return ScanPreview(folder=folder, candidates=views, scan=result, interrupted_jobs=interrupted, unknown_archive=unknown)
+
+
+def _view_candidate(
+    candidate: PostCandidate, repository: JobRepository | None, mode: PublishMode, interval_s: float
+) -> CandidateView:
+    unstable = unstable_files(candidate, interval_s)
+    errors = tuple(validate_candidate(candidate).errors)
+    duplicate = None
+    failed = False
+    simulated = None
+    # Only a stable, valid post is checked for duplicates: a file still changing is not hashed.
+    if repository is not None and not unstable and not errors:
+        try:
+            duplicate = find_duplicate(candidate, repository, mode)
+        except OSError:
+            failed = True
+        if duplicate is None and not failed and mode is PublishMode.REAL:
+            found = posts_only_simulated((candidate,), repository)
+            simulated = found[0].simulated_job if found else None
+    return CandidateView(candidate, unstable, errors, duplicate, failed, simulated)
 
 
 def _scan(args: argparse.Namespace) -> int:
     settings = load_settings()
     mode = _mode(args)
-    folder = (args.dir if args.dir is not None else settings.incoming_dir(Platform.LINKEDIN)).resolve()
+    folder = (args.dir if args.dir is not None else settings.incoming_dir(PLATFORM)).resolve()
     with _logging_to(verbose=False, log_file=None):
         try:
-            result = scan_incoming(folder, Platform.LINKEDIN)
+            preview = scan_preview(
+                settings, folder=folder, mode=mode, interval_s=args.interval, check_archive=args.dir is None
+            )
         except FileNotFoundError:
             print(f"Error: incoming folder not found: {folder}", file=sys.stderr)
             print(f"Create it, or set {DATA_DIR_VAR}, or pass --dir.", file=sys.stderr)
             return EXIT_SETUP_ERROR
 
-        conn = _open_history_or_none(settings)
-        try:
-            repository = JobRepository(conn) if conn is not None else None
-            if args.dir is None and data_dir_outside_base(settings):
-                print(_outside_warning(settings), file=sys.stderr)
-            print(f"Scanning LinkedIn incoming: {folder}" + ("   (duplicate check: real mode)" if args.real else ""))
-            if not (result.candidates or result.pending or result.ambiguous):
-                print("\nNothing found.")
-            else:
-                _print_candidates(result, args.interval, repository, mode)
-                _print_pending_and_ambiguous(result)
-            if repository is not None:
-                interrupted = len(repository.list_by_status(JobStatus.PUBLISHING))
-                if interrupted:
-                    print(f"\nNote: {interrupted} interrupted job(s) will be recovered by the next run.")
-            if mode is PublishMode.REAL and args.dir is None:
-                unknown = archive_without_history(settings, repository, Platform.LINKEDIN)
-                if unknown:
-                    print(f"\nNote: run --real would refuse: {len(unknown)} folder(s) in archive/, but no real jobs "
-                          "in the job database.")
-        finally:
-            if conn is not None:
-                conn.close()
+        if args.dir is None and data_dir_outside_base(settings):
+            print(_outside_warning(settings), file=sys.stderr)
+        print(f"Scanning LinkedIn incoming: {folder}" + ("   (duplicate check: real mode)" if args.real else ""))
+        result = preview.scan
+        if not (result.candidates or result.pending or result.ambiguous):
+            print("\nNothing found.")
+        else:
+            _print_candidates(preview.candidates, mode)
+            _print_pending_and_ambiguous(result)
+        if preview.interrupted_jobs:
+            print(f"\nNote: {preview.interrupted_jobs} interrupted job(s) will be recovered by the next run.")
+        if mode is PublishMode.REAL and args.dir is None and preview.unknown_archive:
+            print(f"\nNote: run --real would refuse: {len(preview.unknown_archive)} folder(s) in archive/, but no "
+                  "real jobs in the job database.")
     print("\nDry run: nothing was moved or published.")
     return EXIT_OK
 
@@ -280,57 +436,41 @@ def _open_history_or_none(settings: Settings) -> sqlite3.Connection | None:
         return None
 
 
-def _print_candidates(
-    result: ScanResult, interval_s: float, repository: JobRepository | None, mode: PublishMode
-) -> None:
-    if not result.candidates:
+def _print_candidates(views: tuple[CandidateView, ...], mode: PublishMode) -> None:
+    if not views:
         return
-    pairs = [f"{c.media_path.name} + {c.caption_path.name}" for c in result.candidates]
-    stability = [_stability_label(c, interval_s) for c in result.candidates]
-    validity = [validate_candidate(c) for c in result.candidates]
-    stem_width = max(len(c.stem) for c in result.candidates)
+    pairs = [f"{v.candidate.media_path.name} + {v.candidate.caption_path.name}" for v in views]
+    stability = [_stability_label(v) for v in views]
+    stem_width = max(len(v.candidate.stem) for v in views)
     pair_width = max(len(p) for p in pairs)
     stability_width = max(len(s) for s in stability)
-    print(f"\nCANDIDATES ({len(result.candidates)})")
-    for candidate, pair, stable, valid in zip(result.candidates, pairs, stability, validity):
-        if not valid.is_valid:
-            last = f"INVALID: {'; '.join(valid.errors)}"
-        elif stable == "stable":
-            last = f"valid   {_duplicate_label(candidate, repository, mode)}"
+    print(f"\nCANDIDATES ({len(views)})")
+    for view, pair, stable in zip(views, pairs, stability):
+        if not view.valid:
+            last = f"INVALID: {'; '.join(view.errors)}"
+        elif view.stable:
+            last = f"valid   {_duplicate_label(view, mode)}"
         else:
             last = "valid"  # Not hashed while it may still be changing.
-        print(f"  {candidate.stem:<{stem_width}}   {pair:<{pair_width}}   {stable:<{stability_width}}   {last}")
+        print(f"  {view.candidate.stem:<{stem_width}}   {pair:<{pair_width}}   {stable:<{stability_width}}   {last}")
 
 
-def _duplicate_label(candidate: PostCandidate, repository: JobRepository | None, mode: PublishMode) -> str:
+def _duplicate_label(view: CandidateView, mode: PublishMode) -> str:
     """Whether ``run`` (in ``mode``) would skip this post as a duplicate. Same check as the graph, read-only."""
-    if repository is None:
-        return "new"
-    try:
-        media_sha256 = sha256_file(candidate.media_path)
-        caption_sha256 = sha256_file(candidate.caption_path)
-    except OSError:
+    if view.duplicate is not None:
+        return f"DUPLICATE {_describe_original(view.duplicate)}"
+    if view.duplicate_check_failed:
         return "could not read files to check for duplicates"
-    match = repository.find_blocking_duplicate(
-        platform=candidate.platform, mode=mode, media_sha256=media_sha256, caption_sha256=caption_sha256
-    )
-    if match:
-        return f"DUPLICATE {_describe_original(match)}"
-    if mode is PublishMode.REAL:
-        [simulated] = posts_only_simulated((candidate,), repository) or [None]
-        if simulated is not None:
-            return (f"new, but already simulated as job {simulated.simulated_job.job_id[:8]} "
-                    "(run --real refuses it without --publish-simulated)")
+    if view.simulated is not None:
+        return (f"new, but already simulated as job {view.simulated.job_id[:8]} "
+                "(run --real refuses it without --publish-simulated)")
     return "new"
 
 
-def _stability_label(candidate: PostCandidate, interval_s: float) -> str:
-    # Both files must be complete before a post can be processed.
-    files = {"media": candidate.media_path, "caption": candidate.caption_path}
-    unstable = [role for role, path in files.items() if not is_file_stable(path, interval_s)]
-    if not unstable:
+def _stability_label(view: CandidateView) -> str:
+    if view.stable:
         return "stable"
-    return f"NOT STABLE ({' and '.join(unstable)} changing or locked)"
+    return f"NOT STABLE ({' and '.join(view.unstable)} changing or locked)"
 
 
 # jobs
@@ -408,61 +548,54 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _resolve(args: argparse.Namespace) -> int:
-    if args.published is not None and not args.published.strip():
-        print("Error: --published needs the platform's post ID (it must not be empty).", file=sys.stderr)
-        return EXIT_SETUP_ERROR
-    settings = load_settings()
-    try:
-        # The same lock as run: resolve and run never change the database at the same time.
-        with single_run_lock(settings.lock_file), _logging_to(verbose=False, log_file=settings.log_file), _run_scope():
-            if not settings.app_db_path.is_file():
-                print(f"Error: no job database at {settings.app_db_path}; nothing to resolve.", file=sys.stderr)
-                return EXIT_SETUP_ERROR
-            try:
-                conn = open_app_db(settings.app_db_path)
-            except (SchemaTooNewError, sqlite3.Error) as error:
-                print(f"Error: could not open the job database: {error}", file=sys.stderr)
-                return EXIT_SETUP_ERROR
-            try:
-                return _resolve_job(JobRepository(conn), settings, args)
-            finally:
-                conn.close()
-    except RunLockHeldError:
-        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
-        return EXIT_LOCKED
+def resolve_job(settings: Settings, job_prefix: str, *, published_post_id: str | None = None) -> ResolveResult:
+    """Settle a NEEDS_REVIEW job: PUBLISHED with ``published_post_id``, or FAILED (retryable) without it.
+
+    Takes the run lock, so it never changes the database during a run. Raises ResolveError for a
+    refusal (nothing is changed) and RunLockHeldError if a run is in progress.
+    """
+    if published_post_id is not None and not published_post_id.strip():
+        raise ResolveError("blank_post_id", "--published needs the platform's post ID (it must not be empty).")
+    with single_run_lock(settings.lock_file), _run_scope():
+        if not settings.app_db_path.is_file():
+            raise ResolveError("no_database", f"no job database at {settings.app_db_path}; nothing to resolve.")
+        try:
+            conn = open_app_db(settings.app_db_path)
+        except (SchemaTooNewError, sqlite3.Error) as error:
+            raise ResolveError("no_database", f"could not open the job database: {error}") from None
+        try:
+            return _resolve_in_database(JobRepository(conn), job_prefix, published_post_id)
+        finally:
+            conn.close()
 
 
-def _resolve_job(repository: JobRepository, settings: Settings, args: argparse.Namespace) -> int:
-    matches = repository.find_by_id_prefix(args.job_id)
+def _resolve_in_database(repository: JobRepository, prefix: str, published_post_id: str | None) -> ResolveResult:
+    matches = repository.find_by_id_prefix(prefix)
     if not matches:
-        print(f"Error: no job ID starts with '{args.job_id}'. Nothing was changed.", file=sys.stderr)
-        return EXIT_SETUP_ERROR
+        raise ResolveError("not_found", f"no job ID starts with '{prefix}'. Nothing was changed.")
     if len(matches) > 1:
-        print(f"Error: '{args.job_id}' matches {len(matches)} jobs; use a longer prefix:", file=sys.stderr)
-        for r in matches:
-            print(f"  {r.job_id}  {r.stem}  {r.status}", file=sys.stderr)
-        return EXIT_SETUP_ERROR
+        details = tuple(f"  {r.job_id}  {r.stem}  {r.status}" for r in matches)
+        raise ResolveError(
+            "ambiguous", f"'{prefix}' matches {len(matches)} jobs; use a longer prefix:", details
+        )
 
     [job] = matches
     name = f"job {job.job_id[:8]} ({job.stem})"
     if job.status is not JobStatus.NEEDS_REVIEW:
-        print(
-            f"Error: {name} is {job.status}; only NEEDS_REVIEW jobs can be resolved. Nothing was changed.",
-            file=sys.stderr,
+        raise ResolveError(
+            "not_needs_review",
+            f"{name} is {job.status}; only NEEDS_REVIEW jobs can be resolved. Nothing was changed.",
         )
-        return EXIT_SETUP_ERROR
-    published = args.published is not None
+    published = published_post_id is not None
     if published and job.mode is PublishMode.SIMULATED:
-        print(
-            f"Error: {name} is a simulated job; nothing was sent, so it cannot have been published. "
+        raise ResolveError(
+            "simulated_published",
+            f"{name} is a simulated job; nothing was sent, so it cannot have been published. "
             "Resolve it with --failed. Nothing was changed.",
-            file=sys.stderr,
         )
-        return EXIT_SETUP_ERROR
 
     status = JobStatus.PUBLISHED if published else JobStatus.FAILED
-    post_id = args.published.strip() if published else None
+    post_id = published_post_id.strip() if published else None
     stamp = f"{_utc_now():%Y-%m-%dT%H:%M:%SZ}"
     note = (
         f"resolved manually as PUBLISHED (post ID {post_id}) at {stamp}"
@@ -472,16 +605,33 @@ def _resolve_job(repository: JobRepository, settings: Settings, args: argparse.N
     try:
         repository.resolve_needs_review(job.job_id, status=status, note=note, platform_post_id=post_id)
     except JobNotFoundError:  # Cannot happen while we hold the lock; refuse rather than guess.
-        print(f"Error: {name} is no longer NEEDS_REVIEW. Nothing was changed.", file=sys.stderr)
-        return EXIT_SETUP_ERROR
+        raise ResolveError("no_longer_needs_review", f"{name} is no longer NEEDS_REVIEW. Nothing was changed.") from None
     logger.info(
         "Job resolved manually: job_id=%s platform=%s mode=%s stem=%s status=%s post_id=%s",
         job.job_id, job.platform, job.mode, job.stem, status, post_id,
     )
+    return ResolveResult(job=job, status=status, post_id=post_id, note=note)
 
-    print(f"Resolved {name} as {status}.")
-    print(f"Note recorded: {note}")
-    _print_resolve_next_steps(job, status, settings)
+
+def _resolve(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    published = args.published
+    try:
+        with _logging_to(verbose=False, log_file=settings.log_file):
+            result = resolve_job(settings, args.job_id, published_post_id=published)
+    except ResolveError as error:
+        print(f"Error: {error.message}", file=sys.stderr)
+        for line in error.details:
+            print(line, file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    except RunLockHeldError:
+        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        return EXIT_LOCKED
+
+    name = f"job {result.job.job_id[:8]} ({result.job.stem})"
+    print(f"Resolved {name} as {result.status}.")
+    print(f"Note recorded: {result.note}")
+    _print_resolve_next_steps(result.job, result.status, settings)
     return EXIT_OK
 
 
@@ -504,16 +654,37 @@ def _print_resolve_next_steps(job: JobRecord, status: JobStatus, settings: Setti
 # run
 
 
-@dataclass(frozen=True)
-class _JobLine:
-    """One job's line in the run summary."""
+def run_once(
+    settings: Settings,
+    mode: PublishMode,
+    *,
+    publish_simulated: bool = False,
+    interval_s: float = DEFAULT_INTERVAL_S,
+) -> RunReport:
+    """One complete run: the lock, crash recovery, real-mode safeguards, and every complete post once.
 
-    stem: str
-    label: str
-    note: str
-    details: tuple[str, ...]
-    problem: bool  # Counts toward exit code 3.
-    outcome: str  # One of RUN_COUNTS, for the "Run finished" log line.
+    Simulated unless ``mode`` is REAL. Returns a RunReport; a refusal is data in the report, not an
+    exception. Raises RunLockHeldError if another run holds the lock, and OSError if the run cannot
+    be set up. Log handlers are the caller's job (the CLI and the API each attach their own).
+    """
+    started = time.monotonic()
+    counts: Counter[str] = Counter()
+    report: RunReport | None = None
+    with single_run_lock(settings.lock_file), _run_scope():
+        logger.info("Run started: platform=%s mode=%s", PLATFORM, mode)
+        if data_dir_outside_base(settings):
+            logger.warning(_outside_warning(settings).removeprefix("Warning: "))
+        try:
+            report = _run_locked(settings, mode, publish_simulated, interval_s, counts)
+            return report
+        finally:
+            exit_code = report.exit_code if report is not None else EXIT_SETUP_ERROR
+            logger.info(
+                "Run finished: %s exit_code=%d duration_s=%.2f",
+                " ".join(f"{key}={counts[key]}" for key in RUN_COUNTS),
+                exit_code,
+                time.monotonic() - started,
+            )
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -523,61 +694,44 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     settings = load_settings()
     try:
-        with (
-            single_run_lock(settings.lock_file),
-            _logging_to(verbose=args.verbose, log_file=settings.log_file),
-            _run_scope(),
-        ):
-            started = time.monotonic()
-            counts: Counter[str] = Counter()
-            exit_code = EXIT_SETUP_ERROR
-            logger.info("Run started: platform=%s mode=%s", Platform.LINKEDIN, mode)
-            if data_dir_outside_base(settings):
-                logger.warning(_outside_warning(settings).removeprefix("Warning: "))
-            banner = "   (REAL MODE: posts are published to LinkedIn)" if mode is PublishMode.REAL else ""
+        with _logging_to(verbose=args.verbose, log_file=settings.log_file):
             # flush: when output is piped, stdout is buffered and stderr warnings would overtake it.
-            print(f"Processing LinkedIn incoming: {settings.incoming_dir(Platform.LINKEDIN)}{banner}", flush=True)
-            try:
-                exit_code = _run_locked(settings, args, mode, counts)
-                return exit_code
-            finally:
-                logger.info(
-                    "Run finished: %s exit_code=%d duration_s=%.2f",
-                    " ".join(f"{key}={counts[key]}" for key in RUN_COUNTS),
-                    exit_code,
-                    time.monotonic() - started,
-                )
+            banner = "   (REAL MODE: posts are published to LinkedIn)" if mode is PublishMode.REAL else ""
+            print(f"Processing LinkedIn incoming: {settings.incoming_dir(PLATFORM)}{banner}", flush=True)
+            report = run_once(settings, mode, publish_simulated=args.publish_simulated, interval_s=args.interval)
     except RunLockHeldError:
         print("Another run is in progress; try again when it has finished.", file=sys.stderr)
         return EXIT_LOCKED
     except OSError as error:
         print(f"Error: could not set up the run: {error}", file=sys.stderr)
         return EXIT_SETUP_ERROR
+    _print_run_report(report, settings)
+    return report.exit_code
 
 
-def _run_locked(settings: Settings, args: argparse.Namespace, mode: PublishMode, counts: Counter[str]) -> int:
+def _run_locked(
+    settings: Settings, mode: PublishMode, publish_simulated: bool, interval_s: float, counts: Counter[str]
+) -> RunReport:
     """Everything a run does while holding the lock, after "Run started" is logged."""
     if mode is PublishMode.REAL:
         # A real run never creates the data folder: a missing one usually means a wrong AUTOPOSTER_DATA_DIR.
-        missing = missing_platform_dirs(settings, Platform.LINKEDIN)
+        missing = missing_platform_dirs(settings, PLATFORM)
         if missing:
             logger.error("Real run refused: data folders missing: %s", ", ".join(str(path) for path in missing))
-            print(
+            text = "\n".join([
                 f"\nREFUSED: the data folder {settings.data_dir} does not have its LinkedIn folders:",
                 *(f"  {path}" for path in missing),
                 f"Real runs never create them. Check {DATA_DIR_VAR} in backend\\.env; for a new setup, run once "
                 "without --real to create them. Nothing was published.",
-                sep="\n",
-                file=sys.stderr,
-            )
-            return EXIT_SETUP_ERROR
+            ])
+            return _refused(mode, RunRefusal("data_folders", text))
     ensure_data_dirs(settings)
     with ExitStack() as stack:
         try:
             conn = stack.enter_context(closing(open_app_db(settings.app_db_path)))
         except (SchemaTooNewError, sqlite3.Error) as error:
             logger.error("Could not open the job database %s: %s", settings.app_db_path, error)
-            return EXIT_SETUP_ERROR
+            return _refused(mode, RunRefusal("setup", ""))
         try:
             checkpointer = stack.enter_context(
                 open_checkpointer(settings.checkpoint_db_path, app_db_path=settings.app_db_path)
@@ -585,12 +739,12 @@ def _run_locked(settings: Settings, args: argparse.Namespace, mode: PublishMode,
         except (sqlite3.Error, ValueError) as error:
             # Fail closed: without checkpoints, a crash could not be resumed safely.
             logger.error("Could not open the checkpoint store %s: %s", settings.checkpoint_db_path, error)
-            return EXIT_SETUP_ERROR
+            return _refused(mode, RunRefusal("setup", ""))
         repository = JobRepository(conn)
         # Real-mode checks come before anything changes, so a refused run leaves everything as it was.
         publisher = _publisher_for(mode, settings, repository, stack)
-        if publisher is None:
-            return EXIT_SETUP_ERROR
+        if isinstance(publisher, RunRefusal):
+            return _refused(mode, publisher)
         try:
             # Resume first: it settles what checkpoints can prove; reconciliation handles the rest.
             resumed = resume_interrupted_jobs(checkpointer, repository, settings)
@@ -600,25 +754,27 @@ def _run_locked(settings: Settings, args: argparse.Namespace, mode: PublishMode,
         except sqlite3.Error:
             # Never process on top of an unknown state.
             logger.exception("Could not recover interrupted jobs; nothing was processed")
-            return EXIT_SETUP_ERROR
+            return _refused(mode, RunRefusal("setup", ""))
         resumed_lines = _resumed_lines(resumed)
         counts["resumed"] = len(resumed_lines)
         counts.update(line.outcome for line in resumed_lines)
         counts["recovered"] = len(recoveries)
-        if resumed_lines:
-            _print_jobs(resumed_lines, title="RESUMED", note="jobs finished after an earlier crash")
-        if recoveries:
-            _print_recoveries(recoveries)
         earlier_problems = any(line.problem for line in resumed_lines)
         context = WorkflowContext(
             publisher=publisher,
             mode=mode,
             repository=repository,
             settings=settings,
-            stability_interval_s=args.interval,
+            stability_interval_s=interval_s,
             checkpointer=checkpointer,
         )
-        return _process(context, args.publish_simulated, recoveries, earlier_problems, counts)
+        return _process(context, publish_simulated, tuple(resumed_lines), recoveries, earlier_problems, counts)
+
+
+def _refused(mode: PublishMode, refusal: RunRefusal) -> RunReport:
+    return RunReport(
+        mode=mode, exit_code=EXIT_SETUP_ERROR, refusal=refusal, resumed=(), recoveries=(), jobs=(), scan=None, footer=""
+    )
 
 
 class RealPublishingUnavailable(Exception):
@@ -665,40 +821,37 @@ def _real_publisher(settings: Settings) -> Publisher:
 
 def _publisher_for(
     mode: PublishMode, settings: Settings, repository: JobRepository, stack: ExitStack
-) -> Publisher | None:
-    """The publisher for this run, or None (with the reason printed) if a real run must not start."""
+) -> Publisher | RunRefusal:
+    """The publisher for this run, or the refusal that stops a real run before anything changes."""
     if mode is PublishMode.SIMULATED:
         return Simulator()
-    unknown = archive_without_history(settings, repository, Platform.LINKEDIN)
+    unknown = archive_without_history(settings, repository, PLATFORM)
     if unknown:
         logger.error("Real run refused: archive holds %d post folder(s) but the job database has no real jobs", len(unknown))
-        print(
+        lines = [
             f"\nREFUSED: archive/ holds {len(unknown)} published post folder(s), but the job database "
-            f"({settings.app_db_path}) has no record of any real job.\n"
-            "The database may have been replaced or lost; without it, posts could be published twice.\n"
+            f"({settings.app_db_path}) has no record of any real job.",
+            "The database may have been replaced or lost; without it, posts could be published twice.",
             "Restore your backup of app.db, or move those folders out of archive/ if they are not this "
             "database's posts. Nothing was published.",
-            file=sys.stderr,
-        )
-        for folder in unknown[:10]:
-            print(f"  {folder.name}", file=sys.stderr)
-        return None
+            *(f"  {folder.name}" for folder in unknown[:10]),
+        ]
+        return RunRefusal("archive_history", "\n".join(lines))
     try:
         publisher = _real_publisher(settings)
     except RealPublishingUnavailable as error:
         logger.error("Real run refused: %s", error)
-        print(f"Error: {error}; nothing was published.", file=sys.stderr)
-        return None
+        return RunRefusal("token", f"Error: {error}; nothing was published.")
     close = getattr(publisher, "close", None)
     if close is not None:
         stack.callback(close)
     return publisher
 
 
-def _resumed_lines(resumed: ResumeResult) -> list[_JobLine]:
+def _resumed_lines(resumed: ResumeResult) -> list[JobLine]:
     lines = [_describe(final, context) for final, context in resumed.resumed]
     lines += [
-        _JobLine(stem, "ERROR (unexpected)", "resume failed; kept for the next run", (), problem=True, outcome="errors")
+        JobLine(stem, "ERROR (unexpected)", "resume failed; kept for the next run", (), problem=True, outcome="errors")
         for _, stem in resumed.failed
     ]
     return lines
@@ -707,11 +860,12 @@ def _resumed_lines(resumed: ResumeResult) -> list[_JobLine]:
 def _process(
     context: WorkflowContext,
     publish_simulated: bool,
+    resumed: tuple[JobLine, ...],
     recoveries: list[Recovery],
     earlier_problems: bool,
     counts: Counter[str],
-) -> int:
-    settings, platform = context.settings, Platform.LINKEDIN
+) -> RunReport:
+    settings, platform = context.settings, PLATFORM
     result = scan_incoming(settings.incoming_dir(platform), platform)
     counts["pending"] = len(result.pending)
     counts["ambiguous"] = len(result.ambiguous)
@@ -726,41 +880,48 @@ def _process(
     if context.mode is PublishMode.REAL and not publish_simulated:
         simulated_only = posts_only_simulated(result.candidates, context.repository)
         if simulated_only:
-            _print_simulated_refusal(simulated_only)
-            return EXIT_SETUP_ERROR
+            logger.error("Real run refused: %d post(s) were only simulated so far", len(simulated_only))
+            return RunReport(
+                mode=context.mode,
+                exit_code=EXIT_SETUP_ERROR,
+                refusal=RunRefusal("simulated_only", _simulated_refusal_text(simulated_only)),
+                resumed=resumed,
+                recoveries=tuple(recoveries),
+                jobs=(),
+                scan=result,
+                footer="",
+            )
 
-    lines = [_run_one(candidate, context) for candidate in result.candidates]
+    lines = tuple(_run_one(candidate, context) for candidate in result.candidates)
     counts.update(line.outcome for line in lines)
-
-    if lines:
-        _print_jobs(lines)
-    else:
-        print("\nNothing to process.")
-    _print_pending_and_ambiguous(result)
-
-    print(_footer(context.mode, lines))
-    if any(line.label == DUPLICATE_LABEL for line in lines):
-        print("Duplicates stay in incoming/; delete them when you no longer need them.")
-    print(f"Log: {settings.log_file}")
     needs_human = any(r.status is JobStatus.NEEDS_REVIEW for r in recoveries)
     problems = needs_human or earlier_problems or any(line.problem for line in lines)
-    return EXIT_JOB_PROBLEMS if problems else EXIT_OK
-
-
-def _print_simulated_refusal(simulated_only: list[SimulatedOnly]) -> None:
-    logger.error("Real run refused: %d post(s) were only simulated so far", len(simulated_only))
-    print(f"\nREFUSED ({len(simulated_only)}) - these posts were only simulated; a real run would publish them now")
-    width = max(len(item.candidate.stem) for item in simulated_only)
-    for item in simulated_only:
-        job = item.simulated_job
-        print(f"  {item.candidate.stem:<{width}}   simulated as job {job.job_id[:8]} ({job.created_at:%Y-%m-%d})")
-    print(
-        "\nNothing was published. Remove the posts you do not want on LinkedIn from incoming/, "
-        "or run again with --real --publish-simulated to publish them."
+    return RunReport(
+        mode=context.mode,
+        exit_code=EXIT_JOB_PROBLEMS if problems else EXIT_OK,
+        refusal=None,
+        resumed=resumed,
+        recoveries=tuple(recoveries),
+        jobs=lines,
+        scan=result,
+        footer=_footer(context.mode, lines),
     )
 
 
-def _footer(mode: PublishMode, lines: list[_JobLine]) -> str:
+def _simulated_refusal_text(simulated_only: list[SimulatedOnly]) -> str:
+    width = max(len(item.candidate.stem) for item in simulated_only)
+    lines = [f"\nREFUSED ({len(simulated_only)}) - these posts were only simulated; a real run would publish them now"]
+    for item in simulated_only:
+        job = item.simulated_job
+        lines.append(f"  {item.candidate.stem:<{width}}   simulated as job {job.job_id[:8]} ({job.created_at:%Y-%m-%d})")
+    lines.append(
+        "\nNothing was published. Remove the posts you do not want on LinkedIn from incoming/, "
+        "or run again with --real --publish-simulated to publish them."
+    )
+    return "\n".join(lines)
+
+
+def _footer(mode: PublishMode, lines: tuple[JobLine, ...]) -> str:
     """The run's closing line: what this run sent to LinkedIn, in plain words."""
     if mode is PublishMode.SIMULATED:
         return "\nSimulation mode: nothing was sent to LinkedIn in this run."
@@ -772,49 +933,42 @@ def _footer(mode: PublishMode, lines: list[_JobLine]) -> str:
     return footer
 
 
-def _print_recoveries(recoveries: list[Recovery]) -> None:
-    stem_width = max(len(r.stem) for r in recoveries)
-    status_width = max(len(r.status) for r in recoveries)
-    print(f"\nRECOVERED ({len(recoveries)}) - jobs interrupted by an earlier crash")
-    for r in recoveries:
-        first, *rest = r.notes
-        print(f"  {r.stem:<{stem_width}}   {r.status:<{status_width}}   ({r.mode}) {first}")
-        for note in rest:
-            print(f"  {'':<{stem_width}}   {'':<{status_width}}   - {note}")
-
-
-DUPLICATE_LABEL = "DUPLICATE"
-
-
-def _run_one(candidate: PostCandidate, context: WorkflowContext) -> _JobLine:
+def _run_one(candidate: PostCandidate, context: WorkflowContext) -> JobLine:
     try:
         final = run_job(candidate, context)
     except Exception:  # A bug or a database failure, not a publish outcome. Keep going.
         logger.exception(
             "Unexpected error; job abandoned: platform=%s mode=%s stem=%s", candidate.platform, context.mode, candidate.stem
         )
-        return _JobLine(candidate.stem, "ERROR (unexpected)", "see the log for details", (), problem=True, outcome="errors")
+        return JobLine(candidate.stem, "ERROR (unexpected)", "see the log for details", (), problem=True, outcome="errors")
     return _describe(final, context)
 
 
-def _describe(final: JobState, context: WorkflowContext) -> _JobLine:
+def _describe(final: JobState, context: WorkflowContext) -> JobLine:
     stem, status, errors = final["stem"], final["status"], tuple(final["errors"])
     destination = _relative_to_data(final["destination"], context.settings)
+    stored = {
+        "job_id": final["job_id"],
+        "mode": final["mode"],
+        "status": str(status),
+        "post_id": final["platform_post_id"],
+        "destination": destination,
+    }
 
     if final["retry_later"]:
-        return _JobLine(stem, "WAITING (still copying)", "will retry on next run", (), problem=False, outcome="waiting")
+        return JobLine(stem, "WAITING (still copying)", "will retry on next run", (), problem=False, outcome="waiting")
     if final["duplicate_of"]:
         note = _duplicate_note(final["duplicate_of"], context)
-        return _JobLine(stem, DUPLICATE_LABEL, note, (), problem=False, outcome="duplicates")
+        return JobLine(stem, DUPLICATE_LABEL, note, (), problem=False, outcome="duplicates")
     if status == JobStatus.SIMULATED:
         note = "files stay in incoming/"
-        return _JobLine(stem, "SIMULATED (not published)", note, errors, problem=False, outcome="simulated")
+        return JobLine(stem, "SIMULATED (not published)", note, errors, problem=False, outcome="simulated", **stored)
     if status == JobStatus.PUBLISHED:
         note = f"archived to {destination}" if destination else "files left in incoming/"
-        return _JobLine(stem, status, note, errors, problem=bool(errors), outcome="published")
+        return JobLine(stem, status, note, errors, problem=bool(errors), outcome="published", **stored)
     note = f"moved to {destination}" if destination else "files left in incoming/"
     outcome = "needs_review" if status == JobStatus.NEEDS_REVIEW else "failed"
-    return _JobLine(stem, status, note, errors, problem=True, outcome=outcome)
+    return JobLine(stem, status, note, errors, problem=True, outcome=outcome, **stored)
 
 
 def _duplicate_note(job_id: str, context: WorkflowContext) -> str:
@@ -838,7 +992,42 @@ def _relative_to_data(destination: str | None, settings: Settings) -> str | None
         return destination
 
 
-def _print_jobs(lines: list[_JobLine], *, title: str = "JOBS", note: str = "") -> None:
+def _print_run_report(report: RunReport, settings: Settings) -> None:
+    """The terminal view of a run. Everything it shows is already in ``report``."""
+    if report.resumed:
+        _print_jobs(list(report.resumed), title="RESUMED", note="jobs finished after an earlier crash")
+    if report.recoveries:
+        _print_recoveries(list(report.recoveries))
+    if report.refusal is not None:
+        if report.refusal.text:
+            stream = sys.stdout if report.refusal.kind == "simulated_only" else sys.stderr
+            print(report.refusal.text, file=stream)
+        return
+    if report.scan is None:  # Setup error: the log says what happened.
+        return
+    if report.jobs:
+        _print_jobs(list(report.jobs))
+    else:
+        print("\nNothing to process.")
+    _print_pending_and_ambiguous(report.scan)
+    print(report.footer)
+    if any(line.label == DUPLICATE_LABEL for line in report.jobs):
+        print("Duplicates stay in incoming/; delete them when you no longer need them.")
+    print(f"Log: {settings.log_file}")
+
+
+def _print_recoveries(recoveries: list[Recovery]) -> None:
+    stem_width = max(len(r.stem) for r in recoveries)
+    status_width = max(len(r.status) for r in recoveries)
+    print(f"\nRECOVERED ({len(recoveries)}) - jobs interrupted by an earlier crash")
+    for r in recoveries:
+        first, *rest = r.notes
+        print(f"  {r.stem:<{stem_width}}   {r.status:<{status_width}}   ({r.mode}) {first}")
+        for note in rest:
+            print(f"  {'':<{stem_width}}   {'':<{status_width}}   - {note}")
+
+
+def _print_jobs(lines: list[JobLine], *, title: str = "JOBS", note: str = "") -> None:
     stem_width = max(len(line.stem) for line in lines)
     label_width = max(len(line.label) for line in lines)
     print(f"\n{title} ({len(lines)})" + (f" - {note}" if note else ""))
@@ -848,7 +1037,39 @@ def _print_jobs(lines: list[_JobLine], *, title: str = "JOBS", note: str = "") -
             print(f"  {'':<{stem_width}}     - {detail}")
 
 
+def _mode(args: argparse.Namespace) -> PublishMode:
+    """Real only when --real was given on this command line (D36)."""
+    return PublishMode.REAL if args.real else PublishMode.SIMULATED
+
+
 # linkedin-check
+
+
+def linkedin_status(settings: Settings, *, check: bool, today: date | None = None) -> LinkedInStatus:
+    """The LinkedIn token's state from backend/.env. With ``check``, also asks LinkedIn (read-only, no post)."""
+    today = today or _today()
+    try:
+        credentials = load_linkedin_credentials(settings.base_dir, today=today)
+    except CredentialsError as error:
+        return LinkedInStatus(
+            token_set=False, state="missing", expires_on=None, days_left=None, member=None,
+            problems=(str(error),), unreachable=False,
+        )
+    state = credentials.state(today)
+    expires_on = credentials.expires_on
+    days_left = (expires_on - today).days if expires_on else None
+    if not check or state is TokenState.EXPIRED:
+        problems = (credentials.describe(today),) if state is TokenState.EXPIRED else ()
+        return LinkedInStatus(
+            token_set=True, state=state.value, expires_on=expires_on, days_left=days_left, member=None,
+            problems=problems, unreachable=False,
+        )
+    with closing(_linkedin_client(credentials.access_token)) as client:
+        report = run_check(credentials, client, today=today, upload_test=False)
+    return LinkedInStatus(
+        token_set=True, state=state.value, expires_on=expires_on, days_left=days_left, member=report.member,
+        problems=tuple(report.problems), unreachable=report.unreachable,
+    )
 
 
 def _linkedin_check(args: argparse.Namespace) -> int:
@@ -883,17 +1104,19 @@ def _print_pending_and_ambiguous(result: ScanResult) -> None:
 
 
 @contextmanager
-def _logging_to(*, verbose: bool, log_file: Path | None) -> Generator[None, None, None]:
-    """Attach console (and optionally rotating file) log handlers for one command.
+def _logging_to(*, verbose: bool, log_file: Path | None, console: bool = True) -> Generator[None, None, None]:
+    """Attach log handlers for one command or request: the terminal (``console``) and an optional rotating file.
 
     Handlers are removed and closed afterwards, so Windows never keeps the log
     file locked once the command returns. Log lines carry IDs, stems, platform,
     status, and error messages only, never caption text.
     """
-    console = logging.StreamHandler(sys.stderr)
-    console.setLevel(logging.INFO if verbose else logging.WARNING)
-    console.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-    handlers: list[logging.Handler] = [console]
+    handlers: list[logging.Handler] = []
+    if console:
+        stream_handler = logging.StreamHandler(sys.stderr)
+        stream_handler.setLevel(logging.INFO if verbose else logging.WARNING)
+        stream_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        handlers.append(stream_handler)
 
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
