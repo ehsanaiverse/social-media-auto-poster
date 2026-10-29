@@ -1,19 +1,5 @@
-"""Domain models re-exported from the core package."""
+"""Request models for the API (see schemas.py)."""
 
-from social_media_auto_poster.models import (
-    JobStatus,
-    Platform,
-    PostCandidate,
-    PublishResult,
-    ScanResult,
-    ValidationResult,
-)
+from .schemas import ResolveRequest, RunRequest
 
-__all__ = [
-    "JobStatus",
-    "Platform",
-    "PostCandidate",
-    "PublishResult",
-    "ScanResult",
-    "ValidationResult",
-]
+__all__ = ["ResolveRequest", "RunRequest"]

@@ -1,5 +1,5 @@
-"""Service layer package."""
+"""Services the routers call. ``JobService`` is the only one: it delegates to the core package."""
 
-from .job_service import JobService, JobOutcome
+from .job_service import FolderMissingError, JobDatabaseError, JobLookupError, JobService, job_to_dict, run_to_dict
 
-__all__ = ["JobService", "JobOutcome"]
+__all__ = ["FolderMissingError", "JobDatabaseError", "JobLookupError", "JobService", "job_to_dict", "run_to_dict"]

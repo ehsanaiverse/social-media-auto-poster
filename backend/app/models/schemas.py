@@ -1,70 +1,21 @@
-"""Data models and Pydantic schemas for the API."""
+"""Request bodies. Responses are plain JSON built by ``services/job_service.py``."""
 
-from datetime import datetime
-from typing import Optional
+from pydantic import BaseModel
 
-from pydantic import BaseModel, Field
-
-
-class CandidateResponse(BaseModel):
-    """A paired image + caption candidate from a scan."""
-
-    stem: str
-    media_path: str
-    caption_path: str
+# The text the API requires before a real run starts. Sent by the frontend's confirmation dialog.
+REAL_CONFIRMATION = "publish to LinkedIn"
 
 
-class ScanResponse(BaseModel):
-    """Result of scanning an incoming folder."""
+class RunRequest(BaseModel):
+    """``POST /api/run``. Simulated unless ``real`` is true; real also needs ``confirm`` to be exactly REAL_CONFIRMATION."""
 
-    platform: str
-    candidates: list[CandidateResponse] = Field(default_factory=list)
-    pending: list[str] = Field(default_factory=list)
-    ambiguous: list[list[str]] = Field(default_factory=list)
-
-
-class JobOutcome(BaseModel):
-    """Result of running one candidate through the graph."""
-
-    stem: str
-    status: str
-    errors: list[str] = Field(default_factory=list)
-    simulated: bool
-    platform_post_id: Optional[str] = None
-    destination: Optional[str] = None
-    retry_later: bool = False
+    real: bool = False
+    publish_simulated: bool = False
+    confirm: str | None = None
 
 
-class RunResponse(BaseModel):
-    """Result of processing all candidates in a run."""
+class ResolveRequest(BaseModel):
+    """``POST /api/jobs/{id}/resolve``: send exactly one of ``published_post_id`` or ``failed: true``."""
 
-    platform: str
-    candidates: int = 0
-    pending: list[str] = Field(default_factory=list)
-    ambiguous: list[list[str]] = Field(default_factory=list)
-    jobs: list[JobOutcome] = Field(default_factory=list)
-    error: Optional[str] = None
-
-
-class JobResponse(BaseModel):
-    """A job record from the database."""
-
-    id: int
-    platform: str
-    stem: str
-    media_path: str
-    caption_path: str
-    media_hash: Optional[str] = None
-    caption_hash: Optional[str] = None
-    status: str
-    error: Optional[str] = None
-    platform_post_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-
-class JobListResponse(BaseModel):
-    """A list of job records."""
-
-    jobs: list[JobResponse]
-    total: int
+    published_post_id: str | None = None
+    failed: bool = False
