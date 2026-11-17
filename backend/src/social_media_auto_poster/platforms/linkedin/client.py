@@ -22,6 +22,7 @@ LINKEDIN_VERSION = "202610"
 
 API_BASE = "https://api.linkedin.com"
 TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
+REDACTED = "[redacted]"  # Replaces the access token wherever it could appear in a text.
 
 # httpx logs every request URL at INFO. Upload URLs carry signed upload credentials, so keep them out of the log.
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -29,6 +30,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class LinkedInClient:
     def __init__(self, access_token: str, *, transport: httpx.BaseTransport | None = None):
+        self._token = access_token  # Only for redact(); never shown (see __repr__).
         self._client = httpx.Client(
             base_url=API_BASE,
             headers={"Authorization": f"Bearer {access_token}"},
@@ -40,6 +42,10 @@ class LinkedInClient:
 
     def __repr__(self) -> str:
         return "LinkedInClient(access_token=<hidden>)"
+
+    def redact(self, text: str) -> str:
+        """``text`` with every occurrence of the access token replaced by ``[redacted]``."""
+        return text.replace(self._token, REDACTED) if self._token else text
 
     def close(self) -> None:
         self._client.close()

@@ -28,7 +28,7 @@ import httpx
 
 from social_media_auto_poster.models import PostContent, PublishResult
 from social_media_auto_poster.platforms.linkedin.caption import caption_problem, escape_caption
-from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
+from social_media_auto_poster.platforms.linkedin.client import REDACTED, LinkedInClient
 from social_media_auto_poster.platforms.linkedin.image_size import image_problem
 
 TOKEN_REJECTED = (
@@ -36,6 +36,9 @@ TOKEN_REJECTED = (
     "Renew LINKEDIN_ACCESS_TOKEN in backend\\.env"
 )
 REFUSED_STATUSES = frozenset({400, 401, 403, 404, 422, 429})
+# LinkedIn's documented error codes are short (FIELD_LENGTH_TOO_LONG is 21). A longer one is dropped, not cut,
+# so an echoed token can never be kept even in part.
+MAX_ERROR_CODE_LENGTH = 64
 IMAGE_POLL_ATTEMPTS = 15
 IMAGE_POLL_INTERVAL_S = 2.0
 
@@ -120,7 +123,7 @@ class LinkedInPublisher:
         except httpx.HTTPError as error:
             raise _NotPosted(f"uploading the image failed ({type(error).__name__})") from error
         if not response.is_success:
-            raise _NotPosted(_refusal("uploading the image", response))
+            raise _NotPosted(self._refusal("uploading the image", response))
 
     def _wait_until_processed(self, image_urn: str) -> None:
         """LinkedIn processes uploads after the fact; a post made before that would not be visible."""
@@ -151,7 +154,7 @@ class LinkedInPublisher:
         if response.status_code == 401:
             raise _NotPosted(TOKEN_REJECTED)
         if not response.is_success:
-            raise _NotPosted(_refusal(doing, response))
+            raise _NotPosted(self._refusal(doing, response))
         try:
             data = response.json()
         except ValueError as error:
@@ -191,26 +194,37 @@ class LinkedInPublisher:
         if status == 401:
             return _failed(f"{TOKEN_REJECTED}; nothing was posted")
         if status in REFUSED_STATUSES:
-            return _failed(f"{_refusal('LinkedIn refused the post', response)}; nothing was posted")
-        raise PublishOutcomeUnknown(
-            f"LinkedIn answered {status}{_error_code(response)}; the post may exist; check LinkedIn before re-posting"
-        )
+            return _failed(f"{self._refusal('LinkedIn refused the post', response)}; nothing was posted")
+        raise PublishOutcomeUnknown(self._client.redact(
+            f"LinkedIn answered {status}{self._error_code(response)}; the post may exist; check LinkedIn before re-posting"
+        ))
+
+    # Texts built from LinkedIn's answers. They become job errors, error reports and log lines, so the token
+    # must never be in them, even if LinkedIn echoes it.
+
+    def _refusal(self, doing: str, response: httpx.Response) -> str:
+        if response.status_code == 429:
+            text = f"{doing}: LinkedIn's rate limit was reached (429); try again later"
+        else:
+            text = f"{doing}: LinkedIn answered {response.status_code}{self._error_code(response)}"
+        return self._client.redact(text)  # Last safety net; _error_code already redacts.
+
+    def _error_code(self, response: httpx.Response) -> str:
+        """LinkedIn's error code (for example FIELD_LENGTH_TOO_LONG), never its message, which can echo input.
+
+        A code that is too long or has characters other than letters, digits and underscores is dropped.
+        A code that still contains the access token is replaced as a whole by ``[redacted]``.
+        """
+        try:
+            code = response.json().get("code")
+        except (ValueError, AttributeError):
+            return ""
+        if not isinstance(code, str) or len(code) > MAX_ERROR_CODE_LENGTH or not code.replace("_", "").isalnum():
+            return ""
+        if self._client.redact(code) != code:
+            return f" {REDACTED}"
+        return f" {code}"
 
 
 def _failed(message: str) -> PublishResult:
     return PublishResult(success=False, simulated=False, error=message)
-
-
-def _refusal(doing: str, response: httpx.Response) -> str:
-    if response.status_code == 429:
-        return f"{doing}: LinkedIn's rate limit was reached (429); try again later"
-    return f"{doing}: LinkedIn answered {response.status_code}{_error_code(response)}"
-
-
-def _error_code(response: httpx.Response) -> str:
-    """LinkedIn's error code (for example FIELD_LENGTH_TOO_LONG), never its message, which can echo input."""
-    try:
-        code = response.json().get("code")
-    except (ValueError, AttributeError):
-        return ""
-    return f" {code}" if isinstance(code, str) and code.replace("_", "").isalnum() else ""

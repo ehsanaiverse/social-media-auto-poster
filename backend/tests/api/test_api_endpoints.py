@@ -508,23 +508,23 @@ REAL = {"real": True, "confirm": "publish to LinkedIn"}
 ECHOES_TOKEN = {"message": f"bad request from {LINKEDIN_TOKEN}", "code": LINKEDIN_TOKEN, "status": 0}
 
 
-def use_fake_linkedin(monkeypatch, fake: FakeLinkedIn) -> None:
-    monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", LINKEDIN_TOKEN)
+def use_fake_linkedin(monkeypatch, fake: FakeLinkedIn, token: str = LINKEDIN_TOKEN) -> None:
+    monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", token)
     monkeypatch.setenv("LINKEDIN_TOKEN_CREATED", date.today().isoformat())
     monkeypatch.setattr(core, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
 
 
-def assert_token_sent_but_never_returned(client, fake: FakeLinkedIn, run_response) -> dict:
+def assert_token_sent_but_never_returned(client, fake: FakeLinkedIn, run_response, token: str = LINKEDIN_TOKEN) -> dict:
     """The token really was used (sent to the fake LinkedIn), yet no API response contains it. Returns the job."""
-    assert fake.requests and all(r.headers["Authorization"] == f"Bearer {LINKEDIN_TOKEN}" for r in fake.requests)
-    assert LINKEDIN_TOKEN not in run_response.text
+    assert fake.requests and all(r.headers["Authorization"] == f"Bearer {token}" for r in fake.requests)
+    assert token not in run_response.text
     jobs = client.get("/api/jobs")
     assert jobs.status_code == 200
-    assert LINKEDIN_TOKEN not in jobs.text
+    assert token not in jobs.text
     assert len(jobs.json()) == 1
     detail = client.get(f"/api/jobs/{jobs.json()[0]['job_id']}")
     assert detail.status_code == 200
-    assert LINKEDIN_TOKEN not in detail.text
+    assert token not in detail.text
     return detail.json()
 
 
@@ -577,3 +577,25 @@ def test_real_run_uncertain_outcome_never_returns_the_token_even_if_linkedin_ech
     assert report.is_file()
     assert LINKEDIN_TOKEN not in report.read_text(encoding="utf-8")
     assert len(fake.calls("POST", "/rest/posts")) == 1  # Never retried.
+
+
+def test_real_run_failure_redacts_an_alphanumeric_token_that_linkedin_echoes_in_the_code(client, settings, monkeypatch):
+    # Letters and digits only, and short: it passes the error-code rules, so only redaction keeps it out.
+    token = "AQVtesttoken1234567890abcdef"
+    add_post(client, name="launch")
+    fake = FakeLinkedIn(post=httpx.Response(422, json={"code": token, "message": f"bad request from {token}"}))
+    use_fake_linkedin(monkeypatch, fake, token=token)
+
+    response = run(client, REAL)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["exit_code"] == 3
+    job = assert_token_sent_but_never_returned(client, fake, response, token=token)
+    assert job["status"] == "FAILED"
+    assert any("LinkedIn answered 422 [redacted]" in error for error in job["errors"])
+    report = settings.data_dir / job["destination"] / "error-report.txt"
+    assert report.is_file()
+    assert token not in report.read_text(encoding="utf-8")
+    log = settings.log_file.read_text(encoding="utf-8")
+    assert "Run finished" in log  # The log really was written by this run.
+    assert token not in log

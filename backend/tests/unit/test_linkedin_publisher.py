@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PostContent
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PostContent, PublishResult
 from social_media_auto_poster.platforms.linkedin.caption import MAX_CAPTION_LENGTH
 from social_media_auto_poster.platforms.linkedin.client import LINKEDIN_VERSION, LinkedInClient
 from social_media_auto_poster.platforms.linkedin.publisher import LinkedInPublisher, PublishOutcomeUnknown
@@ -221,3 +221,54 @@ def test_the_token_never_appears_in_results_errors_or_reprs():
         texts += [repr(client), repr(LinkedInPublisher(client)), str(vars(LinkedInPublisher(client)))]
 
     assert all(TOKEN not in text for text in texts)
+
+
+# A token of letters and digits only passes the error-code rules, so only redaction keeps it out of texts.
+PLAIN_TOKEN = "AQVtesttoken1234567890abcdef"
+
+
+def publish_with_plain_token(fake: FakeLinkedIn) -> PublishResult:
+    with LinkedInClient(PLAIN_TOKEN, transport=httpx.MockTransport(fake)) as client:
+        return LinkedInPublisher(client, sleep=lambda s: None).publish(make_post())
+
+
+def test_an_error_code_equal_to_the_token_is_redacted():
+    fake = FakeLinkedIn(post=httpx.Response(422, json={"code": PLAIN_TOKEN}))
+
+    result = publish_with_plain_token(fake)
+
+    assert result.status is JobStatus.FAILED
+    assert "LinkedIn answered 422 [redacted]; nothing was posted" in result.error
+    assert PLAIN_TOKEN not in result.error
+
+
+def test_an_uncertain_outcome_that_echoes_the_token_in_the_code_is_redacted():
+    fake = FakeLinkedIn(post=httpx.Response(500, json={"code": PLAIN_TOKEN, "message": PLAIN_TOKEN}))
+
+    with pytest.raises(PublishOutcomeUnknown) as raised:
+        publish_with_plain_token(fake)
+
+    assert "LinkedIn answered 500 [redacted]; the post may exist" in str(raised.value)
+    assert PLAIN_TOKEN not in str(raised.value)
+
+
+def test_a_refused_upload_that_echoes_the_token_in_the_code_is_redacted():
+    fake = FakeLinkedIn(upload=httpx.Response(400, json={"code": PLAIN_TOKEN}))
+
+    result = publish_with_plain_token(fake)
+
+    assert result.status is JobStatus.FAILED
+    assert "uploading the image: LinkedIn answered 400 [redacted]" in result.error
+    assert PLAIN_TOKEN not in result.error
+    assert fake.calls("POST", "/rest/posts") == []
+
+
+def test_error_codes_longer_than_64_characters_are_dropped_not_cut():
+    kept, dropped = "A" * 64, "B" * 65
+
+    kept_result, _ = publish(FakeLinkedIn(post=httpx.Response(422, json={"code": kept})))
+    dropped_result, _ = publish(FakeLinkedIn(post=httpx.Response(422, json={"code": dropped})))
+
+    assert f"LinkedIn answered 422 {kept}; nothing was posted" in kept_result.error
+    assert "LinkedIn answered 422; nothing was posted" in dropped_result.error
+    assert "B" * 10 not in dropped_result.error
