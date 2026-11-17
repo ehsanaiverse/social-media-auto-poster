@@ -306,6 +306,39 @@ def test_real_run_refuses_posts_that_were_only_simulated(client, settings, monke
     assert (incoming(settings) / "launch.jpg").exists()
 
 
+def test_env_can_never_switch_an_api_run_to_real_mode(client, settings, monkeypatch):
+    # A complete, valid-looking LinkedIn setup, plus would-be switches, in backend/.env and the real environment.
+    switches = {"AUTOPOSTER_MODE": "real", "AUTOPOSTER_REAL": "1"}
+    env_lines = [f"LINKEDIN_ACCESS_TOKEN={LINKEDIN_TOKEN}", f"LINKEDIN_TOKEN_CREATED={date.today().isoformat()}"]
+    env_text = "\n".join(env_lines + [f"{k}={v}" for k, v in switches.items()]) + "\n"
+    (settings.base_dir / ".env").write_text(env_text, encoding="utf-8")
+    for name, value in switches.items():
+        monkeypatch.setenv(name, value)
+    # The real _real_publisher, watched: if it were ever called, it would reach the fake LinkedIn.
+    fake = FakeLinkedIn()
+    monkeypatch.setattr(core, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
+    real_publisher_calls = []
+    original = core._real_publisher
+    monkeypatch.setattr(core, "_real_publisher", lambda s: real_publisher_calls.append(s) or original(s))
+    add_post(client, name="launch")
+
+    response = run(client)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["mode"] == "simulated"
+    assert [(job["stem"], job["mode"], job["status"]) for job in client.get("/api/jobs").json()] == [
+        ("launch", "simulated", "SIMULATED")
+    ]
+    assert real_publisher_calls == []
+    assert fake.requests == []
+
+    # Control: the same setup with the typed confirmation does reach the fake LinkedIn
+    # (then refuses the only-simulated post).
+    assert run(client, {"real": True, "confirm": "publish to LinkedIn"}).status_code == 412
+    assert len(real_publisher_calls) == 1 and fake.requests
+    assert fake.calls("POST", "/rest/posts") == []
+
+
 def test_run_is_refused_with_409_while_another_run_holds_the_lock(client, settings):
     add_post(client, name="launch")
     with single_run_lock(settings.lock_file):

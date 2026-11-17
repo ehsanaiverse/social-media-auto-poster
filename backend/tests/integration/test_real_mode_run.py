@@ -1,16 +1,22 @@
 """run --real and scan --real (Milestone 4, slice 4.1). A fake publisher stands in for LinkedIn; no network."""
 
 import sqlite3
+from datetime import date
 from pathlib import Path
 
+import httpx
 import pytest
 
 from social_media_auto_poster import main as cli
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.models import JobStatus, Platform, PublishResult
+from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
+
+from linkedin_fake import FakeLinkedIn as RecordingLinkedIn
 
 JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
 LINKEDIN = Platform.LINKEDIN
+ENV_TOKEN = "AQVenvtoken1234567890abcdef"
 
 
 class FakeLinkedIn:
@@ -93,6 +99,34 @@ def test_a_plain_run_never_asks_for_the_real_publisher(settings, monkeypatch, ca
 
     assert "Simulation mode: nothing was sent to LinkedIn in this run." in capsys.readouterr().out
     assert rows(settings) == [("launch", "simulated", "SIMULATED")]
+
+
+def test_env_can_never_switch_a_run_to_real_mode(settings, base, monkeypatch, capsys):
+    # A complete, valid-looking LinkedIn setup, plus would-be switches, in backend/.env and the real environment.
+    switches = {"AUTOPOSTER_MODE": "real", "AUTOPOSTER_REAL": "1"}
+    env_lines = [f"LINKEDIN_ACCESS_TOKEN={ENV_TOKEN}", f"LINKEDIN_TOKEN_CREATED={date.today().isoformat()}"]
+    (base / ".env").write_text("\n".join(env_lines + [f"{k}={v}" for k, v in switches.items()]) + "\n", encoding="utf-8")
+    for name, value in switches.items():
+        monkeypatch.setenv(name, value)
+    # The real _real_publisher, watched: if it were ever called, it would reach the fake LinkedIn.
+    fake = RecordingLinkedIn()
+    monkeypatch.setattr(cli, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
+    real_publisher_calls = []
+    original = cli._real_publisher
+    monkeypatch.setattr(cli, "_real_publisher", lambda s: real_publisher_calls.append(s) or original(s))
+    add_post(settings, "launch")
+
+    assert run() == 0
+
+    assert rows(settings) == [("launch", "simulated", "SIMULATED")]
+    assert "Simulation mode: nothing was sent to LinkedIn in this run." in capsys.readouterr().out
+    assert real_publisher_calls == []
+    assert fake.requests == []
+
+    # Control: the same setup with --real does reach the fake LinkedIn (then refuses the only-simulated post).
+    assert run("--real") == 1
+    assert len(real_publisher_calls) == 1 and fake.requests
+    assert len(fake.calls("POST", "/rest/posts")) == 0
 
 
 def test_publish_simulated_without_real_is_a_usage_error(settings, capsys):
