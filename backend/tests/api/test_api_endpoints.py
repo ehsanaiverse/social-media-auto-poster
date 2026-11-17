@@ -27,6 +27,8 @@ from social_media_auto_poster.services.run_lock import single_run_lock
 from social_media_auto_poster.storage.database import open_app_db
 from social_media_auto_poster.storage.jobs import JobRepository
 
+from linkedin_fake import POST_ID, FakeLinkedIn
+
 IMAGES = Path(__file__).resolve().parents[1] / "fixtures" / "images"
 JPEG = (IMAGES / "baseline-7x5.jpg").read_bytes()
 PNG = (IMAGES / "image-6x3.png").read_bytes()
@@ -493,3 +495,85 @@ def test_status_with_check_does_not_call_linkedin_for_an_expired_token(client, m
     body = client.get("/api/linkedin/status", params={"check": True}).json()
     assert body["state"] == "expired"
     assert LINKEDIN_TOKEN not in str(body)
+
+
+# Real runs through POST /api/run: the token never comes back
+#
+# The whole real path runs: the token comes from the environment (as from backend/.env),
+# is checked with /v2/userinfo, and the LinkedIn publisher uploads and posts. Only the
+# transport is fake (FakeLinkedIn); nothing reaches the network.
+
+REAL = {"real": True, "confirm": "publish to LinkedIn"}
+# A LinkedIn answer that echoes the token, in the message and in the error code.
+ECHOES_TOKEN = {"message": f"bad request from {LINKEDIN_TOKEN}", "code": LINKEDIN_TOKEN, "status": 0}
+
+
+def use_fake_linkedin(monkeypatch, fake: FakeLinkedIn) -> None:
+    monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", LINKEDIN_TOKEN)
+    monkeypatch.setenv("LINKEDIN_TOKEN_CREATED", date.today().isoformat())
+    monkeypatch.setattr(core, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
+
+
+def assert_token_sent_but_never_returned(client, fake: FakeLinkedIn, run_response) -> dict:
+    """The token really was used (sent to the fake LinkedIn), yet no API response contains it. Returns the job."""
+    assert fake.requests and all(r.headers["Authorization"] == f"Bearer {LINKEDIN_TOKEN}" for r in fake.requests)
+    assert LINKEDIN_TOKEN not in run_response.text
+    jobs = client.get("/api/jobs")
+    assert jobs.status_code == 200
+    assert LINKEDIN_TOKEN not in jobs.text
+    assert len(jobs.json()) == 1
+    detail = client.get(f"/api/jobs/{jobs.json()[0]['job_id']}")
+    assert detail.status_code == 200
+    assert LINKEDIN_TOKEN not in detail.text
+    return detail.json()
+
+
+def test_real_run_success_never_returns_the_token(client, settings, monkeypatch):
+    add_post(client, name="launch")
+    fake = FakeLinkedIn()
+    use_fake_linkedin(monkeypatch, fake)
+
+    response = run(client, REAL)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["exit_code"] == 0
+    job = assert_token_sent_but_never_returned(client, fake, response)
+    assert job["status"] == "PUBLISHED"
+    assert job["post_id"] == POST_ID
+    assert len(fake.calls("POST", "/rest/posts")) == 1
+
+
+def test_real_run_failure_never_returns_the_token_even_if_linkedin_echoes_it(client, settings, monkeypatch):
+    add_post(client, name="launch")
+    fake = FakeLinkedIn(post=httpx.Response(422, json=ECHOES_TOKEN))
+    use_fake_linkedin(monkeypatch, fake)
+
+    response = run(client, REAL)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["exit_code"] == 3
+    job = assert_token_sent_but_never_returned(client, fake, response)
+    assert job["status"] == "FAILED"
+    assert any("LinkedIn answered 422" in error for error in job["errors"])
+    report = settings.data_dir / job["destination"] / "error-report.txt"
+    assert report.is_file()
+    assert LINKEDIN_TOKEN not in report.read_text(encoding="utf-8")
+    assert len(fake.calls("POST", "/rest/posts")) == 1
+
+
+def test_real_run_uncertain_outcome_never_returns_the_token_even_if_linkedin_echoes_it(client, settings, monkeypatch):
+    add_post(client, name="launch")
+    fake = FakeLinkedIn(post=httpx.Response(500, json=ECHOES_TOKEN))
+    use_fake_linkedin(monkeypatch, fake)
+
+    response = run(client, REAL)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["exit_code"] == 3
+    job = assert_token_sent_but_never_returned(client, fake, response)
+    assert job["status"] == "NEEDS_REVIEW"
+    assert any("LinkedIn answered 500" in error for error in job["errors"])
+    report = settings.data_dir / job["destination"] / "error-report.txt"
+    assert report.is_file()
+    assert LINKEDIN_TOKEN not in report.read_text(encoding="utf-8")
+    assert len(fake.calls("POST", "/rest/posts")) == 1  # Never retried.
