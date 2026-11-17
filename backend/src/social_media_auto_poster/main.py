@@ -7,11 +7,14 @@
   ``--real`` is given; real mode is never a default or a setting (D36).
 - ``resolve``: manually settle a NEEDS_REVIEW job as PUBLISHED or FAILED.
 - ``linkedin-check``: check the LinkedIn token and setup; never creates a post.
+- ``schedule`` / ``unschedule`` / ``schedules``: schedule a post for a date and time,
+  cancel it, or list schedules (D46). Every other run skips posts with an active schedule.
 
 The same operations are available to the local API (``backend/app``). They live
 here as functions that return data (``scan_preview``, ``run_once``,
-``resolve_job``, ``linkedin_status``); the command functions only print them and
-map the result to an exit code, so the API and the CLI share one implementation.
+``resolve_job``, ``linkedin_status``, ``schedule_post``, ``unschedule_post``,
+``list_schedules``); the command functions only print them and map the result to
+an exit code, so the API and the CLI share one implementation.
 """
 
 import argparse
@@ -28,9 +31,11 @@ from datetime import UTC, date, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from social_media_auto_poster.config import (
     DATA_DIR_VAR,
+    InvalidTimezoneError,
     Settings,
     data_dir_outside_base,
     ensure_data_dirs,
@@ -44,7 +49,14 @@ from social_media_auto_poster.graph.workflow import run_job
 from social_media_auto_poster.ingestion.scanner import scan_incoming
 from social_media_auto_poster.ingestion.stability import is_file_stable
 from social_media_auto_poster.ingestion.validation import validate_candidate
-from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, ScanResult
+from social_media_auto_poster.models import (
+    JobStatus,
+    Platform,
+    PostCandidate,
+    PublishMode,
+    ScanResult,
+    ScheduleStatus,
+)
 from social_media_auto_poster.platforms.base import Publisher
 from social_media_auto_poster.platforms.linkedin.check import run_check
 from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
@@ -63,8 +75,21 @@ from social_media_auto_poster.services.real_mode import (
 )
 from social_media_auto_poster.services.reconcile import Recovery, reconcile_interrupted_jobs
 from social_media_auto_poster.services.run_lock import RunLockHeldError, single_run_lock
+from social_media_auto_poster.services.scheduling import (
+    ScheduleError,
+    ScheduleTimeError,
+    check_schedulable,
+    check_time_format,
+    parse_publish_at,
+)
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
 from social_media_auto_poster.storage.jobs import JobNotFoundError, JobRecord, JobRepository
+from social_media_auto_poster.storage.schedules import (
+    DuplicateScheduleError,
+    ScheduleRecord,
+    ScheduleRepository,
+    schedules_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +107,7 @@ EXIT_LOCKED = 4
 # Outcome counters reported on the "Run finished" log line, in this order.
 RUN_COUNTS = (
     "simulated", "published", "failed", "needs_review", "duplicates",
-    "waiting", "pending", "ambiguous", "recovered", "resumed", "errors",
+    "waiting", "pending", "ambiguous", "recovered", "resumed", "errors", "scheduled",
 )
 MIN_JOB_ID_PREFIX = 6
 DUPLICATE_LABEL = "DUPLICATE"
@@ -115,6 +140,37 @@ exit codes:
   4  a run is in progress
 """
 
+SCHEDULE_EPILOG = """\
+The time is in AUTOPOSTER_TIMEZONE (default Asia/Karachi) and must be 5 minutes to 1 year ahead.
+Without --real the schedule is simulated. Until it is due, every run skips the post.
+
+exit codes:
+  0  scheduled
+  1  refused, nothing changed: no such post, partner file missing, ambiguous name,
+     a file still being copied, invalid post, unusable time, content already
+     handled or scheduled, post already scheduled, or the job database could not
+     be opened; also a bad AUTOPOSTER_TIMEZONE
+  2  invalid command or option (including a time not in the form YYYY-MM-DD HH:MM)
+  4  a run is in progress
+"""
+
+UNSCHEDULE_EPILOG = """\
+exit codes:
+  0  cancelled (the files stay in incoming/; the next run processes the post)
+  1  the post has no active schedule, or the job database could not be opened
+  2  invalid command or option
+  4  a run is in progress
+"""
+
+SCHEDULES_EPILOG = """\
+Read-only: never locks, writes, creates or upgrades the job database.
+
+exit codes:
+  0  listed (also when there are no schedules or no job database yet)
+  1  the job database could not be read
+  2  invalid command or option
+"""
+
 
 # Data returned by the functions below (the API serializes these; the CLI prints them).
 
@@ -145,6 +201,17 @@ class RunRefusal:
 
 
 @dataclass(frozen=True)
+class ScheduledPost:
+    """A post a run left alone because it has an active schedule (D46)."""
+
+    stem: str
+    schedule_id: str
+    mode: PublishMode  # The schedule's mode, not the run's.
+    publish_at: datetime  # UTC.
+    publish_at_local: str  # "2026-12-01 09:00 Asia/Karachi".
+
+
+@dataclass(frozen=True)
 class RunReport:
     mode: PublishMode
     exit_code: int
@@ -154,6 +221,7 @@ class RunReport:
     jobs: tuple[JobLine, ...]
     scan: ScanResult | None  # None when the run stopped before scanning.
     footer: str
+    scheduled: tuple[ScheduledPost, ...] = ()  # Skipped: they have an active schedule.
 
 
 @dataclass(frozen=True)
@@ -166,6 +234,7 @@ class CandidateView:
     duplicate: JobRecord | None  # A live job with the same content in this mode.
     duplicate_check_failed: bool  # The files could not be read to check.
     simulated: JobRecord | None  # Real mode only: this content was simulated and a real run refuses it.
+    schedule: ScheduleRecord | None = None  # An active schedule: runs skip the post until it is due.
 
     @property
     def stable(self) -> bool:
@@ -215,10 +284,27 @@ class LinkedInStatus:
     unreachable: bool  # check=True and LinkedIn could not be reached.
 
 
+@dataclass(frozen=True)
+class ScheduleResult:
+    schedule: ScheduleRecord
+    local_time: str  # "2026-12-01 09:00 Asia/Karachi".
+    warnings: tuple[str, ...]  # Real schedules: token problems to fix before the post is due. Never the token.
+
+
+@dataclass(frozen=True)
+class ScheduleList:
+    schedules: tuple[ScheduleRecord, ...]
+    available: bool  # False: no job database, or one from before schedules existed (it is not upgraded).
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse ``argv`` (default: ``sys.argv[1:]``), run the command, and return its exit code."""
     args = _build_parser().parse_args(argv)
-    return args.handler(args)
+    try:
+        return args.handler(args)
+    except InvalidTimezoneError as error:  # A settings problem: say so plainly, never a traceback.
+        print(f"Error: {error}", file=sys.stderr)
+        return EXIT_SETUP_ERROR
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -317,7 +403,62 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Also upload a generated test image (no post) and read its processing status.",
     )
     check.set_defaults(handler=_linkedin_check)
+
+    schedule = commands.add_parser(
+        "schedule",
+        help="Schedule a post in the LinkedIn incoming folder for a date and time.",
+        description=(
+            "Schedule one post (its name, without extension) for a date and time. The post is checked now: it "
+            "must be complete, valid, and not already handled or scheduled. Its files must not change before then."
+        ),
+        epilog=SCHEDULE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    schedule.add_argument("post", help="The post's name: its file names without the extension.")
+    schedule.add_argument(
+        "--at", required=True, type=_schedule_time, metavar='"YYYY-MM-DD HH:MM"',
+        help="When to publish, in AUTOPOSTER_TIMEZONE (default Asia/Karachi), 24-hour clock.",
+    )
+    schedule.add_argument(
+        "--real",
+        action="store_true",
+        help="Schedule a real post to LinkedIn. Never a default: without it the schedule is simulated.",
+    )
+    _add_interval_option(schedule)
+    schedule.set_defaults(handler=_schedule)
+
+    unschedule = commands.add_parser(
+        "unschedule",
+        help="Cancel a post's schedule. Its files stay in incoming/.",
+        description="Cancel the active schedule of one post. The files are not moved; the next run processes the post.",
+        epilog=UNSCHEDULE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    unschedule.add_argument("post", help="The post's name: its file names without the extension.")
+    unschedule.set_defaults(handler=_unschedule)
+
+    schedules = commands.add_parser(
+        "schedules",
+        help="List scheduled posts. Read-only.",
+        description="List active schedules, soonest first, or every schedule with --all.",
+        epilog=SCHEDULES_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    schedules.add_argument("--all", action="store_true", help="Also list finished schedules (newest first).")
+    schedules.add_argument(
+        "--status", type=str.upper, choices=[s.value for s in ScheduleStatus], help="Only schedules with this status."
+    )
+    schedules.add_argument("--last", type=_positive_int, default=50, help="With --all or --status: how many (default: 50).")
+    schedules.set_defaults(handler=_schedules)
     return parser
+
+
+def _schedule_time(text: str) -> str:
+    """argparse type for --at: the form only. Zone, clock changes and the 5 minutes / 1 year rule come later."""
+    try:
+        return check_time_format(text)
+    except ScheduleTimeError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
 
 
 def _add_interval_option(command: argparse.ArgumentParser) -> None:
@@ -362,7 +503,11 @@ def scan_preview(
     conn = _open_history_or_none(settings)
     try:
         repository = JobRepository(conn) if conn is not None else None
-        views = tuple(_view_candidate(c, repository, mode, interval_s) for c in result.candidates)
+        # An older database (no schedules table) is read as it is, never upgraded: it has no schedules.
+        active = _active_schedules(ScheduleRepository(conn)) if conn is not None and schedules_available(conn) else {}
+        views = tuple(
+            _view_candidate(c, repository, mode, interval_s, active.get(c.stem.casefold())) for c in result.candidates
+        )
         interrupted = len(repository.list_by_status(JobStatus.PUBLISHING)) if repository is not None else 0
         unknown: tuple[Path, ...] = ()
         if mode is PublishMode.REAL and check_archive:
@@ -373,8 +518,21 @@ def scan_preview(
     return ScanPreview(folder=folder, candidates=views, scan=result, interrupted_jobs=interrupted, unknown_archive=unknown)
 
 
+def _active_schedules(schedules: ScheduleRepository) -> dict[str, ScheduleRecord]:
+    """Active schedules of this platform by casefolded post name (names are compared without case)."""
+    return {s.stem.casefold(): s for s in schedules.list_active(platform=PLATFORM)}
+
+
+def _local_time(moment: datetime, zone: ZoneInfo) -> str:
+    return f"{moment.astimezone(zone):%Y-%m-%d %H:%M} {zone.key}"
+
+
 def _view_candidate(
-    candidate: PostCandidate, repository: JobRepository | None, mode: PublishMode, interval_s: float
+    candidate: PostCandidate,
+    repository: JobRepository | None,
+    mode: PublishMode,
+    interval_s: float,
+    schedule: ScheduleRecord | None = None,
 ) -> CandidateView:
     unstable = unstable_files(candidate, interval_s)
     errors = tuple(validate_candidate(candidate).errors)
@@ -390,7 +548,7 @@ def _view_candidate(
         if duplicate is None and not failed and mode is PublishMode.REAL:
             found = posts_only_simulated((candidate,), repository)
             simulated = found[0].simulated_job if found else None
-    return CandidateView(candidate, unstable, errors, duplicate, failed, simulated)
+    return CandidateView(candidate, unstable, errors, duplicate, failed, simulated, schedule)
 
 
 def _scan(args: argparse.Namespace) -> int:
@@ -414,7 +572,7 @@ def _scan(args: argparse.Namespace) -> int:
         if not (result.candidates or result.pending or result.ambiguous):
             print("\nNothing found.")
         else:
-            _print_candidates(preview.candidates, mode)
+            _print_candidates(preview.candidates, mode, settings.timezone)
             _print_pending_and_ambiguous(result)
         if preview.interrupted_jobs:
             print(f"\nNote: {preview.interrupted_jobs} interrupted job(s) will be recovered by the next run.")
@@ -436,7 +594,7 @@ def _open_history_or_none(settings: Settings) -> sqlite3.Connection | None:
         return None
 
 
-def _print_candidates(views: tuple[CandidateView, ...], mode: PublishMode) -> None:
+def _print_candidates(views: tuple[CandidateView, ...], mode: PublishMode, zone: ZoneInfo) -> None:
     if not views:
         return
     pairs = [f"{v.candidate.media_path.name} + {v.candidate.caption_path.name}" for v in views]
@@ -448,6 +606,8 @@ def _print_candidates(views: tuple[CandidateView, ...], mode: PublishMode) -> No
     for view, pair, stable in zip(views, pairs, stability):
         if not view.valid:
             last = f"INVALID: {'; '.join(view.errors)}"
+        elif view.schedule is not None:  # Runs skip it until it is due.
+            last = f"valid   SCHEDULED for {_local_time(view.schedule.publish_at, zone)} ({view.schedule.mode})"
         elif view.stable:
             last = f"valid   {_duplicate_label(view, mode)}"
         else:
@@ -651,6 +811,259 @@ def _print_resolve_next_steps(job: JobRecord, status: JobStatus, settings: Setti
         print("Next: if the files are still in incoming/, the next run will process them again.")
 
 
+# schedule, unschedule, schedules (D46)
+
+
+def _now() -> datetime:
+    """The current time for scheduling; tests replace it, so none depends on the real clock."""
+    return datetime.now(UTC)
+
+
+def schedule_post(
+    settings: Settings, name: str, at: str, *, real: bool, interval_s: float = DEFAULT_INTERVAL_S
+) -> ScheduleResult:
+    """Schedule the post ``name`` in LinkedIn's incoming/ for ``at`` (``YYYY-MM-DD HH:MM`` in the configured zone).
+
+    Real only when ``real`` is true (D46). The post is checked now, as a run would check it, and the schedule
+    is bound to both files' hashes. Takes the run lock and opens the job database for writing (upgrading an
+    older one, with its backup). Raises ScheduleError (nothing changed) or RunLockHeldError.
+    """
+    mode = PublishMode.REAL if real else PublishMode.SIMULATED
+    now = _now()
+    with single_run_lock(settings.lock_file), _run_scope():
+        candidate = _find_post(settings, name)
+        unstable = unstable_files(candidate, interval_s)
+        if unstable:
+            raise ScheduleError(
+                "not_stable",
+                f"'{candidate.stem}' is still being copied ({' and '.join(unstable)} changing or locked); "
+                "try again when both files are complete.",
+            )
+        try:
+            publish_at = parse_publish_at(at, zone=settings.timezone, now=now)
+        except ScheduleTimeError as error:
+            raise ScheduleError("time", str(error)) from None
+        conn = _open_for_schedules(settings)
+        try:
+            schedules = ScheduleRepository(conn)
+            media_sha256, caption_sha256 = check_schedulable(
+                candidate, mode=mode, jobs=JobRepository(conn), schedules=schedules
+            )
+            try:
+                record = schedules.create(
+                    schedule_id=str(uuid4()),
+                    platform=candidate.platform,
+                    mode=mode,
+                    stem=candidate.stem,
+                    media_name=candidate.media_path.name,
+                    caption_name=candidate.caption_path.name,
+                    media_sha256=media_sha256,
+                    caption_sha256=caption_sha256,
+                    publish_at=publish_at,
+                )
+            except DuplicateScheduleError:
+                existing = schedules.find_active(platform=candidate.platform, stem=candidate.stem)
+                when = _local_time(existing.publish_at, settings.timezone) if existing else "another time"
+                raise ScheduleError(
+                    "already_scheduled",
+                    f"'{candidate.stem}' is already scheduled for {when}; unschedule it first to change it.",
+                ) from None
+        finally:
+            conn.close()
+        logger.info(
+            "Schedule created: schedule_id=%s platform=%s mode=%s stem=%s publish_at=%s",
+            record.schedule_id, record.platform, record.mode, record.stem, f"{record.publish_at:%Y-%m-%dT%H:%M:%SZ}",
+        )
+    warnings = _token_warnings(settings, publish_at, now) if mode is PublishMode.REAL else ()
+    return ScheduleResult(record, _local_time(publish_at, settings.timezone), warnings)
+
+
+def unschedule_post(settings: Settings, name: str) -> ScheduleRecord:
+    """Cancel the active schedule of ``name``; its files are not touched. Raises ScheduleError or RunLockHeldError."""
+    with single_run_lock(settings.lock_file), _run_scope():
+        if not _has_schedules(settings):  # No database, or one from before schedules: nothing to cancel, nothing upgraded.
+            raise ScheduleError("not_scheduled", f"'{name.strip()}' has no active schedule.")
+        conn = _open_for_schedules(settings)
+        try:
+            schedules = ScheduleRepository(conn)
+            active = schedules.find_active(platform=PLATFORM, stem=name.strip())
+            if active is None:
+                raise ScheduleError("not_scheduled", f"'{name.strip()}' has no active schedule.")
+            cancelled = schedules.cancel(active.schedule_id)  # Still SCHEDULED: we hold the lock.
+        finally:
+            conn.close()
+        logger.info(
+            "Schedule cancelled: schedule_id=%s platform=%s mode=%s stem=%s",
+            cancelled.schedule_id, cancelled.platform, cancelled.mode, cancelled.stem,
+        )
+    return cancelled
+
+
+def list_schedules(settings: Settings, *, include_all: bool = False, status: ScheduleStatus | None = None,
+                   limit: int = 50) -> ScheduleList:
+    """Schedules, read-only: active ones soonest first, or (``include_all`` / ``status``) newest first.
+
+    Never locks, writes, creates or upgrades the job database. Raises ScheduleError if it cannot be read.
+    """
+    try:
+        conn = open_app_db_read_only(settings.app_db_path)
+    except FileNotFoundError:
+        return ScheduleList((), available=False)
+    except (SchemaTooNewError, sqlite3.Error) as error:
+        raise ScheduleError("no_database", f"could not read the job database: {error}") from None
+    try:
+        if not schedules_available(conn):
+            return ScheduleList((), available=False)
+        schedules = ScheduleRepository(conn)
+        if status is not None:
+            records = schedules.list_recent(limit, status=status)
+        elif include_all:
+            records = schedules.list_recent(limit)
+        else:
+            records = schedules.list_active()
+        return ScheduleList(tuple(records), available=True)
+    except sqlite3.Error as error:
+        raise ScheduleError("no_database", f"could not read the job database: {error}") from None
+    finally:
+        conn.close()
+
+
+def _find_post(settings: Settings, name: str) -> PostCandidate:
+    """The complete post called ``name`` (compared without case) in LinkedIn's incoming/. Raises ScheduleError."""
+    folder = settings.incoming_dir(PLATFORM)
+    wanted = name.strip()
+    if not folder.is_dir():
+        raise ScheduleError("not_found", f"the incoming folder does not exist: {folder}")
+    result = scan_incoming(folder, PLATFORM)
+    key = wanted.casefold()
+    for group in result.ambiguous:
+        if group and group[0].stem.casefold() == key:
+            names = ", ".join(path.name for path in group)
+            raise ScheduleError("ambiguous", f"'{wanted}' is ambiguous ({names}); keep one image and one caption.")
+    for candidate in result.candidates:
+        if candidate.stem.casefold() == key:
+            return candidate
+    for path in result.pending:
+        if path.stem.casefold() == key:
+            raise ScheduleError("pending", f"'{wanted}' is waiting for its partner file ({path.name} has none yet).")
+    raise ScheduleError("not_found", f"no post named '{wanted}' in {folder}.")
+
+
+def _open_for_schedules(settings: Settings) -> sqlite3.Connection:
+    try:
+        return open_app_db(settings.app_db_path)
+    except (SchemaTooNewError, sqlite3.Error) as error:
+        raise ScheduleError("no_database", f"could not open the job database: {error}") from None
+
+
+def _has_schedules(settings: Settings) -> bool:
+    """Whether the job database exists and has the schedules table (checked read-only)."""
+    try:
+        conn = open_app_db_read_only(settings.app_db_path)
+    except FileNotFoundError:
+        return False
+    except (SchemaTooNewError, sqlite3.Error) as error:
+        raise ScheduleError("no_database", f"could not read the job database: {error}") from None
+    try:
+        return schedules_available(conn)
+    finally:
+        conn.close()
+
+
+def _token_warnings(settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
+    """Token problems a real schedule will meet, read from backend/.env only: no LinkedIn call, never the token."""
+    try:
+        credentials = load_linkedin_credentials(settings.base_dir, today=now.astimezone(settings.timezone).date())
+    except CredentialsError as error:
+        return (f"{error}; real runs are refused without it, so this post will not be published until it is set.",)
+    expires_on = credentials.expires_on
+    if expires_on is None:
+        return ("LINKEDIN_TOKEN_CREATED is not set, so the token's expiry cannot be checked against this schedule.",)
+    publish_day = publish_at.astimezone(settings.timezone).date()
+    if publish_day >= expires_on:
+        return (
+            f"the LinkedIn access token expires on {expires_on}, on or before the scheduled day ({publish_day}); "
+            "renew it before then, or the post will not be published.",
+        )
+    return ()
+
+
+def _schedule(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    try:
+        with logging_to(verbose=False, log_file=settings.log_file):
+            result = schedule_post(settings, args.post, args.at, real=args.real, interval_s=args.interval)
+    except ScheduleError as error:
+        print(f"Error: {error.message}", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    except RunLockHeldError:
+        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        return EXIT_LOCKED
+
+    record = result.schedule
+    kind = ("REAL: to be published to LinkedIn" if record.mode is PublishMode.REAL
+            else "simulated: nothing will be sent to LinkedIn")
+    print(f"Scheduled '{record.stem}' for {result.local_time} ({record.publish_at:%Y-%m-%d %H:%M} UTC), {kind}.")
+    print(f"Schedule ID: {record.schedule_id[:8]}")
+    print("Keep both files unchanged in incoming/ until then; a changed file makes the schedule INVALID.")
+    print("Note: publishing scheduled posts (run --scheduled) is not built yet. Until it is, this post is held in "
+          "incoming/ and every run skips it.")
+    for warning in result.warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _unschedule(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    try:
+        with logging_to(verbose=False, log_file=settings.log_file):
+            cancelled = unschedule_post(settings, args.post)
+    except ScheduleError as error:
+        print(f"Error: {error.message}", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    except RunLockHeldError:
+        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        return EXIT_LOCKED
+    when = _local_time(cancelled.publish_at, settings.timezone)
+    print(f"Cancelled the schedule of '{cancelled.stem}' (was {when}, {cancelled.mode}).")
+    print("Its files stay in incoming/; the next run processes it like any other post "
+          "(run --real would publish it).")
+    return EXIT_OK
+
+
+def _schedules(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    status = ScheduleStatus(args.status) if args.status else None
+    try:
+        listing = list_schedules(settings, include_all=args.all, status=status, limit=args.last)
+    except ScheduleError as error:
+        print(f"Error: {error.message}", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    if not listing.available:
+        print("No schedules yet.")
+        return EXIT_OK
+    if not listing.schedules:
+        print(f"No schedules with status {status}." if status else
+              "No schedules yet." if args.all else "No active schedules (use --all to see finished ones).")
+        return EXIT_OK
+    _print_schedule_table(listing.schedules, settings.timezone)
+    return EXIT_OK
+
+
+def _print_schedule_table(records: tuple[ScheduleRecord, ...], zone: ZoneInfo) -> None:
+    stem_width = max(16, *(len(r.stem) for r in records))
+    when = f"WHEN ({zone.key})"
+    print(f"  {'ID':<9} {'POST':<{stem_width}} {'MODE':<10} {when:<22} {'UTC':<17} STATUS")
+    for r in records:
+        local = f"{r.publish_at.astimezone(zone):%Y-%m-%d %H:%M}"
+        print(f"  {r.schedule_id[:8]:<9} {r.stem:<{stem_width}} {r.mode:<10} {local:<22} "
+              f"{r.publish_at:%Y-%m-%d %H:%M}  {r.status}")
+        if r.job_id:
+            print(f"  {'':<9} - job {r.job_id[:8]}")
+        if r.reason:
+            print(f"  {'':<9} - {r.reason}")
+
+
 # run
 
 
@@ -768,7 +1181,10 @@ def _run_locked(
             stability_interval_s=interval_s,
             checkpointer=checkpointer,
         )
-        return _process(context, publish_simulated, tuple(resumed_lines), recoveries, earlier_problems, counts)
+        return _process(
+            context, ScheduleRepository(conn), publish_simulated, tuple(resumed_lines), recoveries, earlier_problems,
+            counts,
+        )
 
 
 def _refused(mode: PublishMode, refusal: RunRefusal) -> RunReport:
@@ -859,6 +1275,7 @@ def _resumed_lines(resumed: ResumeResult) -> list[JobLine]:
 
 def _process(
     context: WorkflowContext,
+    schedules: ScheduleRepository,
     publish_simulated: bool,
     resumed: tuple[JobLine, ...],
     recoveries: list[Recovery],
@@ -876,9 +1293,13 @@ def _process(
         len(result.pending),
         len(result.ambiguous),
     )
+    # Posts with an active schedule are left alone by every run except a scheduled one (D46), whatever
+    # the modes; they also do not count toward the "only simulated" refusal below.
+    scheduled, candidates = _hold_scheduled(result.candidates, schedules, context)
+    counts["scheduled"] = len(scheduled)
 
     if context.mode is PublishMode.REAL and not publish_simulated:
-        simulated_only = posts_only_simulated(result.candidates, context.repository)
+        simulated_only = posts_only_simulated(candidates, context.repository)
         if simulated_only:
             logger.error("Real run refused: %d post(s) were only simulated so far", len(simulated_only))
             return RunReport(
@@ -890,9 +1311,10 @@ def _process(
                 jobs=(),
                 scan=result,
                 footer="",
+                scheduled=scheduled,
             )
 
-    lines = tuple(_run_one(candidate, context) for candidate in result.candidates)
+    lines = tuple(_run_one(candidate, context) for candidate in candidates)
     counts.update(line.outcome for line in lines)
     needs_human = any(r.status is JobStatus.NEEDS_REVIEW for r in recoveries)
     problems = needs_human or earlier_problems or any(line.problem for line in lines)
@@ -905,7 +1327,36 @@ def _process(
         jobs=lines,
         scan=result,
         footer=_footer(context.mode, lines),
+        scheduled=scheduled,
     )
+
+
+def _hold_scheduled(
+    candidates: tuple[PostCandidate, ...], schedules: ScheduleRepository, context: WorkflowContext
+) -> tuple[tuple[ScheduledPost, ...], tuple[PostCandidate, ...]]:
+    """Split off the posts that have an active schedule: they stay in incoming/ and get no job."""
+    active = _active_schedules(schedules)
+    held: list[ScheduledPost] = []
+    rest: list[PostCandidate] = []
+    for candidate in candidates:
+        schedule = active.get(candidate.stem.casefold())
+        if schedule is None:
+            rest.append(candidate)
+            continue
+        held.append(ScheduledPost(
+            stem=candidate.stem,
+            schedule_id=schedule.schedule_id,
+            mode=schedule.mode,
+            publish_at=schedule.publish_at,
+            publish_at_local=_local_time(schedule.publish_at, context.settings.timezone),
+        ))
+        logger.info(
+            "Job skipped: platform=%s mode=%s stem=%s status=SKIPPED result=SCHEDULED schedule_id=%s "
+            "schedule_mode=%s publish_at=%s",
+            candidate.platform, context.mode, candidate.stem, schedule.schedule_id, schedule.mode,
+            f"{schedule.publish_at:%Y-%m-%dT%H:%M:%SZ}",
+        )
+    return tuple(held), tuple(rest)
 
 
 def _simulated_refusal_text(simulated_only: list[SimulatedOnly]) -> str:
@@ -998,6 +1449,8 @@ def _print_run_report(report: RunReport, settings: Settings) -> None:
         _print_jobs(list(report.resumed), title="RESUMED", note="jobs finished after an earlier crash")
     if report.recoveries:
         _print_recoveries(list(report.recoveries))
+    if report.scheduled:
+        _print_scheduled(report.scheduled)
     if report.refusal is not None:
         if report.refusal.text:
             stream = sys.stdout if report.refusal.kind == "simulated_only" else sys.stderr
@@ -1008,12 +1461,19 @@ def _print_run_report(report: RunReport, settings: Settings) -> None:
     if report.jobs:
         _print_jobs(list(report.jobs))
     else:
-        print("\nNothing to process.")
+        print("\nNothing else to process." if report.scheduled else "\nNothing to process.")
     _print_pending_and_ambiguous(report.scan)
     print(report.footer)
     if any(line.label == DUPLICATE_LABEL for line in report.jobs):
         print("Duplicates stay in incoming/; delete them when you no longer need them.")
     print(f"Log: {settings.log_file}")
+
+
+def _print_scheduled(posts: tuple[ScheduledPost, ...]) -> None:
+    width = max(len(post.stem) for post in posts)
+    print(f"\nSCHEDULED ({len(posts)}) - left in incoming/ for their scheduled time")
+    for post in posts:
+        print(f"  {post.stem:<{width}}   {post.publish_at_local} ({post.mode})")
 
 
 def _print_recoveries(recoveries: list[Recovery]) -> None:

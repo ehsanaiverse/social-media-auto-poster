@@ -266,3 +266,54 @@ def test_list_recent_is_newest_first_and_can_filter_by_status(conn):
     assert [s.stem for s in schedules.list_recent()] == ["second", "first"]
     assert [s.stem for s in schedules.list_recent(status=ScheduleStatus.CANCELLED)] == ["first"]
     assert schedules.list_recent(limit=1) == [schedules.get(second.schedule_id)]
+
+
+# Lookups used by the schedule command and by runs (commit 4)
+
+
+def test_find_active_by_content_matches_platform_mode_and_both_hashes(schedules):
+    created = add(schedules, "launch", media="a" * 64, caption="b" * 64)
+
+    found = schedules.find_active_by_content(platform=Platform.LINKEDIN, mode=PublishMode.REAL,
+                                             media_sha256="a" * 64, caption_sha256="b" * 64)
+
+    assert found == created
+    for media, caption, mode in [("x" * 64, "b" * 64, PublishMode.REAL), ("a" * 64, "x" * 64, PublishMode.REAL),
+                                 ("a" * 64, "b" * 64, PublishMode.SIMULATED)]:
+        assert schedules.find_active_by_content(platform=Platform.LINKEDIN, mode=mode,
+                                                media_sha256=media, caption_sha256=caption) is None
+
+
+def test_find_active_by_content_ignores_finished_schedules(schedules):
+    created = add(schedules, "launch", media="a" * 64, caption="b" * 64)
+    schedules.cancel(created.schedule_id)
+
+    assert schedules.find_active_by_content(platform=Platform.LINKEDIN, mode=PublishMode.REAL,
+                                            media_sha256="a" * 64, caption_sha256="b" * 64) is None
+
+
+def test_list_active_returns_the_platforms_scheduled_rows_soonest_first(schedules):
+    later = add(schedules, "later", publish_at=NOW + timedelta(days=2))
+    sooner = add(schedules, "sooner", publish_at=NOW + timedelta(days=1))
+    add(schedules, "elsewhere", platform=Platform.FACEBOOK)
+    cancelled = add(schedules, "cancelled")
+    schedules.cancel(cancelled.schedule_id)
+
+    assert schedules.list_active(platform=Platform.LINKEDIN) == [sooner, later]
+
+
+def test_schedules_available_is_false_on_a_version_1_database(tmp_path):
+    from social_media_auto_poster.storage import database
+    from social_media_auto_poster.storage.schedules import schedules_available
+
+    path = tmp_path / "v1.db"
+    old = sqlite3.connect(path)
+    old.executescript(f"BEGIN; {database.MIGRATIONS[0]} PRAGMA user_version = 1; COMMIT;")
+    old.close()
+
+    old = sqlite3.connect(path)
+    assert schedules_available(old) is False
+    old.close()
+    current = open_app_db(tmp_path / "v2.db")
+    assert schedules_available(current) is True
+    current.close()

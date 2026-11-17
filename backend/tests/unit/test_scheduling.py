@@ -1,22 +1,29 @@
 """Tests for schedule times and due selection (D46). Every test passes "now"; none reads the real clock."""
 
+import struct
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from social_media_auto_poster.models import Platform, PublishMode, ScheduleStatus
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, ScheduleStatus
+from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.services.scheduling import (
     GRACE_WINDOW,
     MAX_LEAD,
     MAX_SCHEDULED_PER_RUN,
     MIN_LEAD,
+    ScheduleError,
     ScheduleTimeError,
+    check_schedulable,
     parse_publish_at,
     select_due,
 )
-from social_media_auto_poster.storage.schedules import ScheduleRecord
+from social_media_auto_poster.storage.database import open_app_db
+from social_media_auto_poster.storage.jobs import JobRepository
+from social_media_auto_poster.storage.schedules import ScheduleRecord, ScheduleRepository
 
 KARACHI = ZoneInfo("Asia/Karachi")
 LONDON = ZoneInfo("Europe/London")  # Has daylight saving time, unlike Karachi.
@@ -198,3 +205,74 @@ def test_missed_schedules_do_not_use_up_the_one_post_per_run():
 def test_select_due_needs_an_aware_now():
     with pytest.raises(ValueError, match="time zone"):
         select_due([], mode=PublishMode.REAL, now=datetime(2026, 11, 17, 7, 0))
+
+
+# check_schedulable: what must hold before a post can be scheduled (validated now, not at the scheduled time)
+
+IMAGES = Path(__file__).resolve().parents[1] / "fixtures" / "images"
+JPEG = (IMAGES / "baseline-7x5.jpg").read_bytes()
+PNG = (IMAGES / "image-6x3.png").read_bytes()
+
+
+@pytest.fixture
+def repos(tmp_path):
+    conn = open_app_db(tmp_path / "app.db")
+    yield JobRepository(conn), ScheduleRepository(conn, now=lambda: NOW)
+    conn.close()
+
+
+def post(folder: Path, stem="launch", *, image=JPEG, ext=".jpg", caption=b"Hello") -> PostCandidate:
+    (folder / f"{stem}{ext}").write_bytes(image)
+    (folder / f"{stem}.txt").write_bytes(caption)
+    return PostCandidate(Platform.LINKEDIN, stem, folder / f"{stem}{ext}", folder / f"{stem}.txt")
+
+
+def test_a_valid_post_is_schedulable_and_its_hashes_are_returned(tmp_path, repos):
+    candidate = post(tmp_path)
+
+    hashes = check_schedulable(candidate, mode=PublishMode.REAL, jobs=repos[0], schedules=repos[1])
+
+    assert hashes == (sha256_file(candidate.media_path), sha256_file(candidate.caption_path))
+
+
+def test_an_invalid_post_is_not_schedulable(tmp_path, repos):
+    with pytest.raises(ScheduleError) as raised:
+        check_schedulable(post(tmp_path, caption=b"x" * 3001), mode=PublishMode.SIMULATED,
+                          jobs=repos[0], schedules=repos[1])
+    assert raised.value.kind == "invalid" and "3001 characters" in raised.value.message
+
+
+def test_the_pixel_limit_is_checked_for_real_schedules_only(tmp_path, repos):
+    huge = PNG[:16] + struct.pack(">II", 10000, 10000) + PNG[24:]
+    candidate = post(tmp_path, image=huge, ext=".png")
+
+    check_schedulable(candidate, mode=PublishMode.SIMULATED, jobs=repos[0], schedules=repos[1])
+    with pytest.raises(ScheduleError) as raised:
+        check_schedulable(candidate, mode=PublishMode.REAL, jobs=repos[0], schedules=repos[1])
+    assert raised.value.kind == "invalid" and "pixels" in raised.value.message
+
+
+def test_content_with_a_live_job_in_the_same_mode_is_not_schedulable(tmp_path, repos):
+    jobs, schedules = repos
+    candidate = post(tmp_path)
+    jobs.create(job_id=str(uuid.uuid4()), platform=Platform.LINKEDIN, mode=PublishMode.SIMULATED, stem="old",
+                media_name="old.jpg", caption_name="old.txt", media_sha256=sha256_file(candidate.media_path),
+                caption_sha256=sha256_file(candidate.caption_path), status=JobStatus.SIMULATED)
+
+    with pytest.raises(ScheduleError) as raised:
+        check_schedulable(candidate, mode=PublishMode.SIMULATED, jobs=jobs, schedules=schedules)
+    assert raised.value.kind == "duplicate_job"
+    check_schedulable(candidate, mode=PublishMode.REAL, jobs=jobs, schedules=schedules)  # Per mode (D20).
+
+
+def test_content_already_scheduled_under_another_name_is_not_schedulable(tmp_path, repos):
+    jobs, schedules = repos
+    candidate = post(tmp_path)
+    media, caption = check_schedulable(candidate, mode=PublishMode.REAL, jobs=jobs, schedules=schedules)
+    schedules.create(schedule_id=str(uuid.uuid4()), platform=Platform.LINKEDIN, mode=PublishMode.REAL, stem="first",
+                     media_name="first.jpg", caption_name="first.txt", media_sha256=media, caption_sha256=caption,
+                     publish_at=NOW + timedelta(days=1))
+
+    with pytest.raises(ScheduleError) as raised:
+        check_schedulable(candidate, mode=PublishMode.REAL, jobs=jobs, schedules=schedules)
+    assert raised.value.kind == "duplicate_content" and "'first'" in raised.value.message

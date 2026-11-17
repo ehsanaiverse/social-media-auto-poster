@@ -114,6 +114,29 @@ class ScheduleRepository:
         ).fetchone()
         return _to_record(row) if row else None
 
+    def find_active_by_content(
+        self, *, platform: Platform, mode: PublishMode, media_sha256: str, caption_sha256: str
+    ) -> ScheduleRecord | None:
+        """The SCHEDULED schedule (any post name) for exactly this content on this platform and mode, if any."""
+        row = self._conn.execute(
+            f"""
+            {_SELECT}
+            WHERE platform = ? AND mode = ? AND media_sha256 = ? AND caption_sha256 = ? AND status = ?
+            ORDER BY publish_at, rowid LIMIT 1
+            """,
+            (platform.value, mode.value, media_sha256, caption_sha256, ScheduleStatus.SCHEDULED.value),
+        ).fetchone()
+        return _to_record(row) if row else None
+
+    def list_active(self, *, platform: Platform | None = None) -> list[ScheduleRecord]:
+        """Every SCHEDULED schedule (of one platform, if given), soonest ``publish_at`` first."""
+        where, params = ("AND platform = ?", (platform.value,)) if platform is not None else ("", ())
+        rows = self._conn.execute(
+            f"{_SELECT} WHERE status = ? {where} ORDER BY publish_at, created_at, rowid",
+            (ScheduleStatus.SCHEDULED.value, *params),
+        ).fetchall()
+        return [_to_record(row) for row in rows]
+
     def due(self, *, platform: Platform, mode: PublishMode, now: datetime) -> list[ScheduleRecord]:
         """SCHEDULED schedules of this platform and mode whose time has come, oldest ``publish_at`` first."""
         rows = self._conn.execute(
@@ -171,6 +194,16 @@ class ScheduleRepository:
 
     def _timestamp(self) -> str:
         return _format(self._now())
+
+
+def schedules_available(conn: sqlite3.Connection) -> bool:
+    """Whether this database has the schedules table (schema version 2 or later).
+
+    Read-only callers (``scan``, ``schedules``) use this on a database that has not been migrated
+    yet, instead of migrating it: an older database simply has no schedules.
+    """
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schedules'").fetchone()
+    return row is not None
 
 
 def _format(moment: datetime) -> str:

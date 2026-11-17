@@ -211,6 +211,27 @@ python -m social_media_auto_poster.main jobs --id 8a61f3de      # every detail o
 
 Shows job ID, time (UTC), post name, mode (`simulated` or `real`), status, and any errors; `--id` adds both SHA-256 hashes, file names, post ID, and where the files went. It never creates or changes the database. Exit code 0 on success; 1 if the database cannot be read or the `--id` prefix matches no job or more than one.
 
+### Scheduling (being built, D46)
+
+Schedule a post that is already in `incoming\` (its name, without the extension) for a date and time in your time zone (`AUTOPOSTER_TIMEZONE` in `backend\.env`, default `Asia/Karachi`):
+
+```powershell
+python -m social_media_auto_poster.main schedule launch --at "2026-12-01 09:00"          # simulated schedule
+python -m social_media_auto_poster.main schedule launch --at "2026-12-01 09:00" --real   # a real LinkedIn post
+python -m social_media_auto_poster.main schedules                                         # active schedules (--all, --status S)
+python -m social_media_auto_poster.main unschedule launch                                 # cancel it
+```
+
+- The post is checked when you schedule it, as a run would check it: complete, valid (including the 3,000-character caption limit; for `--real`, also LinkedIn's image size limit), and not already published or scheduled. The time must be 5 minutes to 1 year ahead; a time skipped or repeated by a clock change is refused.
+- The schedule is tied to the exact files: **do not change them** before the scheduled time, or the schedule becomes `INVALID` and is never published.
+- Without `--real` the schedule is simulated. Nothing in `.env` can make it real.
+- Every run (`run`, `run --real`, and runs from the dashboard) **skips** a post with an active schedule and lists it under `SCHEDULED`. `unschedule` gives the post back to normal runs (then `run --real` would publish it).
+- **Not built yet:** publishing scheduled posts at their time (`run --real --scheduled`, run by Windows Task Scheduler). Until it is, scheduled posts are held in `incoming\` and not published.
+- With `--real`, a warning is printed if your LinkedIn token is missing or expires on or before the scheduled day. Scheduling never contacts LinkedIn.
+- Exit codes: `schedule` and `unschedule`: `0` done, `1` refused (nothing changed; the message says why), `2` invalid arguments (including a time not written as `YYYY-MM-DD HH:MM`), `4` a run is in progress. `schedules`: `0` listed, `1` the job database could not be read, `2` invalid arguments.
+
+**Job database upgrade.** The first `schedule`, `run`, `resolve` or dashboard run after updating upgrades `backend\database\app.db` to version 2. Before changing it, it saves a copy next to it as `app.db.bak-v1` (or, if that file already exists, `app.db.bak-v1-<UTC time>`; an existing backup is never overwritten) and logs where. `scan`, `jobs` and `schedules` only read the database and never upgrade it (`unschedule` does not either: an older database has nothing to cancel). After the upgrade, older versions of the app refuse the database; to go back, restore the `.bak-v1` copy.
+
 ## Manual testing
 
 ### Interactive tester: `backend/scripts/app.py`

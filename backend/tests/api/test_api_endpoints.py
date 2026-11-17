@@ -8,7 +8,7 @@ reach that point replace the publisher with a fake that fails if it is ever call
 
 import shutil
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
@@ -346,6 +346,55 @@ def test_env_can_never_switch_an_api_run_to_real_mode(client, settings, monkeypa
     # (then refuses the only-simulated post).
     assert run(client, {"real": True, "confirm": "publish to LinkedIn"}).status_code == 412
     assert len(real_publisher_calls) == 1 and fake.requests
+    assert fake.calls("POST", "/rest/posts") == []
+
+
+def schedule_in_database(settings, stem: str, *, mode: PublishMode) -> None:
+    """A SCHEDULED row for a post already in incoming/ (the schedule command itself is tested in the CLI tests)."""
+    from social_media_auto_poster.services.hashing import sha256_file
+    from social_media_auto_poster.storage.schedules import ScheduleRepository
+
+    folder = incoming(settings)
+    conn = open_app_db(settings.app_db_path)
+    try:
+        ScheduleRepository(conn).create(
+            schedule_id=str(uuid.uuid4()), platform=Platform.LINKEDIN, mode=mode, stem=stem,
+            media_name=f"{stem}.jpg", caption_name=f"{stem}.txt",
+            media_sha256=sha256_file(folder / f"{stem}.jpg"), caption_sha256=sha256_file(folder / f"{stem}.txt"),
+            publish_at=datetime(2030, 1, 1, 4, 0, tzinfo=UTC),
+        )
+    finally:
+        conn.close()
+
+
+def test_an_api_run_skips_a_scheduled_post_and_lists_it(client, settings):
+    add_post(client, name="launch")
+    add_post(client, name="other", caption="Another caption.")
+    schedule_in_database(settings, "launch", mode=PublishMode.SIMULATED)
+
+    response = run(client)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [job["stem"] for job in body["jobs"]] == ["other"]
+    assert [(s["name"], s["mode"], s["publish_at"]) for s in body["scheduled"]] == [
+        ("launch", "simulated", "2030-01-01T04:00:00+00:00")
+    ]
+    assert body["scheduled"][0]["publish_at_local"] == "2030-01-01 09:00 Asia/Karachi"
+    assert (incoming(settings) / "launch.jpg").exists()
+
+
+def test_a_real_api_run_never_publishes_a_scheduled_post(client, settings, monkeypatch):
+    add_post(client, name="launch")
+    schedule_in_database(settings, "launch", mode=PublishMode.REAL)
+    fake = FakeLinkedIn()
+    use_fake_linkedin(monkeypatch, fake)
+
+    response = run(client, REAL)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["jobs"] == []
+    assert [s["name"] for s in response.json()["scheduled"]] == ["launch"]
     assert fake.calls("POST", "/rest/posts") == []
 
 

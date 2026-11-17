@@ -12,8 +12,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from social_media_auto_poster.models import PublishMode, ScheduleStatus
-from social_media_auto_poster.storage.schedules import ScheduleRecord
+from social_media_auto_poster.ingestion.validation import validate_candidate
+from social_media_auto_poster.models import PostCandidate, PublishMode, ScheduleStatus
+from social_media_auto_poster.platforms.linkedin.image_size import image_problem
+from social_media_auto_poster.services.hashing import sha256_file
+from social_media_auto_poster.storage.jobs import JobRepository
+from social_media_auto_poster.storage.schedules import ScheduleRecord, ScheduleRepository
 
 TIME_FORMAT = "%Y-%m-%d %H:%M"
 TIME_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}")  # ASCII digits only.
@@ -29,16 +33,40 @@ class ScheduleTimeError(ValueError):
     """A schedule time that cannot be used; the message says why and how to fix it."""
 
 
-def parse_publish_at(text: str, *, zone: ZoneInfo, now: datetime) -> datetime:
-    """``text`` (``YYYY-MM-DD HH:MM`` in ``zone``) as a UTC time. Raises ``ScheduleTimeError``."""
-    _require_aware(now)
+class ScheduleError(Exception):
+    """A schedule, unschedule or list request was refused; nothing was changed.
+
+    ``kind`` is one of: not_found, pending, ambiguous, not_stable, unreadable, invalid, time, duplicate_job,
+    duplicate_content, already_scheduled, not_scheduled, no_database.
+    """
+
+    def __init__(self, kind: str, message: str, details: tuple[str, ...] = ()):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.details = details
+
+
+def check_time_format(text: str) -> str:
+    """``text`` stripped, if it has the ``YYYY-MM-DD HH:MM`` form and is a real date; else ``ScheduleTimeError``.
+
+    Checks the form only (no zone, no clock), so the command line can refuse a malformed time as a usage error.
+    """
     cleaned = text.strip()
     if not TIME_PATTERN.fullmatch(cleaned):
         raise ScheduleTimeError(f"Use the format {FORMAT_HINT}; got {text!r}.")
     try:
-        local = datetime.strptime(cleaned, TIME_FORMAT)
+        datetime.strptime(cleaned, TIME_FORMAT)
     except ValueError:
         raise ScheduleTimeError(f"{text!r} is not a real date and time. Use the format {FORMAT_HINT}.") from None
+    return cleaned
+
+
+def parse_publish_at(text: str, *, zone: ZoneInfo, now: datetime) -> datetime:
+    """``text`` (``YYYY-MM-DD HH:MM`` in ``zone``) as a UTC time. Raises ``ScheduleTimeError``."""
+    _require_aware(now)
+    cleaned = check_time_format(text)
+    local = datetime.strptime(cleaned, TIME_FORMAT)
 
     zone_name = zone.key
     first, second = local.replace(tzinfo=zone, fold=0), local.replace(tzinfo=zone, fold=1)
@@ -63,6 +91,48 @@ def parse_publish_at(text: str, *, zone: ZoneInfo, now: datetime) -> datetime:
             f"(it is now {_local(now, zone)})."
         )
     return publish_at
+
+
+def check_schedulable(
+    candidate: PostCandidate, *, mode: PublishMode, jobs: JobRepository, schedules: ScheduleRepository
+) -> tuple[str, str]:
+    """Whether ``candidate`` may be scheduled in ``mode``; returns its (media, caption) SHA-256 hashes.
+
+    The same checks a run would make, done now instead of at the scheduled time: validation (including
+    the caption rule), LinkedIn's pixel limit for a real schedule, a live job with this content in this
+    mode (duplicates are per mode, D20), and another active schedule for the same content. Raises
+    ``ScheduleError``; the caller has already checked that both files are stable.
+    """
+    errors = validate_candidate(candidate).errors
+    if errors:
+        raise ScheduleError("invalid", f"'{candidate.stem}' is not valid: {'; '.join(errors)}.")
+    try:
+        if mode is PublishMode.REAL:
+            problem = image_problem(candidate.media_path.read_bytes())
+            if problem is not None:
+                raise ScheduleError("invalid", f"'{candidate.stem}' cannot be posted to LinkedIn: {problem}.")
+        media_sha256, caption_sha256 = sha256_file(candidate.media_path), sha256_file(candidate.caption_path)
+    except OSError as error:
+        raise ScheduleError("unreadable", f"the files of '{candidate.stem}' could not be read: {error}") from None
+
+    job = jobs.find_blocking_duplicate(
+        platform=candidate.platform, mode=mode, media_sha256=media_sha256, caption_sha256=caption_sha256
+    )
+    if job is not None:
+        raise ScheduleError(
+            "duplicate_job",
+            f"'{candidate.stem}' is already handled by job {job.job_id[:8]} ({job.status}, {job.created_at:%Y-%m-%d}) "
+            f"in {mode} mode; the same content is never published twice.",
+        )
+    other = schedules.find_active_by_content(
+        platform=candidate.platform, mode=mode, media_sha256=media_sha256, caption_sha256=caption_sha256
+    )
+    if other is not None:
+        raise ScheduleError(
+            "duplicate_content",
+            f"the same content is already scheduled as '{other.stem}' (schedule {other.schedule_id[:8]}).",
+        )
+    return media_sha256, caption_sha256
 
 
 @dataclass(frozen=True)

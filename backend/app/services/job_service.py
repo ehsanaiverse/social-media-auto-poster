@@ -236,6 +236,17 @@ def run_to_dict(report: RunReport) -> dict:
         "jobs": [_line_to_dict(line) for line in report.jobs],
         "pending": [path.name for path in report.scan.pending] if report.scan else [],
         "ambiguous": [[p.name for p in group] for group in report.scan.ambiguous] if report.scan else [],
+        # Posts left alone because they have an active schedule (D46): never processed by this run.
+        "scheduled": [
+            {
+                "name": post.stem,
+                "schedule_id": post.schedule_id,
+                "mode": str(post.mode),
+                "publish_at": post.publish_at.isoformat(),
+                "publish_at_local": post.publish_at_local,
+            }
+            for post in report.scheduled
+        ],
         "footer": report.footer.strip(),
     }
 
