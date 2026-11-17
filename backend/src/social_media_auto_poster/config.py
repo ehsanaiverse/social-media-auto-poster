@@ -12,8 +12,9 @@ from ``.env``) points it elsewhere; the tests and the sandbox tester use it.
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import dotenv_values
 
@@ -21,6 +22,9 @@ from social_media_auto_poster.models import Platform
 
 DATA_DIR_VAR = "AUTOPOSTER_DATA_DIR"
 BASE_DIR_VAR = "AUTOPOSTER_BASE_DIR"
+# The zone schedule times are written in (D46); stored times are always UTC. Data comes from the tzdata package.
+TIMEZONE_VAR = "AUTOPOSTER_TIMEZONE"
+DEFAULT_TIMEZONE = "Asia/Karachi"
 # backend/, from backend/src/social_media_auto_poster/config.py.
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = "data"
@@ -29,10 +33,11 @@ CONTENT_FOLDERS = ("incoming", "archive", "failed")
 
 @dataclass(frozen=True)
 class Settings:
-    """Resolved, absolute paths used by the application."""
+    """Resolved, absolute paths used by the application, and the time zone schedule times are written in."""
 
     base_dir: Path
     data_dir: Path
+    timezone: ZoneInfo = field(default_factory=lambda: ZoneInfo(DEFAULT_TIMEZONE))
 
     def platform_dir(self, platform: Platform) -> Path:
         return self.data_dir / platform.value
@@ -66,6 +71,10 @@ class Settings:
 
 class ProjectDirNotFoundError(RuntimeError):
     """The package is not installed from a backend/ folder (see ``default_base_dir``)."""
+
+
+class InvalidTimezoneError(ValueError):
+    """``AUTOPOSTER_TIMEZONE`` names no known time zone; the message says how to fix it."""
 
 
 def default_base_dir() -> Path:
@@ -105,7 +114,19 @@ def load_settings(
     if not data_dir.is_absolute():
         data_dir = base / data_dir
 
-    return Settings(base_dir=base, data_dir=data_dir.resolve())
+    timezone = _load_timezone((environ.get(TIMEZONE_VAR) or "").strip() or DEFAULT_TIMEZONE)
+    return Settings(base_dir=base, data_dir=data_dir.resolve(), timezone=timezone)
+
+
+def _load_timezone(name: str) -> ZoneInfo:
+    """The IANA time zone ``name``; an unknown or malformed name is a clear startup error, never a guess."""
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):  # OSError: e.g. a folder name such as "Asia".
+        raise InvalidTimezoneError(
+            f"{TIMEZONE_VAR}={name!r} is not a known time zone. Use an IANA name such as "
+            f"{DEFAULT_TIMEZONE!r} (the default) or 'Europe/London', or leave it empty in backend\\.env."
+        ) from None
 
 
 def data_dir_outside_base(settings: Settings) -> bool:

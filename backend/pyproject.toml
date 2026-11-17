@@ -16,6 +16,9 @@ dependencies = [
     # LinkedIn API calls (Milestone 4). 0.28.1 is the newest release, verified on Python 3.14.
     "httpx>=0.28.1,<1",
     "python-dotenv>=1.2,<2",
+    # Time zone data for zoneinfo (schedules, D46): Windows has none of its own. 2026.6 is the newest release
+    # (checked on PyPI 2026-11-17); pure data, no Python code. Versions are years: raise the bound yearly.
+    "tzdata>=2026.6,<2027",
 ]
 
 [project.optional-dependencies]

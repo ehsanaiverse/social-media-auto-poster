@@ -1,6 +1,7 @@
 """Tests for settings loading and content-folder creation, using temporary directories only."""
 
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -8,6 +9,8 @@ from social_media_auto_poster import config
 from social_media_auto_poster.config import (
     BASE_DIR_VAR,
     DATA_DIR_VAR,
+    TIMEZONE_VAR,
+    InvalidTimezoneError,
     ProjectDirNotFoundError,
     ensure_data_dirs,
     load_settings,
@@ -15,6 +18,35 @@ from social_media_auto_poster.config import (
 from social_media_auto_poster.models import Platform
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+
+def test_timezone_defaults_to_asia_karachi(tmp_path):
+    settings = load_settings(base_dir=tmp_path, environ={})
+    assert settings.timezone == ZoneInfo("Asia/Karachi")
+    assert config.Settings(base_dir=tmp_path, data_dir=tmp_path).timezone == ZoneInfo("Asia/Karachi")
+
+
+def test_blank_timezone_value_uses_default(tmp_path):
+    assert load_settings(base_dir=tmp_path, environ={TIMEZONE_VAR: "  "}).timezone == ZoneInfo("Asia/Karachi")
+
+
+def test_timezone_comes_from_the_environment(tmp_path):
+    assert load_settings(base_dir=tmp_path, environ={TIMEZONE_VAR: "Europe/London"}).timezone == ZoneInfo("Europe/London")
+
+
+def test_timezone_is_read_from_the_env_file(tmp_path, monkeypatch):
+    monkeypatch.delenv(TIMEZONE_VAR, raising=False)
+    (tmp_path / ".env").write_text(f"{TIMEZONE_VAR}=Europe/London\n", encoding="utf-8")
+    assert load_settings(base_dir=tmp_path).timezone == ZoneInfo("Europe/London")
+
+
+@pytest.mark.parametrize("name", ["Mars/Olympus_Mons", "Karachi", "Asia", "../etc/passwd", "UTC+5"])
+def test_an_unknown_timezone_is_a_clear_error(tmp_path, name):
+    with pytest.raises(InvalidTimezoneError) as raised:
+        load_settings(base_dir=tmp_path, environ={TIMEZONE_VAR: name})
+
+    message = str(raised.value)
+    assert TIMEZONE_VAR in message and repr(name) in message and "Asia/Karachi" in message
 
 
 def test_data_dir_defaults_to_data_under_base_dir(tmp_path):
