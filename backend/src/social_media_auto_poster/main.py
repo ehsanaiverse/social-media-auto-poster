@@ -397,7 +397,7 @@ def _scan(args: argparse.Namespace) -> int:
     settings = load_settings()
     mode = _mode(args)
     folder = (args.dir if args.dir is not None else settings.incoming_dir(PLATFORM)).resolve()
-    with _logging_to(verbose=False, log_file=None):
+    with logging_to(verbose=False, log_file=None):
         try:
             preview = scan_preview(
                 settings, folder=folder, mode=mode, interval_s=args.interval, check_archive=args.dir is None
@@ -408,7 +408,7 @@ def _scan(args: argparse.Namespace) -> int:
             return EXIT_SETUP_ERROR
 
         if args.dir is None and data_dir_outside_base(settings):
-            print(_outside_warning(settings), file=sys.stderr)
+            print(outside_warning(settings), file=sys.stderr)
         print(f"Scanning LinkedIn incoming: {folder}" + ("   (duplicate check: real mode)" if args.real else ""))
         result = preview.scan
         if not (result.candidates or result.pending or result.ambiguous):
@@ -617,7 +617,7 @@ def _resolve(args: argparse.Namespace) -> int:
     settings = load_settings()
     published = args.published
     try:
-        with _logging_to(verbose=False, log_file=settings.log_file):
+        with logging_to(verbose=False, log_file=settings.log_file):
             result = resolve_job(settings, args.job_id, published_post_id=published)
     except ResolveError as error:
         print(f"Error: {error.message}", file=sys.stderr)
@@ -673,7 +673,7 @@ def run_once(
     with single_run_lock(settings.lock_file), _run_scope():
         logger.info("Run started: platform=%s mode=%s", PLATFORM, mode)
         if data_dir_outside_base(settings):
-            logger.warning(_outside_warning(settings).removeprefix("Warning: "))
+            logger.warning(outside_warning(settings).removeprefix("Warning: "))
         try:
             report = _run_locked(settings, mode, publish_simulated, interval_s, counts)
             return report
@@ -694,7 +694,7 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     settings = load_settings()
     try:
-        with _logging_to(verbose=args.verbose, log_file=settings.log_file):
+        with logging_to(verbose=args.verbose, log_file=settings.log_file):
             # flush: when output is piped, stdout is buffered and stderr warnings would overtake it.
             banner = "   (REAL MODE: posts are published to LinkedIn)" if mode is PublishMode.REAL else ""
             print(f"Processing LinkedIn incoming: {settings.incoming_dir(PLATFORM)}{banner}", flush=True)
@@ -785,7 +785,7 @@ def _today() -> date:
     return date.today()
 
 
-def _outside_warning(settings: Settings) -> str:
+def outside_warning(settings: Settings) -> str:
     return (
         f"Warning: the data folder is outside backend\\: {settings.data_dir} "
         f"(check {DATA_DIR_VAR} in backend\\.env)"
@@ -1081,7 +1081,7 @@ def _linkedin_check(args: argparse.Namespace) -> int:
         print(f"  PROBLEM  {error}")
         print("\nNot ready for run --real: fix the problem above.")
         return EXIT_SETUP_ERROR
-    with _logging_to(verbose=False, log_file=None), closing(_linkedin_client(credentials.access_token)) as client:
+    with logging_to(verbose=False, log_file=None), closing(_linkedin_client(credentials.access_token)) as client:
         report = run_check(credentials, client, today=_today(), upload_test=args.upload_test)
     print("\n".join(report.lines))
     print("\nReady for run --real." if report.ok else "\nNot ready for run --real: fix the problems above.")
@@ -1104,7 +1104,7 @@ def _print_pending_and_ambiguous(result: ScanResult) -> None:
 
 
 @contextmanager
-def _logging_to(*, verbose: bool, log_file: Path | None, console: bool = True) -> Generator[None, None, None]:
+def logging_to(*, verbose: bool, log_file: Path | None, console: bool = True) -> Generator[None, None, None]:
     """Attach log handlers for one command or request: the terminal (``console``) and an optional rotating file.
 
     Handlers are removed and closed afterwards, so Windows never keeps the log

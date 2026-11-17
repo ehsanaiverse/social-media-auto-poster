@@ -21,10 +21,10 @@ from social_media_auto_poster.main import (
     CandidateView,
     LinkedInStatus,
     RunReport,
-    _logging_to,
-    _outside_warning,
     find_duplicate,
     linkedin_status,
+    logging_to,
+    outside_warning,
     resolve_job,
     run_once,
     scan_preview,
@@ -77,7 +77,7 @@ class JobService:
             raise FolderMissingError(f"the incoming folder does not exist: {folder}") from None
         warnings = []
         if data_dir_outside_base(self._settings):
-            warnings.append(_outside_warning(self._settings).removeprefix("Warning: "))
+            warnings.append(outside_warning(self._settings).removeprefix("Warning: "))
         if preview.interrupted_jobs:
             warnings.append(f"{preview.interrupted_jobs} interrupted job(s) will be recovered by the next run.")
         if real and preview.unknown_archive:
@@ -108,7 +108,7 @@ class JobService:
     def run(self, *, real: bool, publish_simulated: bool) -> RunReport:
         """One run, the same as ``run`` / ``run --real``. Raises RunLockHeldError if another run is in progress."""
         mode = PublishMode.REAL if real else PublishMode.SIMULATED
-        with _logging_to(verbose=False, log_file=self._settings.log_file, console=False):
+        with logging_to(verbose=False, log_file=self._settings.log_file, console=False):
             return run_once(
                 self._settings, mode, publish_simulated=publish_simulated, interval_s=self._interval_s
             )
@@ -134,7 +134,7 @@ class JobService:
 
     def resolve(self, prefix: str, *, published_post_id: str | None) -> dict:
         """Settle a NEEDS_REVIEW job (``resolve``). Raises ResolveError or RunLockHeldError."""
-        with _logging_to(verbose=False, log_file=self._settings.log_file, console=False):
+        with logging_to(verbose=False, log_file=self._settings.log_file, console=False):
             result = resolve_job(self._settings, prefix, published_post_id=published_post_id)
         job = result.job
         destination = self._relative(job.destination)
