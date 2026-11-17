@@ -1,6 +1,6 @@
 # Social Media Auto-Poster
 
-A local, folder-driven Python application scaffold for preparing and publishing social media content. The project is being built incrementally, starting with LinkedIn and adding other platforms only after their integrations are separately planned and validated.
+A local, folder-driven Python application for publishing image + caption posts to social media through official APIs. It publishes to a personal LinkedIn profile today; other platforms are added only after their integrations are separately planned and validated.
 
 The Python application lives in **`backend/`**; its setup, commands, tests, and sandbox tester are summarised in [backend/README.md](backend/README.md). A local FastAPI API (`backend/app/`, started with `python -m app` from `backend/`) and a React dashboard (`frontend/`) are built; see [backend/README.md](backend/README.md#local-api) for how to run them. The API is optional and binds to `127.0.0.1` only.
 
@@ -12,13 +12,13 @@ The Python application lives in **`backend/`**; its setup, commands, tests, and 
 - Publish through official platform APIs, archive only confirmed successes, and retain failures with useful diagnostics.
 - Prevent duplicate processing and avoid blindly retrying requests whose publishing outcome is ambiguous.
 
-## Non-goals for this scaffold
+## Non-goals for now
 
-There is no continuous folder watcher, scheduler, OAuth flow, or live publishing integration yet. The simulator does not contact a platform and its result is not confirmation of publication. This scaffold does not claim API access is configured.
+There is no continuous folder watcher, scheduler, or OAuth login flow (the LinkedIn token is created by hand; see "Real mode" below). By default every run is simulated: the simulator does not contact a platform and its result is not confirmation of publication. Real publishing to LinkedIn happens only with `run --real` (or the dashboard's confirmed real run).
 
 ## Current status
 
-**Milestones 1 (local simulation) and 2 (job database) complete and signed off (2026-10-28); Milestone 3 (crash-safe checkpoints) implemented and awaiting review.** What exists today:
+**Milestones 1 (local simulation), 2 (job database) and 3 (crash-safe checkpoints) are complete and signed off. Milestone 4 (real LinkedIn publishing) is implemented and tested, and the first real post was published on 2026-10-28; its sign-off is pending (`docs/milestone-4-review.md`). A local API and a React dashboard are built.** What exists today:
 
 - Packaging (`backend/pyproject.toml`) with declared dependencies.
 - An environment-variable template (`backend/.env.example`).
@@ -26,18 +26,20 @@ There is no continuous folder watcher, scheduler, OAuth flow, or live publishing
 - Settings (`config.py`): uses `backend/` as the base folder whatever folder a command is started from, resolves the content folder root, and can create the `data/<Platform>/{incoming,archive,failed}` folders.
 - A platform-neutral publisher protocol (`platforms/base.py`).
 - A safe simulation publisher that never contacts any platform (`platforms/simulator.py`).
-- Ingestion (`ingestion/`): a one-shot scan that pairs images with captions (`scanner.py`), a file-copy stability check (`stability.py`), and content validation (`validation.py`).
+- A LinkedIn publisher (`platforms/linkedin/`) using LinkedIn's official Images and Posts APIs: caption escaping and the 3,000-character limit, image size read from the file header, a token check before every real run, and no automatic retry of a post whose outcome is uncertain.
+- Ingestion (`ingestion/`): a one-shot scan that pairs images with captions (`scanner.py`), a file-copy stability check (`stability.py`), content validation (`validation.py`), and adding a post from the dashboard (`intake.py`).
 - A service that moves a post's two files together into `archive/` or `failed/` (`services/archive.py`).
-- A LangGraph workflow (`graph/`) that takes one post through stability → validation → duplicate check → simulated publish → record, moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`.
+- A LangGraph workflow (`graph/`) that takes one post through stability → validation → duplicate check → publish (simulated or real) → record, archiving only confirmed real posts and moving invalid or failed posts to `failed/` with an `error-report.txt`. Simulated posts stay in `incoming/`.
 - A job database (`backend\database\app.db`, SQLite, via `storage/`): every processed post is recorded with SHA-256 hashes of its image and caption, so the same content is never processed twice.
 - Crash recovery: at the start of every `run`, jobs left half-published by a crash are resolved (see `RECOVERED` below).
 - Graph checkpoints (`backend\database\langgraph_checkpoints.db`, a separate SQLite file): each step of a job is saved before the next one starts, so a run that crashed **after** publishing is finished by the next run instead of being marked `NEEDS_REVIEW` (see `RESUMED` below). A crash during the publish itself is never retried.
-- Four commands (`main.py`): `run` processes every complete post once, the read-only `scan` (with duplicate check) and `jobs` (history), and `resolve` for jobs that need review. See "How to use" below.
-- Unit and integration tests under `backend/tests/`. Decisions are recorded in `docs/decisions.md`.
+- Five commands (`main.py`): `run` processes every complete post once (simulated, or real with `--real`), the read-only `scan` (with duplicate check) and `jobs` (history), `resolve` for jobs that need review, and `linkedin-check` for the LinkedIn token and setup. See "How to use" below.
+- A local API (`backend/app/`, FastAPI) and a React dashboard (`frontend/`) that call the same functions as the commands. Both are optional.
+- Unit, integration and API tests under `backend/tests/`. Decisions are recorded in `docs/decisions.md`.
 
 Platform order:
 
-1. LinkedIn — first integration milestone; not implemented.
+1. LinkedIn — implemented (personal profile, one image + caption per post).
 2. Facebook — planned, not implemented.
 3. Instagram — planned, not implemented.
 
@@ -45,7 +47,7 @@ Facebook and Instagram are placeholders for future work, not supported integrati
 
 ## Project roles
 
-- **Ehsan Ullah: project lead.** Architecture and milestone plan; the safety rules (duplicate prevention, `NEEDS_REVIEW`, crash recovery); the LangGraph workflow; the SQLite job database; checkpointing; real LinkedIn publishing; the CLI, the sandbox tester and the test suite (more than 400 tests); code review and integration of all parts, including the local API.
+- **Ehsan Ullah: project lead.** Architecture and milestone plan; the safety rules (duplicate prevention, `NEEDS_REVIEW`, crash recovery); the LangGraph workflow; the SQLite job database; checkpointing; real LinkedIn publishing; the CLI, the sandbox tester and the test suite (more than 500 tests); code review and integration of all parts, including the local API.
 - **Mouzan Raza: initial FastAPI prototype and React dashboard.** Wrote the first FastAPI routers (`scan`, `run`, `jobs`) and the dashboard in `frontend/`. Ehsan adapted both to the current backend: the API calls the same functions as the CLI, and the upload, resolve, LinkedIn status and health endpoints were added. See `docs/decisions.md` (D42 and D43).
 
 ## Project layout
@@ -57,20 +59,26 @@ backend/                           The Python project
   pyproject.toml, README.md, .env.example
   src/social_media_auto_poster/
     config.py                      Settings (base folder = backend/) and data-folder creation
-    models.py                      Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult
+    models.py                      Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult, PostContent
     platforms/                     Publisher protocol (base.py) and simulator (simulator.py)
-    platforms/{linkedin,facebook,instagram}/   Empty
-    graph/                         LangGraph workflow: state.py, nodes.py, workflow.py
-    ingestion/                     Scanning/pairing, stability check, validation
-    services/                      Hashing, moving posts, crash recovery, single-run lock
+    platforms/linkedin/            caption.py, image_size.py, client.py, publisher.py, credentials.py, check.py
+    platforms/{facebook,instagram}/   Empty
+    graph/                         LangGraph workflow: state.py, nodes.py, workflow.py, checkpoints.py, resume.py
+    ingestion/                     Scanning/pairing, stability check, validation, adding a post (intake.py)
+    services/                      Hashing, reading post content, moving posts, crash recovery, real-mode checks, single-run lock
     storage/                       SQLite job database and repository
-    main.py                        Commands: run, scan, jobs, resolve
-  tests/unit/, tests/integration/  Unit tests; full-graph and end-to-end run tests
+    main.py                        Commands: run, scan, jobs, resolve, linkedin-check
+  app/                             Local API (FastAPI; optional "api" extra): main.py, routers/, services/, models/
+  tests/unit/, tests/integration/, tests/api/   Unit tests; full-graph and end-to-end run tests; API tests
   scripts/app.py                   Interactive sandbox tester
   data/                            Local platform content; ignored by Git
     LinkedIn/{incoming,archive,failed}/   (and Facebook/, Instagram/)
-  database/, logs/, sandbox/       Job database, run log, tester sandbox; ignored by Git
+  database/, logs/, sandbox/       Job database and checkpoints, run log, tester sandbox; ignored by Git
+frontend/                          React dashboard (Vite, TypeScript)
 docs/decisions.md                  Decision records
+docs/api-plan.md                   Local API plan and endpoints
+docs/linkedin-api-notes.md         What LinkedIn's official docs say, with sources
+docs/milestone-4-review.md         Milestone 4 review and known limitations
 ```
 
 The binding layout is in `CLAUDE.md` ("Code layout").
@@ -108,7 +116,7 @@ python -m pip check
 python -m pytest
 ```
 
-## How to use (Milestone 1: simulation only)
+## How to use (simulated runs)
 
 1. Put an image and a caption with the same name in `backend\data\LinkedIn\incoming\`, e.g. `product-launch.jpg` + `product-launch.txt` (UTF-8 text; `.jpg`, `.jpeg`, or `.png`).
 2. Optional preview, changes nothing: `python -m social_media_auto_poster.main scan`
@@ -135,7 +143,7 @@ What happens to each post:
 
 | Result | Meaning | Files |
 | --- | --- | --- |
-| `SIMULATED (not published)` | Valid; publishing was simulated. **Nothing is sent to LinkedIn until Milestone 4.** | Stay in `incoming/`; recorded in the job database |
+| `SIMULATED (not published)` | Valid; publishing was simulated. **Nothing is sent to LinkedIn unless you use `--real`.** | Stay in `incoming/`; recorded in the job database |
 | `DUPLICATE` | Same image and caption content as an earlier job (even under a different file name) | Untouched; reported on every run until you delete them |
 | `FAILED` | Invalid (or a definite publish failure) | Moved to `failed\<UTC time>_<name>\` with `error-report.txt` explaining why |
 | `NEEDS_REVIEW` | Publish outcome unknown (cannot happen with the simulator) | Moved to `failed\...`; check LinkedIn before re-posting |
@@ -150,9 +158,9 @@ Every folder in `failed\` and `archive\` contains a small `.autoposter-job` file
 
 `run` exit codes (useful with Task Scheduler): `0` all simulated/duplicate/waiting or nothing to do, `1` setup error (including a job database that cannot be opened or crash recovery that cannot complete), `2` invalid command or option, `3` at least one job `FAILED`/`NEEDS_REVIEW`/`ERROR` (or a crashed job recovered as `NEEDS_REVIEW`), `4` another run is in progress.
 
-### Real mode: `run --real` (Milestone 4, in progress)
+### Real mode: `run --real`
 
-Real publishing is only ever chosen on the command line with `--real`; there is no setting for it, so a scheduled task can never switch to real posting by accident. Real posts go to your own LinkedIn profile, with the access token from `backend\.env` (see `backend\.env.example`: `LINKEDIN_ACCESS_TOKEN`, and `LINKEDIN_TOKEN_CREATED` for expiry warnings; tokens last 60 days). Check the setup first, without posting anything:
+Real publishing is only ever chosen on the command line with `--real`, or in the dashboard by typing the confirmation phrase `publish to LinkedIn` (the API refuses a real run without it). It **cannot be enabled from `.env`** or any other setting, so a scheduled task can never switch to real posting by accident. Real posts go to your own LinkedIn profile, with the access token from `backend\.env` (see `backend\.env.example`: `LINKEDIN_ACCESS_TOKEN`, and `LINKEDIN_TOKEN_CREATED` for expiry warnings). The token lives **only** in `backend\.env`: it is never logged, and never written to the job database, checkpoints, error reports, or API responses. It lasts 60 days and is not renewed automatically; `linkedin-check` shows when it expires. Check the setup first, without posting anything:
 
 ```powershell
 python -m social_media_auto_poster.main linkedin-check                 # token, expiry, and who posts would be published as
@@ -227,7 +235,7 @@ Copy it while no `run` is in progress. To restore, make sure no `run` is in prog
 
 ## Configuration and security
 
-Copy `backend\.env.example` to `backend\.env` for local configuration; the application reads `.env` only from `backend\`. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, logs, or the sandbox. OAuth and API access are not configured by this scaffold. Future integrations must use official APIs and comply with their permissions and policies.
+Copy `backend\.env.example` to `backend\.env` for local configuration; the application reads `.env` only from `backend\`. `.env` is ignored by Git; `.env.example` contains only blank placeholders. Do not commit credentials, access tokens, local databases, content, logs, or the sandbox. There is no OAuth login flow: the LinkedIn access token is created by hand in the LinkedIn Developer Portal and put in `backend\.env` (see "Real mode" above and `docs/linkedin-api-notes.md`). Every integration must use official APIs and comply with their permissions and policies.
 
 `AUTOPOSTER_DATA_DIR` moves the content folder (default `backend\data`). If it points outside `backend\`, `scan` and `run` print a warning with the folder they use, and `run --real` refuses to start if that folder does not already have its `LinkedIn\incoming`, `archive`, and `failed` folders (a real run never creates them; run once without `--real` on a new setup). `database\`, `logs\`, and the run lock always stay in the base folder, `backend\`.
 
@@ -251,17 +259,17 @@ python -c "from social_media_auto_poster.graph.workflow import build_workflow; o
 
 - **LangGraph is required** for orchestrating each post's workflow as an explicit, deterministic state graph. It does not use LLMs or autonomous agents; filesystem, validation, database, and API work live in ordinary Python modules that the graph's nodes call.
 - **SQLite first.** The application database (business records) and the LangGraph checkpoint store are kept logically separate and introduced in separate milestones. PostgreSQL is deferred until there is a concrete need.
-- **Web UI later.** A React frontend (`frontend/`) and a FastAPI API inside the Python package are planned, not built. The API will reuse the same functions as the CLI (`scan`, `run`, `jobs`, `resolve`) with no second storage layer, bind to `127.0.0.1` by default, and follow the same real-LinkedIn safety rules as the CLI (decision D32).
+- **Local API and dashboard.** A FastAPI API (`backend/app/`) and a React dashboard (`frontend/`) are built. The API calls the same functions as the CLI (`scan_preview`, `run_once`, `resolve_job`, `linkedin_status`, `add_post`) with no second storage layer, binds to `127.0.0.1`, shares the CLI's run lock, and follows the same real-LinkedIn safety rules; a real run needs `"real": true` and the confirmation phrase (decisions D42 and D43). Start it from `backend\` with `python -m app`; see [backend/README.md](backend/README.md#local-api).
 
 See `CLAUDE.md` for the binding project rules.
 
 ## Development milestones
 
 0. Inspect the scaffold, plan, and establish `CLAUDE.md` (done).
-1. Local simulation: typed LangGraph state, initial deterministic graph, pairing and validation, simulated publishing, tests.
-2. Durable application records: SQLite repository, job states, hashes, duplicate detection, restart reconciliation.
-3. Persistent LangGraph execution: SQLite checkpointer, resume and interruption tests (implemented; awaiting review).
-4. Real LinkedIn publishing through official APIs, with safeguards for ambiguous outcomes.
-5. Reliability, operational docs, PostgreSQL evaluation, and Facebook/Instagram planning.
+1. Local simulation: typed LangGraph state, initial deterministic graph, pairing and validation, simulated publishing, tests (done).
+2. Durable application records: SQLite repository, job states, hashes, duplicate detection, restart reconciliation (done).
+3. Persistent LangGraph execution: SQLite checkpointer, resume and interruption tests (done).
+4. Real LinkedIn publishing through official APIs, with safeguards for ambiguous outcomes (implemented and tested; first real post 2026-10-28; sign-off pending).
+5. Reliability, operational docs, PostgreSQL evaluation, and Facebook/Instagram planning (next).
 
-No live publishing, OAuth, or file-processing feature should be considered available until implemented and covered by appropriate tests.
+The local API and the React dashboard were added alongside Milestone 4 (D42, D43). No feature (for example an OAuth login flow or a folder watcher) should be considered available until it is implemented and covered by appropriate tests.
