@@ -17,8 +17,9 @@ dependencies = [
     "httpx>=0.28.1,<1",
     "python-dotenv>=1.2,<2",
     # Time zone data for zoneinfo (schedules, D46): Windows has none of its own. 2026.6 is the newest release
-    # (checked on PyPI 2026-11-17); pure data, no Python code. Versions are years: raise the bound yearly.
-    "tzdata>=2026.6,<2027",
+    # (checked on PyPI 2026-11-17); pure data, no Python code. No upper bound: the one exception to the
+    # upper-bound rule (CLAUDE.md, "Dependencies"), because newer time zone data is always the correct data.
+    "tzdata>=2026.6",
 ]
 
 [project.optional-dependencies]
