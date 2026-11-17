@@ -123,7 +123,7 @@ social-media-auto-poster/
 ├── docs/decisions.md              # Decision records
 ├── docs/linkedin-api-notes.md     # What LinkedIn's official docs say (M4), with sources
 ├── docs/milestone-4-review.md     # Milestone 4 review: what was built, results, known limitations
-│                                  # (frontend/ — React, created only when frontend work starts)
+├── frontend/                      # React dashboard (Vite, TypeScript); node_modules/ and dist/ Git-ignored
 ├── CLAUDE.md  README.md  .gitignore
 └── .vevn/                         # Virtual environment (repo root, Git-ignored)
 ```
@@ -159,6 +159,7 @@ Work **directly on `main`**: no new branches and no pull requests. For every cha
 | 2 | Durable application records: SQLite schema + repository, job states, hashes, duplicate detection, restart reconciliation | **Complete** (signed off 2026-10-28 after the M2 review; see the detail below) |
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | **Complete** (signed off 2026-10-28; D34) |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | **In progress** (D36): 4.0 docs research and design done; 4.1 `--real` switch + D33 safeguards done (D38, fake publisher); 4.2 exact bytes done; 4.3 LinkedIn client and publisher done (D39, fake transports only); 4.4 credentials, token expiry, `linkedin-check` done and checked against the real LinkedIn (D40); data folder safeguard (D41); **first real post published 2026-10-28** (job `41ac71e1`). **Implemented and tested; awaiting the developer's review sign-off** (`docs/milestone-4-review.md`) |
+| — | Local API (`backend/app/`, FastAPI) and React dashboard (`frontend/`), added alongside M4 (D42, D43): `9f0370b` (core functions return data), `c281556`, `260277b` (API on the current core), `a3bb081` (API tests), `19d03a4`, `5f32054` (dashboard) | **Implemented**; backend tests only (`tests/api/`); no frontend tests; not yet tried in a browser |
 | 5 | Reliability and expansion: logging/monitoring, operational docs, evaluate PostgreSQL, plan Facebook/Instagram adapters | Not started |
 
 ### Milestone 2 status detail

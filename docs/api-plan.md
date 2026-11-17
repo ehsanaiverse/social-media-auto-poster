@@ -4,7 +4,7 @@
 
 ## Rules
 
-1. Lives in `backend/src/social_media_auto_poster/api/`. FastAPI and Uvicorn are an optional extra, imported only by `api/`; the CLI must keep working without them.
+1. Lives in `backend/src/social_media_auto_poster/api/`. FastAPI and Uvicorn are an optional extra, imported only by `api/`; the CLI must keep working without them. **As built:** the API lives in `backend/app/`, not `src/.../api/` (D42); the rest of this rule holds (optional `api` extra, the CLI never imports it).
 2. **Reuses the backend; no duplicated logic, no second database or storage layer.** Job data only through `storage/` (`JobRepository`, `open_app_db_read_only`); posts only through the same graph (`graph.workflow.run_job`) and run path as the CLI. Job IDs are UUID strings.
 3. **Binds to `127.0.0.1` only.** Never returns the LinkedIn token, `.env` values, or other secrets; error texts come from the backend, which never contains the token (D39, D40).
 4. **Simulated by default.** Real publishing only with `real: true` **and** an explicit confirmation, behind every `run --real` safeguard (data folders exist, archive vs. history, token check, posts only simulated) (D38, D40, D41).
