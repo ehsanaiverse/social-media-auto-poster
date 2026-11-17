@@ -29,6 +29,16 @@ class JobStatus(StrEnum):
     NEEDS_REVIEW = "NEEDS_REVIEW"  # Outcome unknown; must not be retried automatically.
 
 
+class ScheduleStatus(StrEnum):
+    """Lifecycle of one scheduled post (D46). Only SCHEDULED can change; the others are final."""
+
+    SCHEDULED = "SCHEDULED"  # Waiting for its time.
+    DONE = "DONE"  # Handed to a job (job_id); that job's status is the outcome.
+    INVALID = "INVALID"  # The files changed or vanished, or the content is a duplicate; never published.
+    CANCELLED = "CANCELLED"  # Cancelled by the user.
+    MISSED = "MISSED"  # More than the grace window late; never published (nothing was sent).
+
+
 class PublishMode(StrEnum):
     """Whether a job was published for real or only simulated.
 
