@@ -89,7 +89,7 @@ def test_only_one_active_schedule_per_post_name(schedules):
         add(schedules, "launch")
 
 
-@pytest.mark.parametrize(("first", "second"), [("Launch", "launch"), ("ÄRGER", "ärger")])
+@pytest.mark.parametrize(("first", "second"), [("Launch", "launch"), ("ÄRGER", "ärger"), ("STRASSE", "straße")])
 def test_post_names_are_compared_without_case(schedules, first, second):
     add(schedules, first)
 
@@ -102,6 +102,15 @@ def test_find_active_ignores_case(schedules):
 
     assert schedules.find_active(platform=Platform.LINKEDIN, stem="LAUNCH") == created
     assert schedules.find_active(platform=Platform.LINKEDIN, stem="other") is None
+
+
+def test_post_names_are_casefolded_not_just_lowercased(schedules, conn):
+    # "straße".lower() stays "straße"; only casefold() makes it "strasse", the same as "STRASSE".
+    created = add(schedules, "straße")
+
+    assert conn.execute("SELECT stem_key FROM schedules").fetchone()[0] == "strasse"
+    assert schedules.find_active(platform=Platform.LINKEDIN, stem="STRASSE") == created
+    assert created.stem == "straße"  # The name itself is kept as written.
 
 
 def test_another_platform_may_schedule_the_same_name(schedules):
@@ -190,6 +199,26 @@ def test_done_with_an_unknown_job_is_refused_by_the_database(schedules):
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         schedules.mark_done(created.schedule_id, job_id="no-such-job")
     assert schedules.get(created.schedule_id).status is ScheduleStatus.SCHEDULED
+
+
+def test_foreign_keys_are_enforced_on_every_connection_open_app_db_returns(tmp_path):
+    path = tmp_path / "app.db"
+    first = open_app_db(path)
+    schedule_id = add(ScheduleRepository(first)).schedule_id
+    first.close()
+
+    # PRAGMA foreign_keys belongs to a connection, not to the file: a plain connection does not enforce it...
+    plain = sqlite3.connect(path)
+    assert plain.execute("PRAGMA foreign_keys").fetchone()[0] == 0
+    plain.close()
+
+    # ...but every connection from open_app_db does, so a DONE schedule must point at a real job.
+    reopened = open_app_db(path)
+    assert reopened.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        ScheduleRepository(reopened).mark_done(schedule_id, job_id="no-such-job")
+    assert ScheduleRepository(reopened).get(schedule_id).status is ScheduleStatus.SCHEDULED
+    reopened.close()
 
 
 def test_an_unknown_status_or_mode_is_refused_by_the_database(schedules, conn):
