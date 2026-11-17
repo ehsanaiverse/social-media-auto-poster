@@ -93,16 +93,47 @@ def test_empty_or_whitespace_caption_is_rejected(tmp_path, caption):
     assert result.errors == ("caption is empty",)
 
 
-def test_caption_at_size_cap_is_accepted(tmp_path):
+def test_caption_at_size_cap_passes_the_size_guard(tmp_path):
     result = validate_candidate(make_post(tmp_path, caption=b"a" * MAX_CAPTION_BYTES))
 
-    assert result.is_valid is True
+    # The 64 KB read guard does not fire at exactly the cap; LinkedIn's own length rule then applies.
+    assert result.errors == (f"caption is {MAX_CAPTION_BYTES} characters; LinkedIn allows at most 3000",)
 
 
 def test_caption_over_size_cap_is_rejected(tmp_path):
     result = validate_candidate(make_post(tmp_path, caption=b"a" * (MAX_CAPTION_BYTES + 1)))
 
     assert result.errors == ("caption file too large (over 64 KB)",)
+
+
+def test_caption_of_exactly_3000_characters_is_accepted(tmp_path):
+    result = validate_candidate(make_post(tmp_path, caption=b"x" * 3000))
+
+    assert result.is_valid is True
+
+
+def test_caption_of_3001_characters_is_rejected(tmp_path):
+    result = validate_candidate(make_post(tmp_path, caption=b"x" * 3001))
+
+    assert result.is_valid is False
+    assert result.errors == ("caption is 3001 characters; LinkedIn allows at most 3000",)
+
+
+def test_emoji_count_as_two_characters_toward_the_caption_limit(tmp_path):
+    exactly = validate_candidate(make_post(tmp_path, "ok.jpg", caption=("🚀" * 1500).encode()))
+    one_over = validate_candidate(make_post(tmp_path, "over.jpg", caption=("🚀" * 1500 + "x").encode()))
+
+    assert exactly.is_valid is True
+    assert one_over.errors == ("caption is 3001 characters; LinkedIn allows at most 3000",)
+
+
+def test_caption_limit_counts_the_text_as_written_not_escaped(tmp_path):
+    # Every "(" is escaped for LinkedIn, doubling the sent length; readers still see 3000 characters.
+    assert validate_candidate(make_post(tmp_path, caption=b"(" * 3000)).is_valid is True
+
+
+def test_caption_limit_ignores_a_bom(tmp_path):
+    assert validate_candidate(make_post(tmp_path, caption="﻿".encode() + b"x" * 3000)).is_valid is True
 
 
 def test_missing_media_reports_only_not_found_for_it(tmp_path):

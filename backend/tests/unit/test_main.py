@@ -132,3 +132,19 @@ def test_scan_shows_validation_result_per_candidate(tmp_path, capsys):
     animated = next(line for line in lines if "animated.gif" in line)
     assert good.endswith("valid   new")
     assert "INVALID: unsupported image type '.gif'" in animated
+
+
+def test_scan_marks_a_caption_over_3000_characters_invalid(tmp_path, capsys):
+    jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+    (tmp_path / "long.jpg").write_bytes(jpeg)
+    (tmp_path / "long.txt").write_bytes(b"x" * 3001)
+    (tmp_path / "limit.jpg").write_bytes(jpeg)
+    (tmp_path / "limit.txt").write_bytes(b"y" * 3000)
+
+    cli.main(["scan", "--dir", str(tmp_path), "--interval", "0"])
+
+    lines = capsys.readouterr().out.splitlines()
+    long = next(line for line in lines if "long.jpg" in line)
+    limit = next(line for line in lines if "limit.jpg" in line)
+    assert "INVALID: caption is 3001 characters; LinkedIn allows at most 3000" in long
+    assert limit.endswith("valid   new")

@@ -155,6 +155,16 @@ def test_upload_refuses_an_empty_caption(client, settings):
     assert list(incoming(settings).iterdir()) == []
 
 
+def test_upload_refuses_a_caption_over_3000_characters(client, settings):
+    response = upload(client, caption="x" * 3001)
+    assert response.status_code == 400
+    assert "caption is 3001 characters; LinkedIn allows at most 3000" in response.json()["detail"]
+    assert list(incoming(settings).iterdir()) == []
+
+    assert upload(client, name="limit", caption="y" * 3000).status_code == 201
+    assert upload(client, name="emoji", caption="🚀" * 1500 + "x").status_code == 400  # Emoji count as two.
+
+
 def test_upload_refuses_a_name_the_scanner_would_ignore_or_that_has_forbidden_characters(client):
     assert upload(client, name="bad/name").status_code == 400
     assert upload(client, name="   ").status_code == 400

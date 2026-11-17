@@ -93,6 +93,22 @@ def test_mixed_folder_end_to_end(base, incoming, capsys):
     assert (incoming / "banner.png").exists()
 
 
+def test_simulated_run_fails_a_caption_over_3000_characters(base, incoming, finals, capsys):
+    add_post(incoming, "long", caption=b"x" * 3001)
+    add_post(incoming, "limit", caption=b"y" * 3000)
+
+    assert run() == cli.EXIT_JOB_PROBLEMS
+
+    out = capsys.readouterr().out
+    assert "caption is 3001 characters; LinkedIn allows at most 3000" in out
+    assert sorted((f["stem"], f["status"]) for f in finals) == [("limit", "SIMULATED"), ("long", "FAILED")]
+    assert not (incoming / "long.jpg").exists()  # Invalid: moved to failed/ with a report.
+    [failed_folder] = (base / "data" / "LinkedIn" / "failed").iterdir()
+    report = (failed_folder / "error-report.txt").read_text(encoding="utf-8")
+    assert "caption is 3001 characters; LinkedIn allows at most 3000" in report
+    assert (incoming / "limit.jpg").exists()
+
+
 def test_all_valid_posts_exit_0(incoming, finals):
     add_post(incoming, "one")
     add_post(incoming, "two")
