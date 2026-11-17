@@ -1,6 +1,6 @@
 # Milestone 4 review: real LinkedIn publishing
 
-**Date:** 2026-10-28. **Status:** implemented, tested, and confirmed with one real post; awaiting the developer's sign-off.
+**Date:** 2026-10-28. **Status:** implemented, tested and signed off by the developer on 2026-11-17.
 
 Milestone 4 lets the auto-poster publish one image with its caption to the developer's own LinkedIn profile, through LinkedIn's official API, while keeping every safety rule from Milestones 1–3. Real publishing only happens when `--real` is typed on the command line.
 
@@ -81,3 +81,18 @@ The job database is the only record of what was published, and the only protecti
 ## Next
 
 After sign-off: Milestone 5 (reliability: scheduling or folder watching, monitoring, operational docs), or the planned FastAPI API and React frontend (D32), which must reuse the same run path and keep every rule above.
+
+## Sign-off update (2026-11-17)
+
+The sections above are the record of 2026-10-28. This section adds what changed or was found before the sign-off (D45).
+
+- **Three real posts, not one.** The job database holds three real `PUBLISHED` jobs, each with its LinkedIn post ID:
+  - `41ac71e1` (2026-10-28, `first-post`, `urn:li:share:7521116341425037312`): the first real post above.
+  - `cc3802b8` (2026-10-28, `first-post` with an edited caption, `urn:li:share:7521121529389309954`): the repost. Same image, new caption, so new content (limitation 5).
+  - `7cb929ea` (2026-10-29, `AutoPoster`, `urn:li:share:7521539268234833920`).
+- **`41ac71e1`'s archive folder was moved out by hand** for the edited repost. Its job record still names `archive\20261028T075107Z_first-post`, which no longer exists; the job stays `PUBLISHED` on purpose. The other two jobs' folders are in `archive\` with matching `.autoposter-job` markers.
+- **Tests:** 591 pass (537 at the time of the review).
+- **Real mode also through the dashboard.** Besides `run --real`, a real run can be started from the dashboard by typing the confirmation phrase `publish to LinkedIn`; the API refuses `"real": true` without it (D43, `test_real_mode_cannot_start_without_the_explicit_flag_and_confirmation`). "Never from a setting" is now proven directly: with a valid-looking token in `backend\.env` and would-be switches (`AUTOPOSTER_MODE=real`, `AUTOPOSTER_REAL=1`) in `.env` and the environment, a plain run and an API run without the phrase stay simulated and never create the real publisher or contact LinkedIn (`test_env_can_never_switch_a_run_to_real_mode`, `test_env_can_never_switch_an_api_run_to_real_mode`).
+- **The token: one gap found and fixed (`4053e8b`).** A token made only of letters and digits that LinkedIn echoed in its error `code` would have been kept in the job error, `error-report.txt`, the log and the API responses (LinkedIn's error *message* was already never kept). Now an error code longer than 64 characters, or with other characters than letters, digits and underscores, is dropped; a code containing the token becomes `[redacted]`; and refusal and uncertain-outcome texts pass through `LinkedInClient.redact()` as a last safety net. Tests: `test_real_run_failure_redacts_an_alphanumeric_token_that_linkedin_echoes_in_the_code` (API) and four unit tests in `test_linkedin_publisher.py`. API responses for real runs are now covered too: `test_real_run_success_never_returns_the_token`, `test_real_run_failure_never_returns_the_token_even_if_linkedin_echoes_it`, `test_real_run_uncertain_outcome_never_returns_the_token_even_if_linkedin_echoes_it`.
+- **The 3,000-character caption limit is checked only on the real path** (`platforms/linkedin/caption.py: caption_problem`, called by `LinkedInPublisher.publish`). Uploads and simulated runs accept a longer caption; `run --real` then fails it before anything is sent. Planned fix: check it in validation.
+- **The local API and the React dashboard are built** (D42, D43), not planned; "Next" above predates them. They use the same run path and keep every rule above.

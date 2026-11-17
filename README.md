@@ -18,7 +18,7 @@ There is no continuous folder watcher, scheduler, or OAuth login flow (the Linke
 
 ## Current status
 
-**Milestones 1 (local simulation), 2 (job database) and 3 (crash-safe checkpoints) are complete and signed off. Milestone 4 (real LinkedIn publishing) is implemented and tested, and the first real post was published on 2026-10-28; its sign-off is pending (`docs/milestone-4-review.md`). A local API and a React dashboard are built.** What exists today:
+**Milestones 1 (local simulation), 2 (job database), 3 (crash-safe checkpoints) and 4 (real LinkedIn publishing) are done; Milestone 4 was signed off on 2026-11-17 (`docs/milestone-4-review.md`, D45). The first real post was published on 2026-10-28. A local API and a React dashboard are built.** What exists today:
 
 - Packaging (`backend/pyproject.toml`) with declared dependencies.
 - An environment-variable template (`backend/.env.example`).
@@ -269,7 +269,7 @@ See `CLAUDE.md` for the binding project rules.
 1. Local simulation: typed LangGraph state, initial deterministic graph, pairing and validation, simulated publishing, tests (done).
 2. Durable application records: SQLite repository, job states, hashes, duplicate detection, restart reconciliation (done).
 3. Persistent LangGraph execution: SQLite checkpointer, resume and interruption tests (done).
-4. Real LinkedIn publishing through official APIs, with safeguards for ambiguous outcomes (implemented and tested; first real post 2026-10-28; sign-off pending).
+4. Real LinkedIn publishing through official APIs, with safeguards for ambiguous outcomes (done; first real post 2026-10-28; signed off 2026-11-17).
 5. Reliability, operational docs, PostgreSQL evaluation, and Facebook/Instagram planning (next).
 
 The local API and the React dashboard were added alongside Milestone 4 (D42, D43). No feature (for example an OAuth login flow or a folder watcher) should be considered available until it is implemented and covered by appropriate tests.
