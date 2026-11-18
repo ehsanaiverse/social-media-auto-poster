@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import scan as scan_ops
 from social_media_auto_poster.models import JobStatus, Platform, PublishMode
 from social_media_auto_poster.storage.database import open_app_db
 from social_media_auto_poster.storage.jobs import JobRepository
@@ -227,9 +228,9 @@ def test_scan_does_not_hash_invalid_or_unstable_posts(base, incoming, monkeypatc
     add_post(incoming, "bad", media=b"not an image")
     add_post(incoming, "copying")
     hashed = []
-    real_sha = cli.sha256_file
-    monkeypatch.setattr(cli, "sha256_file", lambda p, **kw: hashed.append(p.name) or real_sha(p, **kw))
-    monkeypatch.setattr(cli, "is_file_stable", lambda path, interval: path.stem != "copying")
+    real_sha = scan_ops.sha256_file
+    monkeypatch.setattr(scan_ops, "sha256_file", lambda p, **kw: hashed.append(p.name) or real_sha(p, **kw))
+    monkeypatch.setattr(scan_ops, "is_file_stable", lambda path, interval: path.stem != "copying")
 
     scan()
 

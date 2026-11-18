@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import scan as scan_ops
 from social_media_auto_poster.operations import clock
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.models import Platform, PublishMode, PublishResult, ScheduleStatus
@@ -205,7 +206,7 @@ def test_refused_when_the_name_is_ambiguous(settings, capsys):
 
 def test_refused_while_a_file_is_still_being_copied(settings, capsys, monkeypatch):
     add_post(settings, "launch")
-    monkeypatch.setattr(cli, "is_file_stable", lambda path, interval_s: path.suffix != ".jpg")
+    monkeypatch.setattr(scan_ops, "is_file_stable", lambda path, interval_s: path.suffix != ".jpg")
     assert_refused(settings, capsys, "launch", "--at", "2026-12-01 09:00", message="still being copied")
     assert rows(settings) == []
 

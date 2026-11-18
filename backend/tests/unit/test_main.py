@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import scan as scan_ops
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +79,7 @@ def test_scan_reports_which_file_is_not_stable(tmp_path, monkeypatch, capsys):
         checked.append(path.name)
         return path.suffix != ".txt"
 
-    monkeypatch.setattr(cli, "is_file_stable", fake_is_file_stable)
+    monkeypatch.setattr(scan_ops, "is_file_stable", fake_is_file_stable)
 
     cli.main(["scan", "--dir", str(tmp_path), "--interval", "0"])
 

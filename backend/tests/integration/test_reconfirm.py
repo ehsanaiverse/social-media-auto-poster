@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import scan as scan_ops
 from social_media_auto_poster.operations import clock
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.models import JobStatus, Platform, PublishMode, ScheduleStatus
@@ -328,7 +329,7 @@ def test_reconfirm_real_checks_the_pixel_limit(settings, capsys):
 
 def test_reconfirm_refuses_a_file_still_being_copied(settings, capsys, monkeypatch):
     scheduled(settings)
-    monkeypatch.setattr(cli, "is_file_stable", lambda path, interval_s: path.suffix != ".txt")
+    monkeypatch.setattr(scan_ops, "is_file_stable", lambda path, interval_s: path.suffix != ".txt")
     before = rows(settings)
 
     assert reconfirm("launch") == 1
