@@ -233,9 +233,150 @@ python -m social_media_auto_poster.main run --real --scheduled                  
 - **To keep the post with its new content, re-confirm it:** `reconfirm launch` replaces the schedule with a new one for the files as they are now, at the same time (or a new one with `--at "YYYY-MM-DD HH:MM"`). Every check is made again. **`--real` must be given again** for a real post: without it the new schedule is simulated, even if the old one was real, and a warning says so. If the old time is less than 5 minutes away, give `--at`. `reconfirm` also works on an unchanged schedule (to switch between simulated and real, or with `--at` to move it), and on a schedule that already became `INVALID`.
 - Without `--real` the schedule is simulated. Nothing in `.env` can make it real.
 - Every run (`run`, `run --real`, and runs from the dashboard) **skips** a post with an active schedule and lists it under `SCHEDULED`. `unschedule` gives the post back to normal runs (then `run --real` would publish it).
-- **Publishing at the scheduled time: `run --scheduled`.** `run --real --scheduled` publishes real schedules that are due; `run --scheduled` (without `--real`) does the same for simulated ones. It is meant to run every 15 minutes from Windows Task Scheduler (setup instructions will follow). It handles **only** scheduled posts that are due, never anything else in `incoming\`, and **at most one post per run**, the oldest first; the others wait for the next run. A post up to **6 hours late** (for example, the PC was off) is still published, and the output and log say how late. After that it becomes `MISSED` and is not published; schedule it again. When nothing is due, the run does not contact LinkedIn at all. The same safeguards as `run --real` apply (data folders, archive vs. job history, the token check); an expired token stops the run with nothing changed. A post you scheduled for real is published even if you simulated it before (scheduling it for real was your confirmation). A `MISSED` or `INVALID` schedule makes the run end with exit code `3`, so it shows up in Task Scheduler's history. `--scheduled` cannot be combined with `--publish-simulated`.
+- **Publishing at the scheduled time: `run --scheduled`.** `run --real --scheduled` publishes real schedules that are due; `run --scheduled` (without `--real`) does the same for simulated ones. It is meant to run every 15 minutes from Windows Task Scheduler (see "Running scheduled posts automatically" below). It handles **only** scheduled posts that are due, never anything else in `incoming\`, and **at most one post per run**, the oldest first; the others wait for the next run. A post up to **6 hours late** (for example, the PC was off) is still published, and the output and log say how late. After that it becomes `MISSED` and is not published; schedule it again. When nothing is due, the run does not contact LinkedIn at all. The same safeguards as `run --real` apply (data folders, archive vs. job history, the token check); an expired token stops the run with nothing changed. A post you scheduled for real is published even if you simulated it before (scheduling it for real was your confirmation). A `MISSED` or `INVALID` schedule makes the run end with exit code `3`, so it shows up in Task Scheduler's history. `--scheduled` cannot be combined with `--publish-simulated`.
 - With `--real`, a warning is printed if your LinkedIn token is missing or expires on or before the scheduled day. Scheduling never contacts LinkedIn.
 - Exit codes: `schedule`, `unschedule` and `reconfirm`: `0` done, `1` refused (nothing changed; the message says why), `2` invalid arguments (including a time not written as `YYYY-MM-DD HH:MM`), `4` a run is in progress. `schedules`: `0` listed, `1` the job database could not be read, `2` invalid arguments.
+
+#### First test (by hand, before relying on Task Scheduler)
+
+Do this once, in simulated mode, before setting up Task Scheduler. Every command is typed from the repo root (`D:\social-media-auto-poster`) in PowerShell. The `python -m social_media_auto_poster.main` commands work from any folder; they always use `backend\`.
+
+1. **Activate the environment and back up the job database.** (The first `schedule` also upgrades `app.db` to version 2 and saves `app.db.bak-v1` itself; this backup is your own.)
+
+   ```powershell
+   .\.vevn\Scripts\Activate.ps1
+   Copy-Item backend\database\app.db "backend\database\app.db.backup-$(Get-Date -Format yyyyMMdd-HHmm)"
+   ```
+
+2. **Check the clock's time zone.** Schedule times are read in `AUTOPOSTER_TIMEZONE` (default `Asia/Karachi`). If `Get-TimeZone` is not "Pakistan Standard Time", either set `AUTOPOSTER_TIMEZONE` in `backend\.env` to your zone or work out the time by hand in step 4.
+
+   ```powershell
+   Get-TimeZone
+   ```
+
+3. **Add a test post** (any JPEG or PNG you have; replace the first path):
+
+   ```powershell
+   Copy-Item "$env:USERPROFILE\Pictures\any-photo.jpg" backend\data\LinkedIn\incoming\schedule-test.jpg
+   Set-Content backend\data\LinkedIn\incoming\schedule-test.txt "Scheduling test (simulated)" -Encoding utf8
+   ```
+
+4. **Schedule it 10 minutes ahead, simulated** (no `--real`), and look at it:
+
+   ```powershell
+   $at = (Get-Date).AddMinutes(10).ToString("yyyy-MM-dd HH:mm")
+   python -m social_media_auto_poster.main schedule schedule-test --at $at
+   python -m social_media_auto_poster.main schedules
+   python -m social_media_auto_poster.main scan --interval 0
+   ```
+
+   `schedules` lists it as `SCHEDULED` in `simulated` mode; `scan` labels it `SCHEDULED for …`.
+
+5. **Before the time, a scheduled run does nothing:**
+
+   ```powershell
+   python -m social_media_auto_poster.main run --scheduled
+   $LASTEXITCODE
+   ```
+
+   It prints "No scheduled post is due." and exit code `0`.
+
+6. **After the time (wait the 10 minutes), run it by hand:**
+
+   ```powershell
+   python -m social_media_auto_poster.main run --scheduled
+   $LASTEXITCODE
+   ```
+
+   It shows a `DUE` section (with how late, if at all) and the job as `SIMULATED (not published)`, then "Simulation mode: nothing was sent to LinkedIn in this run." and exit code `0`.
+
+7. **Check the result and the log:**
+
+   ```powershell
+   python -m social_media_auto_poster.main schedules --all
+   python -m social_media_auto_poster.main jobs --last 3
+   Get-Content backend\logs\autoposter.log -Tail 20
+   ```
+
+   The schedule is `DONE` with a job ID; the job is `SIMULATED`; the log has `Run started: … scheduled=yes`, `Scheduled post due: … late_by_minutes=…` and `Run finished: … exit_code=0`.
+
+8. **Test `unschedule`** with a second post (a different caption, so it is different content):
+
+   ```powershell
+   Copy-Item backend\data\LinkedIn\incoming\schedule-test.jpg backend\data\LinkedIn\incoming\schedule-test-2.jpg
+   Set-Content backend\data\LinkedIn\incoming\schedule-test-2.txt "Unschedule test (simulated)" -Encoding utf8
+   python -m social_media_auto_poster.main schedule schedule-test-2 --at (Get-Date).AddMinutes(30).ToString("yyyy-MM-dd HH:mm")
+   python -m social_media_auto_poster.main unschedule schedule-test-2
+   python -m social_media_auto_poster.main schedules --all
+   ```
+
+   `schedule-test-2` is now `CANCELLED`; its files stay in `incoming\`.
+
+9. **Test `reconfirm`:** schedule a third post, change its caption, see the warning, re-confirm:
+
+   ```powershell
+   Copy-Item backend\data\LinkedIn\incoming\schedule-test.jpg backend\data\LinkedIn\incoming\schedule-test-3.jpg
+   Set-Content backend\data\LinkedIn\incoming\schedule-test-3.txt "Reconfirm test (simulated)" -Encoding utf8
+   python -m social_media_auto_poster.main schedule schedule-test-3 --at (Get-Date).AddMinutes(30).ToString("yyyy-MM-dd HH:mm")
+   Set-Content backend\data\LinkedIn\incoming\schedule-test-3.txt "Reconfirm test, edited (simulated)" -Encoding utf8
+   python -m social_media_auto_poster.main schedules
+   python -m social_media_auto_poster.main reconfirm schedule-test-3
+   python -m social_media_auto_poster.main schedules --all
+   python -m social_media_auto_poster.main unschedule schedule-test-3
+   ```
+
+   After the edit, `schedules` shows `CHANGED – will not be published; re-confirm`. After `reconfirm`, there is a new `SCHEDULED` schedule (same time) and the old one is `CANCELLED` ("re-confirmed as …"). The last line cancels it again.
+
+10. **Clean up** the test files (the simulated job stays in the history; it never blocks a real post):
+
+    ```powershell
+    Remove-Item backend\data\LinkedIn\incoming\schedule-test*
+    ```
+
+#### Running scheduled posts automatically: Windows Task Scheduler
+
+Windows Task Scheduler runs `run --scheduled` every 15 minutes. Set up a **simulated** task first and watch it handle a simulated test post; only then set up the real one. The two tasks have different names, so they are never confused.
+
+**With the script (recommended).** Open PowerShell with **Run as administrator** (needed for a task that runs whether you are logged on or not) and type, from the repo root:
+
+```powershell
+cd D:\social-media-auto-poster
+.\backend\scripts\register-schedule-task.ps1 -WhatIf          # shows exactly what it would register; registers nothing
+.\backend\scripts\register-schedule-task.ps1                  # registers the SIMULATED task
+.\backend\scripts\register-schedule-task.ps1 -Remove          # removes the simulated task again
+```
+
+If PowerShell refuses to run scripts, use `pwsh -ExecutionPolicy Bypass -File .\backend\scripts\register-schedule-task.ps1` (with the same options). The script never reads or stores the LinkedIn token or anything in `backend\.env`.
+
+**By hand**, in Task Scheduler (`taskschd.msc`) → *Create Task…*:
+
+| Tab | Setting |
+| --- | --- |
+| General | Name: `AutoPoster - scheduled posts (simulated)` (or `(real)`). **Run whether user is logged on or not**, with **Do not store password** ticked. Leave "Run with highest privileges" off. |
+| Triggers | *New…* → Begin the task: **On a schedule**, **One time**, starting now; **Repeat task every: 15 minutes**, **for a duration of: Indefinitely**. |
+| Actions | *New…* → Start a program. **Program/script:** `D:\social-media-auto-poster\.vevn\Scripts\python.exe`. **Add arguments:** `-m social_media_auto_poster.main run --scheduled` (simulated) or `-m social_media_auto_poster.main run --scheduled --real` (real). **Start in:** `D:\social-media-auto-poster\backend` (no quotes, no trailing backslash). |
+| Conditions | Untick "Start the task only if the computer is on AC power". |
+| Settings | **Run task as soon as possible after a scheduled start is missed.** Stop the task if it runs longer than **30 minutes**. **If the task is already running: Do not start a new instance.** |
+
+"Do not store password" lets the task use your own files without saving your Windows password. If the real task works with your files but its LinkedIn calls fail only when run by Task Scheduler, edit the task, untick "Do not store password", and enter your Windows password when asked.
+
+**Simulated first:** register the simulated task, schedule a simulated post 20 minutes ahead (`schedule <post> --at …`, as in the first test), wait, and check `schedules --all`, the task's History and the log. Then remove it (`-Remove`). Running a simulated and a real task side by side is harmless, but they share the run lock, so one of them is sometimes skipped with exit code 4.
+
+**Then real:** check the token (`python -m social_media_auto_poster.main linkedin-check`), back up `app.db`, and register the real task: `.\backend\scripts\register-schedule-task.ps1 -Real` (it asks you to confirm). Only schedules made with `--real` are published by it. Remove it with `-Remove -Real`.
+
+**Reading the task's results.** Task Scheduler's History is off by default: in Task Scheduler, select *Task Scheduler Library* and click **Enable All Tasks History** in the Actions pane. The **Last Run Result** column shows the exit code:
+
+| Last Run Result | Meaning | What to do |
+| --- | --- | --- |
+| `0x0` (0) | The run finished: nothing was due, or the due post was published (or simulated). | Nothing. |
+| `0x1` (1) | Refused before anything changed: the LinkedIn token is missing, expired or rejected, the data folders are missing, `archive\` holds posts the job database does not know about, or the job database or checkpoint store could not be opened. Nothing was published, and every schedule is unchanged. | Read the log; fix the cause (for an expired token, renew it in `backend\.env`). |
+| `0x2` (2) | The task's arguments are wrong. | Check the task's Action against the table above. |
+| `0x3` (3) | The run finished, but something needs you: a schedule was `MISSED` (more than 6 hours late) or became `INVALID` (its files changed or are gone), or a job ended `FAILED` or `NEEDS_REVIEW`. | `schedules --all` and `jobs`; `reconfirm` or schedule again; `resolve` a `NEEDS_REVIEW` job after checking LinkedIn. |
+| `0x4` (4) | Another run (or a `schedule`, `reconfirm` or `resolve` command) was in progress. | Nothing: the next run, 15 minutes later, does the work. |
+
+**The log** is `backend\logs\autoposter.log` (the task writes there too): `Get-Content backend\logs\autoposter.log -Tail 30`. Each scheduled run starts with `Run started: … scheduled=yes` and ends with `Run finished: … exit_code=N`; `Scheduled post due: …` and `Schedule missed: …` lines say what it did and how late.
+
+**Keep in mind:** the PC must be on (and not asleep) for posts to go out. A post up to 6 hours late is still published when the PC wakes up; later than that it becomes `MISSED`. At most one post is published per run, so several posts due together go out 15 minutes apart. The token lasts 60 days: when it expires, every real run is refused (exit code 1) until you renew it.
 
 **Job database upgrade.** The first `schedule`, `run`, `resolve` or dashboard run after updating upgrades `backend\database\app.db` to version 2. Before changing it, it saves a copy next to it as `app.db.bak-v1` (or, if that file already exists, `app.db.bak-v1-<UTC time>`; an existing backup is never overwritten) and logs where. `scan`, `jobs` and `schedules` only read the database and never upgrade it (`unschedule` does not either: an older database has nothing to cancel). After the upgrade, older versions of the app refuse the database; to go back, restore the `.bak-v1` copy.
 
