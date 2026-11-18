@@ -33,7 +33,7 @@ There is no continuous folder watcher, scheduler, or OAuth login flow (the Linke
 - A job database (`backend\database\app.db`, SQLite, via `storage/`): every processed post is recorded with SHA-256 hashes of its image and caption, so the same content is never processed twice.
 - Crash recovery: at the start of every `run`, jobs left half-published by a crash are resolved (see `RECOVERED` below).
 - Graph checkpoints (`backend\database\langgraph_checkpoints.db`, a separate SQLite file): each step of a job is saved before the next one starts, so a run that crashed **after** publishing is finished by the next run instead of being marked `NEEDS_REVIEW` (see `RESUMED` below). A crash during the publish itself is never retried.
-- Five commands (`main.py`): `run` processes every complete post once (simulated, or real with `--real`), the read-only `scan` (with duplicate check) and `jobs` (history), `resolve` for jobs that need review, and `linkedin-check` for the LinkedIn token and setup. See "How to use" below.
+- Nine commands (`python -m social_media_auto_poster.main <command>`): `run` processes every complete post once (simulated, or real with `--real`; `--scheduled` publishes due scheduled posts), the read-only `scan` (with duplicate check) and `jobs` (history), `resolve` for jobs that need review, `linkedin-check` for the LinkedIn token and setup, and `schedule`, `unschedule`, `reconfirm` and the read-only `schedules` for scheduled posts. See "How to use" and "Scheduling" below.
 - A local API (`backend/app/`, FastAPI) and a React dashboard (`frontend/`) that call the same functions as the commands. Both are optional.
 - Unit, integration and API tests under `backend/tests/`. Decisions are recorded in `docs/decisions.md`.
 
@@ -66,10 +66,13 @@ backend/                           The Python project
     graph/                         LangGraph workflow: state.py, nodes.py, workflow.py, checkpoints.py, resume.py
     ingestion/                     Scanning/pairing, stability check, validation, adding a post (intake.py)
     services/                      Hashing, reading post content, moving posts, crash recovery, real-mode checks, single-run lock
-    storage/                       SQLite job database and repository
-    main.py                        Commands: run, scan, jobs, resolve, linkedin-check
+    storage/                       SQLite job database and repository (jobs, schedules)
+    operations/                    What the commands and the API both call: scan, run, resolve, schedules, LinkedIn status
+    cli/                           The command line: parser, one handler per command, printing
+    main.py                        Entry point: python -m social_media_auto_poster.main <command>
   app/                             Local API (FastAPI; optional "api" extra): main.py, routers/, services/, models/
   tests/unit/, tests/integration/, tests/api/   Unit tests; full-graph and end-to-end run tests; API tests
+  tests/test_patch_targets.py      Checks that every test patch reaches the code it means to change
   scripts/app.py                   Interactive sandbox tester
   data/                            Local platform content; ignored by Git
     LinkedIn/{incoming,archive,failed}/   (and Facebook/, Instagram/)

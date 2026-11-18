@@ -2,7 +2,8 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from social_media_auto_poster.main import MIN_JOB_ID_PREFIX, ResolveError
+from social_media_auto_poster.operations.common import MIN_JOB_ID_PREFIX
+from social_media_auto_poster.operations.resolve import ResolveError
 from social_media_auto_poster.models import JobStatus
 from social_media_auto_poster.services.run_lock import RunLockHeldError
 

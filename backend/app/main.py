@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from social_media_auto_poster.config import Settings, load_settings
-from social_media_auto_poster.main import DEFAULT_INTERVAL_S
+from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S
 from social_media_auto_poster.platforms.linkedin.client import LINKEDIN_VERSION
 
 from .routers import jobs, linkedin, posts, run, scan

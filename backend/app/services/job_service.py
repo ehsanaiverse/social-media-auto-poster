@@ -1,6 +1,6 @@
 """The API's bridge to the core package.
 
-Every operation here calls a function in ``social_media_auto_poster.main`` (or the
+Every operation here calls a function in ``social_media_auto_poster.operations`` (or the
 modules it uses), the same one the CLI command calls. This file adds no storage,
 database, publishing, or duplicate logic of its own. Job history is read through
 ``JobRepository`` and ``open_app_db_read_only``, as the ``jobs`` command does.
@@ -15,20 +15,12 @@ from pathlib import Path
 
 from social_media_auto_poster.config import Settings, data_dir_outside_base
 from social_media_auto_poster.ingestion.intake import add_post as add_post_to_incoming
-from social_media_auto_poster.main import (
-    DEFAULT_INTERVAL_S,
-    PLATFORM,
-    CandidateView,
-    LinkedInStatus,
-    RunReport,
-    find_duplicate,
-    linkedin_status,
-    logging_to,
-    outside_warning,
-    resolve_job,
-    run_once,
-    scan_preview,
-)
+from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, PLATFORM, outside_warning
+from social_media_auto_poster.operations.linkedin import LinkedInStatus, linkedin_status
+from social_media_auto_poster.operations.logs import logging_to
+from social_media_auto_poster.operations.resolve import resolve_job
+from social_media_auto_poster.operations.run import RunReport, run_once
+from social_media_auto_poster.operations.scan import CandidateView, find_duplicate, scan_preview
 from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode
 from social_media_auto_poster.services.reconcile import Recovery
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db_read_only
