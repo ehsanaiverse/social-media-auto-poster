@@ -28,11 +28,15 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | GET | `/api/health` | Is the API up | `config.load_settings` | none | `{status, simulated_by_default: true, linkedin_version}` | No paths beyond the data folder, no secrets |
 | POST | `/api/posts` | Add a post (image + caption) to LinkedIn `incoming/` | new `ingestion.intake.add_post` (refactor 1) → `validate_candidate`, `sha256_file`, `find_blocking_duplicate` | multipart: `name`, `image`, `caption` | `201 {name, files, duplicate_of?}` | Type, signature, size, UTF-8 checked first; written to ignored temp names, then moved in; never overwrites |
-| GET | `/api/scan?real=false` | Read-only preview of `incoming/` | `scan_preview` (refactor 2) → `scan_incoming`, `is_file_stable`, `validate_candidate`, `find_blocking_duplicate`, `posts_only_simulated`, `archive_without_history` | query `real` | `{candidates: [{name, stable, valid, errors, duplicate_of, only_simulated}], pending, ambiguous, warnings}` | No lock, never moves or creates anything (like the CLI) |
+| GET | `/api/scan?real=false` | Read-only preview of `incoming/` | `scan_preview` (refactor 2) → `scan_incoming`, `is_file_stable`, `validate_candidate`, `find_blocking_duplicate`, `posts_only_simulated`, `archive_without_history` | query `real` | `{candidates: [{name, stable, valid, errors, duplicate_of, only_simulated, schedule}], pending, ambiguous, warnings, missing_schedules}` | No lock, never moves or creates anything (like the CLI) |
 | POST | `/api/run` | Process every complete post once | `run_once` (refactor 3) → the whole `run` path | JSON `{real: false, publish_simulated: false, confirm: null}` | `{exit_code, mode, resumed, recovered, jobs: [...], pending, ambiguous, refused?}` | Real needs `real: true` + confirmation (question 2) + all `run --real` safeguards; lock |
 | GET | `/api/jobs?last=20&status=` | Job history | `open_app_db_read_only`, `JobRepository.list_recent` | query | `[{job_id, created_at, stem, mode, status, errors}]` | Read-only, never creates the database |
 | GET | `/api/jobs/{id}` | One job in full (ID or a prefix of 6+) | `JobRepository.find_by_id_prefix` | path | `{…all job fields, hashes, post_id, destination}` | Read-only |
 | POST | `/api/jobs/{id}/resolve` | Settle a `NEEDS_REVIEW` job | `resolve_job` (refactor 4) → `find_by_id_prefix`, `resolve_needs_review` | JSON `{published_post_id}` or `{failed: true}` | `{job_id, status, note, files_at}` | Lock; only `NEEDS_REVIEW`; `--published` refused for simulated jobs |
+| GET | `/api/schedules?all=false&status=&last=50` | Scheduled posts (D46): active ones soonest first, or all / one status newest first | `operations.schedules.list_schedules` | query | `{timezone, available, schedules: [{schedule_id, name, mode, status, publish_at, publish_at_local, content_state, reason, job_id, created_at}]}` | Read-only: no lock, never creates or upgrades the database; no hashes or paths |
+| POST | `/api/schedules` | Schedule a post in `incoming/` | `operations.schedules.schedule_post` | JSON `{name, publish_at: "YYYY-MM-DD HH:MM", real: false, confirm: null}` | `201 {schedule, warnings}` | Local time in `AUTOPOSTER_TIMEZONE`, sent as typed; real needs `real: true` + `confirm: "publish to LinkedIn"`; lock |
+| POST | `/api/schedules/{id}/cancel` | Cancel an active schedule (files stay) | `find_schedule`, then `unschedule_post(..., expected_schedule_id=id)` | JSON `{}` | `{schedule}` | Lock; the ID is checked again inside it |
+| POST | `/api/schedules/{id}/reconfirm` | Replace a `SCHEDULED` or `INVALID` schedule with one for the current files | `find_schedule`, then `reconfirm_post(..., expected_schedule_id=id)` | JSON `{publish_at?, real: false, confirm: null}` | `201 {schedule, replaces, warnings}` | Old time unless given; real needs the phrase again (never carried over); lock |
 | GET | `/api/linkedin/status?check=false` | Token present, expiry date, days left; with `check=true` also asks LinkedIn | `load_linkedin_credentials`, `LinkedInCredentials.state`, `.expires_on`; `check=true`: `run_check` (refactor 5) | query `check` | `{token_set, state, expires_on, days_left, member?}` | Never the token. No upload test from the API (question 6) |
 
 ## Small refactors needed first (listed, not done)
@@ -55,6 +59,10 @@
 | `GET /api/jobs` | 200 (empty list if no database yet); 500 database unreadable |
 | `GET /api/jobs/{id}` | 200; 400 prefix shorter than 6; 404 no match; 409 more than one match |
 | `POST /api/jobs/{id}/resolve` | 200; 400 bad body or blank post ID; 404 no match or no database; 409 ambiguous prefix, not `NEEDS_REVIEW`, or run lock held; 422 `published` for a simulated job |
+| `GET /api/schedules` | 200 (`available: false` and an empty list without a database with schedules); 400 unknown status; 500 database unreadable |
+| `POST /api/schedules` | 201; 400 refused (bad or too-early time, post not found or invalid, duplicate, already scheduled, real without the phrase); 409 run lock held; 415 not JSON |
+| `POST /api/schedules/{id}/cancel` | 200; 400 not active; 404 unknown ID; 409 run lock held, or the post's schedule changed since the page loaded |
+| `POST /api/schedules/{id}/reconfirm` | 201; 400 refused (as creating, or nothing to re-confirm); 404 unknown ID; 409 run lock held, or the schedule changed since the page loaded |
 | `GET /api/linkedin/status` | 200 (state `missing`, `expired`, `expiring`, `valid`, `unknown` in the body); 502 `check=true` and LinkedIn unreachable |
 
 ## Open questions (for the developer and Mouzan)

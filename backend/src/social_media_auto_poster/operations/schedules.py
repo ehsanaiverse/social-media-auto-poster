@@ -119,8 +119,12 @@ def schedule_post(
     return ScheduleResult(record, _local_time(publish_at, settings.timezone), warnings)
 
 
-def unschedule_post(settings: Settings, name: str) -> ScheduleRecord:
-    """Cancel the active schedule of ``name``; its files are not touched. Raises ScheduleError or RunLockHeldError."""
+def unschedule_post(settings: Settings, name: str, *, expected_schedule_id: str | None = None) -> ScheduleRecord:
+    """Cancel the active schedule of ``name``; its files are not touched. Raises ScheduleError or RunLockHeldError.
+
+    With ``expected_schedule_id`` (the API), the active schedule must be that one, checked inside the run lock;
+    otherwise ScheduleError ``schedule_changed`` and nothing changes. The CLI passes nothing.
+    """
     with single_run_lock(settings.lock_file), _run_scope():
         if not _has_schedules(settings):  # No database, or one from before schedules: nothing to cancel, nothing upgraded.
             raise ScheduleError("not_scheduled", f"'{name.strip()}' has no active schedule.")
@@ -128,6 +132,8 @@ def unschedule_post(settings: Settings, name: str) -> ScheduleRecord:
         try:
             schedules = ScheduleRepository(conn)
             active = schedules.find_active(platform=PLATFORM, stem=name.strip())
+            if expected_schedule_id is not None and (active is None or active.schedule_id != expected_schedule_id):
+                raise _schedule_changed(name.strip(), active)
             if active is None:
                 raise ScheduleError("not_scheduled", f"'{name.strip()}' has no active schedule.")
             cancelled = schedules.cancel(active.schedule_id)  # Still SCHEDULED: we hold the lock.
@@ -176,7 +182,13 @@ def list_schedules(settings: Settings, *, include_all: bool = False, status: Sch
 
 
 def reconfirm_post(
-    settings: Settings, name: str, *, real: bool, at: str | None = None, interval_s: float = DEFAULT_INTERVAL_S
+    settings: Settings,
+    name: str,
+    *,
+    real: bool,
+    at: str | None = None,
+    interval_s: float = DEFAULT_INTERVAL_S,
+    expected_schedule_id: str | None = None,
 ) -> ReconfirmResult:
     """Re-confirm a post's schedule with its current content (D46): a new schedule replaces the old one.
 
@@ -184,7 +196,8 @@ def reconfirm_post(
     is INVALID. Every check ``schedule`` makes is made again. Real only with ``real`` (never carried over).
     The time stays the old one unless ``at`` is given. The old SCHEDULED schedule is cancelled and the new
     one created in one transaction; an old INVALID one stays as it is. Takes the run lock. Raises
-    ScheduleError (nothing changed) or RunLockHeldError.
+    ScheduleError (nothing changed) or RunLockHeldError. With ``expected_schedule_id`` (the API), the schedule
+    re-confirmed must be that one, checked inside the lock (else ``schedule_changed``); the CLI passes nothing.
     """
     mode = PublishMode.REAL if real else PublishMode.SIMULATED
     now = clock.now()
@@ -203,6 +216,8 @@ def reconfirm_post(
                 raise ScheduleError(
                     "nothing_to_reconfirm", f"'{wanted}': {state}; nothing to re-confirm. Use schedule instead."
                 )
+            if expected_schedule_id is not None and old.schedule_id != expected_schedule_id:
+                raise _schedule_changed(wanted, old)
             candidate = _find_post(settings, wanted)
             unstable = unstable_files(candidate, interval_s)
             if unstable:
@@ -258,6 +273,30 @@ def reconfirm_post(
     if mode is PublishMode.REAL:
         warnings.extend(_token_warnings(settings, publish_at, now))
     return ReconfirmResult(old, new, _local_time(publish_at, settings.timezone), tuple(warnings))
+
+
+def find_schedule(settings: Settings, schedule_id: str) -> ScheduleRecord | None:
+    """One schedule by its full ID, read-only (never creates or upgrades the database); None if there is none."""
+    try:
+        conn = open_app_db_read_only(settings.app_db_path)
+    except FileNotFoundError:
+        return None
+    except (SchemaTooNewError, sqlite3.Error) as error:
+        raise ScheduleError("no_database", f"could not read the job database: {error}") from None
+    try:
+        return ScheduleRepository(conn).get(schedule_id) if schedules_available(conn) else None
+    except sqlite3.Error as error:
+        raise ScheduleError("no_database", f"could not read the job database: {error}") from None
+    finally:
+        conn.close()
+
+
+def _schedule_changed(name: str, current: ScheduleRecord | None) -> ScheduleError:
+    now = f"it is now {current.schedule_id[:8]} ({current.status})" if current else "it has no active schedule now"
+    return ScheduleError(
+        "schedule_changed",
+        f"the schedule of '{name}' changed since this page was loaded ({now}); nothing was changed. Refresh and try again.",
+    )
 
 
 def _find_post(settings: Settings, name: str) -> PostCandidate:

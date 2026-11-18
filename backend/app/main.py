@@ -10,7 +10,7 @@ from social_media_auto_poster.config import Settings, load_settings
 from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S
 from social_media_auto_poster.platforms.linkedin.client import LINKEDIN_VERSION
 
-from .routers import jobs, linkedin, posts, run, scan
+from .routers import jobs, linkedin, posts, run, scan, schedules
 from .services import JobDatabaseError, JobService
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ def create_app(settings: Settings | None = None, *, stability_interval_s: float 
     def health() -> dict:
         return {"status": "ok", "simulated_by_default": True, "linkedin_version": LINKEDIN_VERSION}
 
-    for router in (scan.router, run.router, jobs.router, posts.router, linkedin.router):
+    for router in (scan.router, run.router, jobs.router, posts.router, linkedin.router, schedules.router):
         app.include_router(router)
     return app
 

@@ -1,5 +1,5 @@
 """Request models for the API (see schemas.py)."""
 
-from .schemas import ResolveRequest, RunRequest
+from .schemas import ReconfirmRequest, ResolveRequest, RunRequest, ScheduleRequest
 
-__all__ = ["ResolveRequest", "RunRequest"]
+__all__ = ["ReconfirmRequest", "ResolveRequest", "RunRequest", "ScheduleRequest"]

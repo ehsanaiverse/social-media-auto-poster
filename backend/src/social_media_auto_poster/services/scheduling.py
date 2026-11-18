@@ -38,7 +38,8 @@ class ScheduleError(Exception):
     """A schedule, unschedule or list request was refused; nothing was changed.
 
     ``kind`` is one of: not_found, pending, ambiguous, not_stable, unreadable, invalid, time, duplicate_job,
-    duplicate_content, already_scheduled, not_scheduled, no_database.
+    duplicate_content, already_scheduled, not_scheduled, nothing_to_reconfirm, schedule_changed (the API's schedule
+    ID is no longer the post's current schedule), no_database.
     """
 
     def __init__(self, kind: str, message: str, details: tuple[str, ...] = ()):

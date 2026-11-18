@@ -8,6 +8,7 @@ database, publishing, or duplicate logic of its own. Job history is read through
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -15,16 +16,19 @@ from pathlib import Path
 
 from social_media_auto_poster.config import Settings, data_dir_outside_base
 from social_media_auto_poster.ingestion.intake import add_post as add_post_to_incoming
-from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, PLATFORM, outside_warning
+from social_media_auto_poster.operations import schedules as schedules_ops
+from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, PLATFORM, _local_time, outside_warning
 from social_media_auto_poster.operations.linkedin import LinkedInStatus, linkedin_status
 from social_media_auto_poster.operations.logs import logging_to
 from social_media_auto_poster.operations.resolve import resolve_job
 from social_media_auto_poster.operations.run import RunReport, run_once
 from social_media_auto_poster.operations.scan import CandidateView, find_duplicate, scan_preview
-from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode
+from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode, ScheduleStatus
 from social_media_auto_poster.services.reconcile import Recovery
+from social_media_auto_poster.services.scheduling import ScheduleError
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db_read_only
 from social_media_auto_poster.storage.jobs import JobRecord, JobRepository
+from social_media_auto_poster.storage.schedules import ScheduleRecord
 
 MIN_JOB_ID_PREFIX = 6
 
@@ -44,6 +48,17 @@ class JobLookupError(Exception):
         super().__init__(message)
         self.kind = kind  # not_found | ambiguous | no_database
         self.message = message
+
+
+class ScheduleLookupError(Exception):
+    """No schedule has this ID (or there is no job database with schedules yet)."""
+
+
+# The operations speak to the command line; the API's caller sends JSON fields instead of options.
+_CLI_WORDS = (
+    ("give --at with a new time", "send publish_at with a new time"),
+    ("because --real was not given", "because real was not requested"),
+)
 
 
 class JobService:
@@ -80,10 +95,12 @@ class JobService:
         result = preview.scan
         return {
             "platform": PLATFORM.value,
-            "candidates": [_candidate_to_dict(view) for view in preview.candidates],
+            "candidates": [_candidate_to_dict(view, self._settings) for view in preview.candidates],
             "pending": [path.name for path in result.pending],
             "ambiguous": [[path.name for path in group] for group in result.ambiguous],
             "warnings": warnings,
+            # Active schedules whose post is no longer a complete pair in incoming/: they will not be published.
+            "missing_schedules": [self._schedule_json(v.schedule, v.content) for v in preview.missing_schedules],
         }
 
     def add_post(self, *, name: str, image: bytes, image_extension: str, caption: bytes) -> dict:
@@ -136,6 +153,114 @@ class JobService:
     def linkedin(self, *, check: bool) -> LinkedInStatus:
         return linkedin_status(self._settings, check=check)
 
+    # Schedules (D46): the same operations as ``schedules``, ``schedule``, ``unschedule`` and ``reconfirm``.
+
+    def list_schedules(self, *, include_all: bool, status: ScheduleStatus | None, last: int) -> dict:
+        """Schedules, read-only (never locks, writes, creates or upgrades the database)."""
+        try:
+            result = schedules_ops.list_schedules(self._settings, include_all=include_all, status=status, limit=last)
+        except ScheduleError as error:
+            raise JobDatabaseError(error.message) from error
+        return {
+            "timezone": self._settings.timezone.key,
+            "available": result.available,
+            "schedules": [self._schedule_json(view.schedule, view.content) for view in result.schedules],
+        }
+
+    def schedule(self, *, name: str, publish_at: str, real: bool) -> dict:
+        """Schedule a post. Raises ScheduleError (nothing written) or RunLockHeldError."""
+        with self._schedule_errors(), logging_to(verbose=False, log_file=self._settings.log_file, console=False):
+            result = schedules_ops.schedule_post(
+                self._settings, name, publish_at, real=real, interval_s=self._interval_s
+            )
+        return {"schedule": self._schedule_json(result.schedule, "ok"), "warnings": self._texts(result.warnings)}
+
+    def cancel_schedule(self, schedule_id: str) -> dict:
+        """Cancel this schedule (checked again inside the run lock).
+
+        Raises ScheduleLookupError, ScheduleError or RunLockHeldError.
+        """
+        with self._schedule_errors():
+            record = self._find_schedule(schedule_id)
+            if record.status is not ScheduleStatus.SCHEDULED:
+                raise ScheduleError(
+                    "not_scheduled", f"this schedule of '{record.stem}' is {record.status}; nothing to cancel."
+                )
+            with logging_to(verbose=False, log_file=self._settings.log_file, console=False):
+                cancelled = schedules_ops.unschedule_post(
+                    self._settings, record.stem, expected_schedule_id=record.schedule_id
+                )
+        return {"schedule": self._schedule_json(cancelled, None)}
+
+    def reconfirm_schedule(self, schedule_id: str, *, publish_at: str | None, real: bool) -> dict:
+        """Replace this schedule (SCHEDULED or INVALID) with one for the files as they are now.
+
+        Raises ScheduleLookupError, ScheduleError or RunLockHeldError.
+        """
+        with self._schedule_errors():
+            record = self._find_schedule(schedule_id)
+            if record.status not in (ScheduleStatus.SCHEDULED, ScheduleStatus.INVALID):
+                raise ScheduleError(
+                    "nothing_to_reconfirm",
+                    f"this schedule of '{record.stem}' is {record.status}; nothing to re-confirm. "
+                    "Schedule the post again instead.",
+                )
+            with logging_to(verbose=False, log_file=self._settings.log_file, console=False):
+                result = schedules_ops.reconfirm_post(
+                    self._settings,
+                    record.stem,
+                    real=real,
+                    at=publish_at,
+                    interval_s=self._interval_s,
+                    expected_schedule_id=record.schedule_id,
+                )
+        return {
+            "schedule": self._schedule_json(result.new, "ok"),
+            "replaces": result.old.schedule_id,
+            "warnings": self._texts(result.warnings),
+        }
+
+    def _find_schedule(self, schedule_id: str) -> ScheduleRecord:
+        record = schedules_ops.find_schedule(self._settings, schedule_id.strip().lower())
+        if record is None:
+            raise ScheduleLookupError(f"no schedule has the ID '{schedule_id}'")
+        return record
+
+    @contextmanager
+    def _schedule_errors(self) -> Iterator[None]:
+        """Refusals as the API's caller should read them: no absolute paths, no command-line options."""
+        try:
+            yield
+        except ScheduleError as error:
+            raise ScheduleError(error.kind, self._text(error.message), tuple(self._texts(error.details))) from None
+
+    def _schedule_json(self, record: ScheduleRecord, content: str | None) -> dict:
+        """A schedule as JSON: no hashes, no paths. ``content_state`` only for an active schedule."""
+        return {
+            "schedule_id": record.schedule_id,
+            "name": record.stem,
+            "mode": str(record.mode),
+            "status": str(record.status),
+            "publish_at": record.publish_at.isoformat(),
+            "publish_at_local": _local_time(record.publish_at, self._settings.timezone),
+            "content_state": content,
+            "reason": self._text(record.reason) if record.reason else None,
+            "job_id": record.job_id,
+            "created_at": record.created_at.isoformat(),
+        }
+
+    def _texts(self, texts) -> list[str]:
+        return [self._text(text) for text in texts]
+
+    def _text(self, text: str) -> str:
+        """Folders inside the data or base folder are named relative to it, as destinations are."""
+        folders = sorted({self._settings.data_dir, self._settings.base_dir}, key=lambda p: len(str(p)), reverse=True)
+        for folder in folders:
+            text = text.replace(f"{folder}{os.sep}", "").replace(str(folder), folder.name)
+        for cli, api in _CLI_WORDS:
+            text = text.replace(cli, api)
+        return text
+
     def _job_json(self, record: JobRecord, *, detail: bool = False) -> dict:
         data = job_to_dict(record, detail=detail)
         data["destination"] = self._relative(record.destination)
@@ -178,7 +303,8 @@ class JobService:
             conn.close()
 
 
-def _candidate_to_dict(view: CandidateView) -> dict:
+def _candidate_to_dict(view: CandidateView, settings: Settings) -> dict:
+    schedule = view.schedule
     return {
         "name": view.candidate.stem,
         "media_name": view.candidate.media_path.name,
@@ -190,6 +316,14 @@ def _candidate_to_dict(view: CandidateView) -> dict:
         "duplicate_of": view.duplicate.job_id if view.duplicate else None,
         "duplicate_check_failed": view.duplicate_check_failed,
         "only_simulated": view.simulated is not None,
+        # An active schedule: runs skip the post until a scheduled run publishes it (D46).
+        "schedule": None if schedule is None else {
+            "schedule_id": schedule.schedule_id,
+            "mode": str(schedule.mode),
+            "publish_at": schedule.publish_at.isoformat(),
+            "publish_at_local": _local_time(schedule.publish_at, settings.timezone),
+            "content_state": view.schedule_content,
+        },
     }
 
 
