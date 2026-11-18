@@ -585,10 +585,10 @@ def test_schedules_reads_with_a_read_only_connection(settings, monkeypatch):
     add_post(settings, "launch")
     assert schedule("launch", "--at", "2026-12-01 09:00") == 0
 
-    def no_writes(path):
+    def no_writes(*args, **kwargs):
         raise AssertionError("schedules must not open the database for writing")
 
-    monkeypatch.setattr(cli, "open_app_db", no_writes)
+    monkeypatch.setattr(database, "migrate", no_writes)
     assert cli.main(["schedules"]) == 0
 
 

@@ -21,6 +21,7 @@ from social_media_auto_poster.models import JobStatus, Platform, PublishMode, Sc
 from social_media_auto_poster.services import scheduling
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.services.run_lock import single_run_lock
+from social_media_auto_poster.storage import database
 from social_media_auto_poster.storage.database import open_app_db
 from social_media_auto_poster.storage.jobs import JobRepository
 from social_media_auto_poster.storage.schedules import ScheduleRepository
@@ -113,7 +114,7 @@ def test_schedules_shows_changed_and_never_writes(settings, capsys, monkeypatch)
     edit_caption(settings)
     before = settings.app_db_path.read_bytes()
     capsys.readouterr()
-    monkeypatch.setattr(cli, "open_app_db", lambda path: pytest.fail("schedules must not open the database for writing"))
+    monkeypatch.setattr(database, "migrate", lambda *a, **k: pytest.fail("schedules must not open the database for writing"))
 
     assert cli.main(["schedules"]) == 0
 
@@ -148,7 +149,7 @@ def test_scan_shows_changed_and_never_writes(settings, capsys, monkeypatch):
     edit_caption(settings)
     before = settings.app_db_path.read_bytes()
     capsys.readouterr()
-    monkeypatch.setattr(cli, "open_app_db", lambda path: pytest.fail("scan must not open the database for writing"))
+    monkeypatch.setattr(database, "migrate", lambda *a, **k: pytest.fail("scan must not open the database for writing"))
 
     assert cli.main(["scan", "--interval", "0"]) == 0
 

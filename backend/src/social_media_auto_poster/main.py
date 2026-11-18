@@ -27,7 +27,6 @@ from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from social_media_auto_poster.config import (
@@ -75,6 +74,7 @@ from social_media_auto_poster.operations.common import (
 )
 from social_media_auto_poster.operations.linkedin import LinkedInStatus, linkedin_status
 from social_media_auto_poster.operations.logs import _run_scope, logging_to
+from social_media_auto_poster.operations.resolve import ResolveError, resolve_job
 from social_media_auto_poster.operations.scan import (
     CandidateView,
     ScanPreview,
@@ -82,7 +82,12 @@ from social_media_auto_poster.operations.scan import (
     _active_schedules,
     find_duplicate,
     scan_preview,
-    unstable_files,
+)
+from social_media_auto_poster.operations.schedules import (
+    list_schedules,
+    reconfirm_post,
+    schedule_post,
+    unschedule_post,
 )
 from social_media_auto_poster.platforms.base import Publisher
 from social_media_auto_poster.platforms.linkedin.check import run_check
@@ -101,25 +106,15 @@ from social_media_auto_poster.services.run_lock import RunLockHeldError, single_
 from social_media_auto_poster.services.scheduling import (
     CONTENT_LABELS,
     CONTENT_MISSING,
-    MIN_LEAD,
     DueSelection,
     ScheduleError,
     ScheduleTimeError,
-    check_schedulable,
     check_time_format,
-    content_state,
-    parse_publish_at,
     select_due,
 )
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
-from social_media_auto_poster.storage.jobs import JobNotFoundError, JobRecord, JobRepository
-from social_media_auto_poster.storage.schedules import (
-    DuplicateScheduleError,
-    ScheduleNotFoundError,
-    ScheduleRecord,
-    ScheduleRepository,
-    schedules_available,
-)
+from social_media_auto_poster.storage.jobs import JobRecord, JobRepository
+from social_media_auto_poster.storage.schedules import ScheduleNotFoundError, ScheduleRecord, ScheduleRepository
 
 logger = logging.getLogger(__name__)
 
@@ -253,46 +248,6 @@ class RunReport:
     due: tuple[ScheduledPost, ...] = ()  # Carried out by this run (at most one), with how late.
     missed: tuple[ScheduledPost, ...] = ()  # More than 6 hours late: marked MISSED, nothing sent.
     waiting: tuple[ScheduledPost, ...] = ()  # Also due and in time: left for the next scheduled runs.
-
-
-@dataclass(frozen=True)
-class ResolveResult:
-    job: JobRecord
-    status: JobStatus
-    post_id: str | None
-    note: str
-
-
-class ResolveError(Exception):
-    """A resolve was refused. ``kind`` is one of: blank_post_id, no_database, not_found, ambiguous,
-    not_needs_review, simulated_published, no_longer_needs_review."""
-
-    def __init__(self, kind: str, message: str, details: tuple[str, ...] = ()):
-        super().__init__(message)
-        self.kind = kind
-        self.message = message
-        self.details = details
-
-
-@dataclass(frozen=True)
-class ScheduleResult:
-    schedule: ScheduleRecord
-    local_time: str  # "2026-12-01 09:00 Asia/Karachi".
-    warnings: tuple[str, ...]  # Real schedules: token problems to fix before the post is due. Never the token.
-
-
-@dataclass(frozen=True)
-class ScheduleList:
-    schedules: tuple[ScheduleView, ...]
-    available: bool  # False: no job database, or one from before schedules existed (it is not upgraded).
-
-
-@dataclass(frozen=True)
-class ReconfirmResult:
-    old: ScheduleRecord  # As it was before: SCHEDULED (now CANCELLED) or INVALID (stays INVALID).
-    new: ScheduleRecord
-    local_time: str
-    warnings: tuple[str, ...]  # Real -> simulated without --real; token problems for a real schedule.
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -657,71 +612,6 @@ def _show_job(repository: JobRepository, prefix: str) -> int:
 # resolve
 
 
-def resolve_job(settings: Settings, job_prefix: str, *, published_post_id: str | None = None) -> ResolveResult:
-    """Settle a NEEDS_REVIEW job: PUBLISHED with ``published_post_id``, or FAILED (retryable) without it.
-
-    Takes the run lock, so it never changes the database during a run. Raises ResolveError for a
-    refusal (nothing is changed) and RunLockHeldError if a run is in progress.
-    """
-    if published_post_id is not None and not published_post_id.strip():
-        raise ResolveError("blank_post_id", "--published needs the platform's post ID (it must not be empty).")
-    with single_run_lock(settings.lock_file), _run_scope():
-        if not settings.app_db_path.is_file():
-            raise ResolveError("no_database", f"no job database at {settings.app_db_path}; nothing to resolve.")
-        try:
-            conn = open_app_db(settings.app_db_path)
-        except (SchemaTooNewError, sqlite3.Error) as error:
-            raise ResolveError("no_database", f"could not open the job database: {error}") from None
-        try:
-            return _resolve_in_database(JobRepository(conn), job_prefix, published_post_id)
-        finally:
-            conn.close()
-
-
-def _resolve_in_database(repository: JobRepository, prefix: str, published_post_id: str | None) -> ResolveResult:
-    matches = repository.find_by_id_prefix(prefix)
-    if not matches:
-        raise ResolveError("not_found", f"no job ID starts with '{prefix}'. Nothing was changed.")
-    if len(matches) > 1:
-        details = tuple(f"  {r.job_id}  {r.stem}  {r.status}" for r in matches)
-        raise ResolveError(
-            "ambiguous", f"'{prefix}' matches {len(matches)} jobs; use a longer prefix:", details
-        )
-
-    [job] = matches
-    name = f"job {job.job_id[:8]} ({job.stem})"
-    if job.status is not JobStatus.NEEDS_REVIEW:
-        raise ResolveError(
-            "not_needs_review",
-            f"{name} is {job.status}; only NEEDS_REVIEW jobs can be resolved. Nothing was changed.",
-        )
-    published = published_post_id is not None
-    if published and job.mode is PublishMode.SIMULATED:
-        raise ResolveError(
-            "simulated_published",
-            f"{name} is a simulated job; nothing was sent, so it cannot have been published. "
-            "Resolve it with --failed. Nothing was changed.",
-        )
-
-    status = JobStatus.PUBLISHED if published else JobStatus.FAILED
-    post_id = published_post_id.strip() if published else None
-    stamp = f"{clock.utc_now():%Y-%m-%dT%H:%M:%SZ}"
-    note = (
-        f"resolved manually as PUBLISHED (post ID {post_id}) at {stamp}"
-        if published
-        else f"resolved manually as FAILED at {stamp}"
-    )
-    try:
-        repository.resolve_needs_review(job.job_id, status=status, note=note, platform_post_id=post_id)
-    except JobNotFoundError:  # Cannot happen while we hold the lock; refuse rather than guess.
-        raise ResolveError("no_longer_needs_review", f"{name} is no longer NEEDS_REVIEW. Nothing was changed.") from None
-    logger.info(
-        "Job resolved manually: job_id=%s platform=%s mode=%s stem=%s status=%s post_id=%s",
-        job.job_id, job.platform, job.mode, job.stem, status, post_id,
-    )
-    return ResolveResult(job=job, status=status, post_id=post_id, note=note)
-
-
 def _resolve(args: argparse.Namespace) -> int:
     settings = load_settings()
     published = args.published
@@ -761,266 +651,6 @@ def _print_resolve_next_steps(job: JobRecord, status: JobStatus, settings: Setti
 
 
 # schedule, unschedule, schedules (D46)
-
-
-def schedule_post(
-    settings: Settings, name: str, at: str, *, real: bool, interval_s: float = DEFAULT_INTERVAL_S
-) -> ScheduleResult:
-    """Schedule the post ``name`` in LinkedIn's incoming/ for ``at`` (``YYYY-MM-DD HH:MM`` in the configured zone).
-
-    Real only when ``real`` is true (D46). The post is checked now, as a run would check it, and the schedule
-    is bound to both files' hashes. Takes the run lock and opens the job database for writing (upgrading an
-    older one, with its backup). Raises ScheduleError (nothing changed) or RunLockHeldError.
-    """
-    mode = PublishMode.REAL if real else PublishMode.SIMULATED
-    now = clock.now()
-    with single_run_lock(settings.lock_file), _run_scope():
-        candidate = _find_post(settings, name)
-        unstable = unstable_files(candidate, interval_s)
-        if unstable:
-            raise ScheduleError(
-                "not_stable",
-                f"'{candidate.stem}' is still being copied ({' and '.join(unstable)} changing or locked); "
-                "try again when both files are complete.",
-            )
-        try:
-            publish_at = parse_publish_at(at, zone=settings.timezone, now=now)
-        except ScheduleTimeError as error:
-            raise ScheduleError("time", str(error)) from None
-        conn = _open_for_schedules(settings)
-        try:
-            schedules = ScheduleRepository(conn)
-            media_sha256, caption_sha256 = check_schedulable(
-                candidate, mode=mode, jobs=JobRepository(conn), schedules=schedules
-            )
-            try:
-                record = schedules.create(
-                    schedule_id=str(uuid4()),
-                    platform=candidate.platform,
-                    mode=mode,
-                    stem=candidate.stem,
-                    media_name=candidate.media_path.name,
-                    caption_name=candidate.caption_path.name,
-                    media_sha256=media_sha256,
-                    caption_sha256=caption_sha256,
-                    publish_at=publish_at,
-                )
-            except DuplicateScheduleError:
-                existing = schedules.find_active(platform=candidate.platform, stem=candidate.stem)
-                when = _local_time(existing.publish_at, settings.timezone) if existing else "another time"
-                raise ScheduleError(
-                    "already_scheduled",
-                    f"'{candidate.stem}' is already scheduled for {when}; unschedule it first to change it.",
-                ) from None
-        finally:
-            conn.close()
-        logger.info(
-            "Schedule created: schedule_id=%s platform=%s mode=%s stem=%s publish_at=%s",
-            record.schedule_id, record.platform, record.mode, record.stem, f"{record.publish_at:%Y-%m-%dT%H:%M:%SZ}",
-        )
-    warnings = _token_warnings(settings, publish_at, now) if mode is PublishMode.REAL else ()
-    return ScheduleResult(record, _local_time(publish_at, settings.timezone), warnings)
-
-
-def unschedule_post(settings: Settings, name: str) -> ScheduleRecord:
-    """Cancel the active schedule of ``name``; its files are not touched. Raises ScheduleError or RunLockHeldError."""
-    with single_run_lock(settings.lock_file), _run_scope():
-        if not _has_schedules(settings):  # No database, or one from before schedules: nothing to cancel, nothing upgraded.
-            raise ScheduleError("not_scheduled", f"'{name.strip()}' has no active schedule.")
-        conn = _open_for_schedules(settings)
-        try:
-            schedules = ScheduleRepository(conn)
-            active = schedules.find_active(platform=PLATFORM, stem=name.strip())
-            if active is None:
-                raise ScheduleError("not_scheduled", f"'{name.strip()}' has no active schedule.")
-            cancelled = schedules.cancel(active.schedule_id)  # Still SCHEDULED: we hold the lock.
-        finally:
-            conn.close()
-        logger.info(
-            "Schedule cancelled: schedule_id=%s platform=%s mode=%s stem=%s",
-            cancelled.schedule_id, cancelled.platform, cancelled.mode, cancelled.stem,
-        )
-    return cancelled
-
-
-def list_schedules(settings: Settings, *, include_all: bool = False, status: ScheduleStatus | None = None,
-                   limit: int = 50) -> ScheduleList:
-    """Schedules, read-only: active ones soonest first, or (``include_all`` / ``status``) newest first.
-
-    Never locks, writes, creates or upgrades the job database. Raises ScheduleError if it cannot be read.
-    """
-    try:
-        conn = open_app_db_read_only(settings.app_db_path)
-    except FileNotFoundError:
-        return ScheduleList((), available=False)
-    except (SchemaTooNewError, sqlite3.Error) as error:
-        raise ScheduleError("no_database", f"could not read the job database: {error}") from None
-    try:
-        if not schedules_available(conn):
-            return ScheduleList((), available=False)
-        schedules = ScheduleRepository(conn)
-        if status is not None:
-            records = schedules.list_recent(limit, status=status)
-        elif include_all:
-            records = schedules.list_recent(limit)
-        else:
-            records = schedules.list_active()
-        # Active schedules: compare their files with what was confirmed (reads the files, writes nothing).
-        views = tuple(
-            ScheduleView(r, content_state(r, settings.incoming_dir(r.platform))
-                         if r.status is ScheduleStatus.SCHEDULED else None)
-            for r in records
-        )
-        return ScheduleList(views, available=True)
-    except sqlite3.Error as error:
-        raise ScheduleError("no_database", f"could not read the job database: {error}") from None
-    finally:
-        conn.close()
-
-
-def reconfirm_post(
-    settings: Settings, name: str, *, real: bool, at: str | None = None, interval_s: float = DEFAULT_INTERVAL_S
-) -> ReconfirmResult:
-    """Re-confirm a post's schedule with its current content (D46): a new schedule replaces the old one.
-
-    Works on the post's active (SCHEDULED) schedule, changed or not, or else on its latest schedule if that
-    is INVALID. Every check ``schedule`` makes is made again. Real only with ``real`` (never carried over).
-    The time stays the old one unless ``at`` is given. The old SCHEDULED schedule is cancelled and the new
-    one created in one transaction; an old INVALID one stays as it is. Takes the run lock. Raises
-    ScheduleError (nothing changed) or RunLockHeldError.
-    """
-    mode = PublishMode.REAL if real else PublishMode.SIMULATED
-    now = clock.now()
-    wanted = name.strip()
-    with single_run_lock(settings.lock_file), _run_scope():
-        if not _has_schedules(settings):
-            raise ScheduleError("nothing_to_reconfirm", f"'{wanted}' has no schedule; nothing to re-confirm. Use schedule.")
-        conn = _open_for_schedules(settings)
-        try:
-            schedules = ScheduleRepository(conn)
-            old = schedules.find_active(platform=PLATFORM, stem=wanted) or schedules.latest_for_post(
-                platform=PLATFORM, stem=wanted
-            )
-            if old is None or old.status not in (ScheduleStatus.SCHEDULED, ScheduleStatus.INVALID):
-                state = f"its latest schedule is {old.status}" if old else "it has no schedule"
-                raise ScheduleError(
-                    "nothing_to_reconfirm", f"'{wanted}': {state}; nothing to re-confirm. Use schedule instead."
-                )
-            candidate = _find_post(settings, wanted)
-            unstable = unstable_files(candidate, interval_s)
-            if unstable:
-                raise ScheduleError(
-                    "not_stable",
-                    f"'{candidate.stem}' is still being copied ({' and '.join(unstable)} changing or locked); "
-                    "try again when both files are complete.",
-                )
-            if at is not None:
-                try:
-                    publish_at = parse_publish_at(at, zone=settings.timezone, now=now)
-                except ScheduleTimeError as error:
-                    raise ScheduleError("time", str(error)) from None
-            else:
-                publish_at = old.publish_at
-                if publish_at < now + MIN_LEAD:
-                    raise ScheduleError(
-                        "time",
-                        f"the old time {_local_time(publish_at, settings.timezone)} is less than 5 minutes ahead "
-                        "or already past; give --at with a new time.",
-                    )
-            active_old = old.schedule_id if old.status is ScheduleStatus.SCHEDULED else None
-            media_sha256, caption_sha256 = check_schedulable(
-                candidate, mode=mode, jobs=JobRepository(conn), schedules=schedules, ignore_schedule_id=active_old
-            )
-            try:
-                new = schedules.replace(
-                    old.schedule_id,
-                    cancel_old=active_old is not None,
-                    schedule_id=str(uuid4()),
-                    platform=candidate.platform,
-                    mode=mode,
-                    stem=candidate.stem,
-                    media_name=candidate.media_path.name,
-                    caption_name=candidate.caption_path.name,
-                    media_sha256=media_sha256,
-                    caption_sha256=caption_sha256,
-                    publish_at=publish_at,
-                )
-            except (ScheduleNotFoundError, DuplicateScheduleError):  # Cannot happen while we hold the lock.
-                raise ScheduleError(
-                    "already_scheduled", f"'{candidate.stem}' changed while re-confirming; nothing was changed."
-                ) from None
-        finally:
-            conn.close()
-        logger.info(
-            "Schedule re-confirmed: old=%s new=%s platform=%s mode=%s stem=%s publish_at=%s",
-            old.schedule_id, new.schedule_id, new.platform, new.mode, new.stem, f"{new.publish_at:%Y-%m-%dT%H:%M:%SZ}",
-        )
-    warnings: list[str] = []
-    if old.mode is PublishMode.REAL and mode is PublishMode.SIMULATED:
-        warnings.append("the old schedule was REAL; this one is SIMULATED because --real was not given.")
-    if mode is PublishMode.REAL:
-        warnings.extend(_token_warnings(settings, publish_at, now))
-    return ReconfirmResult(old, new, _local_time(publish_at, settings.timezone), tuple(warnings))
-
-
-def _find_post(settings: Settings, name: str) -> PostCandidate:
-    """The complete post called ``name`` (compared without case) in LinkedIn's incoming/. Raises ScheduleError."""
-    folder = settings.incoming_dir(PLATFORM)
-    wanted = name.strip()
-    if not folder.is_dir():
-        raise ScheduleError("not_found", f"the incoming folder does not exist: {folder}")
-    result = scan_incoming(folder, PLATFORM)
-    key = wanted.casefold()
-    for group in result.ambiguous:
-        if group and group[0].stem.casefold() == key:
-            names = ", ".join(path.name for path in group)
-            raise ScheduleError("ambiguous", f"'{wanted}' is ambiguous ({names}); keep one image and one caption.")
-    for candidate in result.candidates:
-        if candidate.stem.casefold() == key:
-            return candidate
-    for path in result.pending:
-        if path.stem.casefold() == key:
-            raise ScheduleError("pending", f"'{wanted}' is waiting for its partner file ({path.name} has none yet).")
-    raise ScheduleError("not_found", f"no post named '{wanted}' in {folder}.")
-
-
-def _open_for_schedules(settings: Settings) -> sqlite3.Connection:
-    try:
-        return open_app_db(settings.app_db_path)
-    except (SchemaTooNewError, sqlite3.Error) as error:
-        raise ScheduleError("no_database", f"could not open the job database: {error}") from None
-
-
-def _has_schedules(settings: Settings) -> bool:
-    """Whether the job database exists and has the schedules table (checked read-only)."""
-    try:
-        conn = open_app_db_read_only(settings.app_db_path)
-    except FileNotFoundError:
-        return False
-    except (SchemaTooNewError, sqlite3.Error) as error:
-        raise ScheduleError("no_database", f"could not read the job database: {error}") from None
-    try:
-        return schedules_available(conn)
-    finally:
-        conn.close()
-
-
-def _token_warnings(settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
-    """Token problems a real schedule will meet, read from backend/.env only: no LinkedIn call, never the token."""
-    try:
-        credentials = load_linkedin_credentials(settings.base_dir, today=now.astimezone(settings.timezone).date())
-    except CredentialsError as error:
-        return (f"{error}; real runs are refused without it, so this post will not be published until it is set.",)
-    expires_on = credentials.expires_on
-    if expires_on is None:
-        return ("LINKEDIN_TOKEN_CREATED is not set, so the token's expiry cannot be checked against this schedule.",)
-    publish_day = publish_at.astimezone(settings.timezone).date()
-    if publish_day >= expires_on:
-        return (
-            f"the LinkedIn access token expires on {expires_on}, on or before the scheduled day ({publish_day}); "
-            "renew it before then, or the post will not be published.",
-        )
-    return ()
 
 
 def _schedule(args: argparse.Namespace) -> int:
