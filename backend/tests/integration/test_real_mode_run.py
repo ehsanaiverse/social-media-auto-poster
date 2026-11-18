@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.models import JobStatus, Platform, PublishResult
 from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
@@ -49,7 +50,7 @@ def settings(base) -> Settings:
 @pytest.fixture
 def linkedin(monkeypatch) -> FakeLinkedIn:
     fake = FakeLinkedIn()
-    monkeypatch.setattr(cli, "_real_publisher", lambda settings: fake)
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda settings: fake)
     return fake
 
 
@@ -92,7 +93,7 @@ def test_a_plain_run_never_asks_for_the_real_publisher(settings, monkeypatch, ca
     def must_not_be_called(settings):
         raise AssertionError("the real publisher was requested without --real")
 
-    monkeypatch.setattr(cli, "_real_publisher", must_not_be_called)
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", must_not_be_called)
     add_post(settings, "launch")
 
     assert run() == 0
@@ -110,10 +111,10 @@ def test_env_can_never_switch_a_run_to_real_mode(settings, base, monkeypatch, ca
         monkeypatch.setenv(name, value)
     # The real _real_publisher, watched: if it were ever called, it would reach the fake LinkedIn.
     fake = RecordingLinkedIn()
-    monkeypatch.setattr(cli, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
     real_publisher_calls = []
-    original = cli._real_publisher
-    monkeypatch.setattr(cli, "_real_publisher", lambda s: real_publisher_calls.append(s) or original(s))
+    original = linkedin_ops._real_publisher
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: real_publisher_calls.append(s) or original(s))
     add_post(settings, "launch")
 
     assert run() == 0

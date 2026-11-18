@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.operations import clock
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.platforms.linkedin import check
@@ -31,7 +32,7 @@ def base(tmp_path, monkeypatch) -> Path:
 @pytest.fixture
 def fake(monkeypatch) -> FakeLinkedIn:
     linkedin = FakeLinkedIn()
-    monkeypatch.setattr(cli, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(linkedin)))
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(linkedin)))
     return linkedin
 
 

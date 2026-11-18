@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from app.__main__ import HOST, PORT
 from app.main import create_app
 from social_media_auto_poster import main as core
+from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.config import Settings, ensure_data_dirs, load_settings
 from social_media_auto_poster.ingestion.intake import MAX_IMAGE_BYTES
 from social_media_auto_poster.ingestion.validation import MAX_CAPTION_BYTES
@@ -277,7 +278,7 @@ def test_run_requires_a_json_body(client, settings):
 def test_real_mode_cannot_start_without_the_explicit_flag_and_confirmation(client, settings, monkeypatch):
     add_post(client, name="launch")
     publisher_calls = []
-    monkeypatch.setattr(core, "_real_publisher", lambda s: publisher_calls.append(s) or _must_not_publish())
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: publisher_calls.append(s) or _must_not_publish())
 
     # Without real: true, the run is simulated even if a confirmation is sent.
     assert run(client, {"real": False, "confirm": "publish to LinkedIn"}).json()["mode"] == "simulated"
@@ -309,7 +310,7 @@ def test_real_run_without_a_token_is_refused_before_anything_is_sent(client, set
 def test_real_run_refuses_posts_that_were_only_simulated(client, settings, monkeypatch):
     add_post(client, name="launch")
     assert run(client).status_code == 200  # Simulated first.
-    monkeypatch.setattr(core, "_real_publisher", lambda s: NoPublishPublisher())
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: NoPublishPublisher())
     response = run(client, {"real": True, "confirm": "publish to LinkedIn"})
     assert response.status_code == 412
     assert "only simulated" in response.json()["detail"]
@@ -326,10 +327,10 @@ def test_env_can_never_switch_an_api_run_to_real_mode(client, settings, monkeypa
         monkeypatch.setenv(name, value)
     # The real _real_publisher, watched: if it were ever called, it would reach the fake LinkedIn.
     fake = FakeLinkedIn()
-    monkeypatch.setattr(core, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
     real_publisher_calls = []
-    original = core._real_publisher
-    monkeypatch.setattr(core, "_real_publisher", lambda s: real_publisher_calls.append(s) or original(s))
+    original = linkedin_ops._real_publisher
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: real_publisher_calls.append(s) or original(s))
     add_post(client, name="launch")
 
     response = run(client)
@@ -558,7 +559,7 @@ def test_status_with_check_asks_linkedin_and_shows_the_member_not_the_token(clie
         seen.append((request.method, request.url.path))
         return httpx.Response(200, json={"sub": "member-123", "name": "Test Person"})
 
-    monkeypatch.setattr(core, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(linkedin)))
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(linkedin)))
     response = client.get("/api/linkedin/status", params={"check": True})
     assert response.status_code == 200
     body = response.json()
@@ -574,7 +575,7 @@ def test_status_check_is_a_502_when_linkedin_cannot_be_reached(client, monkeypat
     def unreachable(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("no route", request=request)
 
-    monkeypatch.setattr(core, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(unreachable)))
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(unreachable)))
     response = client.get("/api/linkedin/status", params={"check": True})
     assert response.status_code == 502
     assert LINKEDIN_TOKEN not in response.text
@@ -583,7 +584,7 @@ def test_status_check_is_a_502_when_linkedin_cannot_be_reached(client, monkeypat
 def test_status_with_check_does_not_call_linkedin_for_an_expired_token(client, monkeypatch):
     monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", LINKEDIN_TOKEN)
     monkeypatch.setenv("LINKEDIN_TOKEN_CREATED", "2020-01-01")
-    monkeypatch.setattr(core, "_linkedin_client", lambda token: _must_not_publish())
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", lambda token: _must_not_publish())
     body = client.get("/api/linkedin/status", params={"check": True}).json()
     assert body["state"] == "expired"
     assert LINKEDIN_TOKEN not in str(body)
@@ -603,7 +604,7 @@ ECHOES_TOKEN = {"message": f"bad request from {LINKEDIN_TOKEN}", "code": LINKEDI
 def use_fake_linkedin(monkeypatch, fake: FakeLinkedIn, token: str = LINKEDIN_TOKEN) -> None:
     monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", token)
     monkeypatch.setenv("LINKEDIN_TOKEN_CREATED", date.today().isoformat())
-    monkeypatch.setattr(core, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", lambda token: LinkedInClient(token, transport=httpx.MockTransport(fake)))
 
 
 def assert_token_sent_but_never_returned(client, fake: FakeLinkedIn, run_response, token: str = LINKEDIN_TOKEN) -> dict:

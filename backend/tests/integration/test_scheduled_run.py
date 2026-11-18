@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.operations import clock as clock_module
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.models import Platform, PublishResult
@@ -45,7 +46,7 @@ def base(tmp_path, monkeypatch, clock) -> Path:
     monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
     monkeypatch.delenv("AUTOPOSTER_TIMEZONE", raising=False)
-    monkeypatch.setattr(cli, "_linkedin_client", _no_linkedin)
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", _no_linkedin)
     return tmp_path
 
 
@@ -59,7 +60,7 @@ def settings(base) -> Settings:
 @pytest.fixture
 def linkedin(monkeypatch) -> FakePublisher:
     fake = FakePublisher()
-    monkeypatch.setattr(cli, "_real_publisher", lambda settings: fake)
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda settings: fake)
     return fake
 
 
@@ -210,7 +211,7 @@ def test_missed_schedules_do_not_use_up_the_one_post_per_run(settings, clock):
 
 
 def test_nothing_due_means_no_token_check_and_no_linkedin_call(settings, clock, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_real_publisher", lambda s: pytest.fail("no real publisher when nothing is due"))
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: pytest.fail("no real publisher when nothing is due"))
     add_post(settings, "launch")
     schedule("launch", real=True)
     clock["now"] = DUE - timedelta(hours=1)
@@ -282,7 +283,7 @@ def test_the_data_folder_check_still_applies(settings, clock, linkedin, capsys):
 
 
 def test_a_simulated_scheduled_run_ignores_real_schedules(settings, clock, monkeypatch):
-    monkeypatch.setattr(cli, "_real_publisher", lambda s: pytest.fail("a simulated run never makes a real publisher"))
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: pytest.fail("a simulated run never makes a real publisher"))
     add_post(settings, "real-one")
     add_post(settings, "sim-one")
     schedule("real-one", real=True)
@@ -313,7 +314,7 @@ def test_env_can_never_make_a_scheduled_run_real(settings, base, clock, monkeypa
     (base / ".env").write_text("AUTOPOSTER_MODE=real\nAUTOPOSTER_REAL=1\n", encoding="utf-8")
     monkeypatch.setenv("AUTOPOSTER_MODE", "real")
     monkeypatch.setenv("AUTOPOSTER_REAL", "1")
-    monkeypatch.setattr(cli, "_real_publisher", lambda s: pytest.fail("only --real makes a real publisher"))
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: pytest.fail("only --real makes a real publisher"))
     add_post(settings, "launch")
     schedule("launch", real=True)
     clock["now"] = DUE

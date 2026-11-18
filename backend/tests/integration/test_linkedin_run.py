@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.graph import nodes
 from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
@@ -44,7 +45,7 @@ def use_linkedin(monkeypatch, fake: FakeLinkedIn) -> None:
     def real_publisher(settings):
         return LinkedInPublisher(LinkedInClient(TOKEN, transport=httpx.MockTransport(fake)), sleep=lambda s: None)
 
-    monkeypatch.setattr(cli, "_real_publisher", real_publisher)
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", real_publisher)
 
 
 def run() -> int:

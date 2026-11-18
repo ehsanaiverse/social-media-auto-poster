@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.operations import scan as scan_ops
 from social_media_auto_poster.operations import clock
 from social_media_auto_poster.config import Settings, ensure_data_dirs
@@ -37,7 +38,7 @@ def base(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
     monkeypatch.delenv("AUTOPOSTER_TIMEZONE", raising=False)
     monkeypatch.setattr(clock, "now", lambda: NOW)
-    monkeypatch.setattr(cli, "_linkedin_client", _no_linkedin)
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", _no_linkedin)
     return tmp_path
 
 
@@ -522,7 +523,7 @@ def test_a_run_skips_a_scheduled_post_and_processes_the_rest(settings, capsys):
 
 def test_run_real_never_publishes_a_scheduled_post(settings, monkeypatch, capsys):
     fake = FakePublisher()
-    monkeypatch.setattr(cli, "_real_publisher", lambda s: fake)
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: fake)
     add_post(settings, "launch")
     assert schedule("launch", "--at", "2026-12-01 09:00", "--real") == 0
 
@@ -535,7 +536,7 @@ def test_run_real_never_publishes_a_scheduled_post(settings, monkeypatch, capsys
 
 def test_a_scheduled_post_that_was_simulated_does_not_trigger_the_only_simulated_refusal(settings, monkeypatch, capsys):
     fake = FakePublisher()
-    monkeypatch.setattr(cli, "_real_publisher", lambda s: fake)
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: fake)
     add_post(settings, "launch")
     assert cli.main(["run", "--interval", "0"]) == 0  # Simulated first.
     assert schedule("launch", "--at", "2026-12-01 09:00", "--real") == 0
@@ -550,7 +551,7 @@ def test_a_scheduled_post_that_was_simulated_does_not_trigger_the_only_simulated
 @pytest.mark.parametrize(("schedule_mode", "run_args"), [([], ["--real"]), (["--real"], [])])
 def test_runs_skip_scheduled_posts_of_either_mode(settings, monkeypatch, schedule_mode, run_args):
     fake = FakePublisher()
-    monkeypatch.setattr(cli, "_real_publisher", lambda s: fake)
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda s: fake)
     add_post(settings, "launch")
     assert schedule("launch", "--at", "2026-12-01 09:00", *schedule_mode) == 0
 

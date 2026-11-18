@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.operations import scan as scan_ops
 from social_media_auto_poster.operations import clock
 from social_media_auto_poster.config import Settings, ensure_data_dirs
@@ -40,7 +41,7 @@ def base(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
     monkeypatch.delenv("AUTOPOSTER_TIMEZONE", raising=False)
     monkeypatch.setattr(clock, "now", lambda: NOW)
-    monkeypatch.setattr(cli, "_linkedin_client", _no_linkedin)
+    monkeypatch.setattr(linkedin_ops, "_linkedin_client", _no_linkedin)
     return tmp_path
 
 

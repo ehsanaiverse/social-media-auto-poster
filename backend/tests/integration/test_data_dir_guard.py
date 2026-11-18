@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.config import Settings, data_dir_outside_base, ensure_data_dirs, missing_platform_dirs
 from social_media_auto_poster.models import Platform, PublishResult
 
@@ -39,7 +40,7 @@ def base(tmp_path, monkeypatch) -> Path:
 def publisher(monkeypatch) -> FakePublisher:
     fake = FakePublisher()
     requested = []
-    monkeypatch.setattr(cli, "_real_publisher", lambda settings: requested.append(settings) or fake)
+    monkeypatch.setattr(linkedin_ops, "_real_publisher", lambda settings: requested.append(settings) or fake)
     fake.requested = requested
     return fake
 
