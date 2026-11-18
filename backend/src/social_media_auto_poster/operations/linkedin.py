@@ -1,18 +1,19 @@
 """LinkedIn: the token's status (``linkedin-check`` and the API), and the real publisher for ``run --real``.
 
-Other modules call ``_real_publisher`` and ``_linkedin_client`` through this module
-(``linkedin_ops._real_publisher(...)``), never by importing the names: tests replace them here
-to keep every test away from the real LinkedIn.
+Other modules reach ``_real_publisher`` and ``_linkedin_client`` through this module (the
+``ADAPTER`` below, or ``linkedin_ops._linkedin_client(...)``), never by importing the names:
+tests replace them here to keep every test away from the real LinkedIn.
 """
 
 import logging
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.operations import clock
-from social_media_auto_poster.operations.common import LOGGER_NAME
+from social_media_auto_poster.models import Platform
+from social_media_auto_poster.operations.common import LOGGER_NAME, RealPublishingUnavailable
 from social_media_auto_poster.platforms.base import Publisher
 from social_media_auto_poster.platforms.linkedin.check import run_check
 from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
@@ -35,10 +36,6 @@ class LinkedInStatus:
     member: tuple[str, str] | None  # (name, author URN); only after a check that LinkedIn accepted.
     problems: tuple[str, ...]  # Plain texts; never contains the token.
     unreachable: bool  # check=True and LinkedIn could not be reached.
-
-
-class RealPublishingUnavailable(Exception):
-    """Real publishing cannot start; the message says why."""
 
 
 def _linkedin_client(access_token: str) -> LinkedInClient:
@@ -66,6 +63,45 @@ def _real_publisher(settings: Settings) -> Publisher:
         publisher.close()
         raise RealPublishingUnavailable(problem)
     return publisher
+
+
+def _token_warnings(settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
+    """Token problems a real schedule will meet, read from backend/.env only: no LinkedIn call, never the token."""
+    try:
+        credentials = load_linkedin_credentials(settings.base_dir, today=now.astimezone(settings.timezone).date())
+    except CredentialsError as error:
+        return (f"{error}; real runs are refused without it, so this post will not be published until it is set.",)
+    expires_on = credentials.expires_on
+    if expires_on is None:
+        return ("LINKEDIN_TOKEN_CREATED is not set, so the token's expiry cannot be checked against this schedule.",)
+    publish_day = publish_at.astimezone(settings.timezone).date()
+    if publish_day >= expires_on:
+        return (
+            f"the LinkedIn access token expires on {expires_on}, on or before the scheduled day ({publish_day}); "
+            "renew it before then, or the post will not be published.",
+        )
+    return ()
+
+
+class LinkedInAdapter:
+    """LinkedIn in the platform registry (operations/platforms.py).
+
+    Each method calls this module's function by name when it runs, so a test that replaces
+    ``linkedin_ops._real_publisher`` (or ``_token_warnings``) reaches every caller of the
+    registry. The adapter never chooses the mode: ``real_publisher`` is only called by a run
+    that is already real (``--real``, or the API's typed phrase).
+    """
+
+    platform = Platform.LINKEDIN
+
+    def real_publisher(self, settings: Settings) -> Publisher:
+        return _real_publisher(settings)
+
+    def schedule_warnings(self, settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
+        return _token_warnings(settings, publish_at, now)
+
+
+ADAPTER = LinkedInAdapter()
 
 
 def linkedin_status(settings: Settings, *, check: bool, today: date | None = None) -> LinkedInStatus:

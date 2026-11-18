@@ -15,8 +15,8 @@ from social_media_auto_poster.models import PostCandidate, PublishMode, Schedule
 from social_media_auto_poster.operations import clock
 from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, LOGGER_NAME, PLATFORM, _local_time
 from social_media_auto_poster.operations.logs import _run_scope
+from social_media_auto_poster.operations.platforms import adapter_for
 from social_media_auto_poster.operations.scan import ScheduleView, unstable_files
-from social_media_auto_poster.platforms.linkedin.credentials import CredentialsError, load_linkedin_credentials
 from social_media_auto_poster.services.run_lock import single_run_lock
 from social_media_auto_poster.services.scheduling import (
     MIN_LEAD,
@@ -115,7 +115,7 @@ def schedule_post(
             "Schedule created: schedule_id=%s platform=%s mode=%s stem=%s publish_at=%s",
             record.schedule_id, record.platform, record.mode, record.stem, f"{record.publish_at:%Y-%m-%dT%H:%M:%SZ}",
         )
-    warnings = _token_warnings(settings, publish_at, now) if mode is PublishMode.REAL else ()
+    warnings = adapter_for(PLATFORM).schedule_warnings(settings, publish_at, now) if mode is PublishMode.REAL else ()
     return ScheduleResult(record, _local_time(publish_at, settings.timezone), warnings)
 
 
@@ -271,7 +271,7 @@ def reconfirm_post(
     if old.mode is PublishMode.REAL and mode is PublishMode.SIMULATED:
         warnings.append("the old schedule was REAL; this one is SIMULATED because --real was not given.")
     if mode is PublishMode.REAL:
-        warnings.extend(_token_warnings(settings, publish_at, now))
+        warnings.extend(adapter_for(PLATFORM).schedule_warnings(settings, publish_at, now))
     return ReconfirmResult(old, new, _local_time(publish_at, settings.timezone), tuple(warnings))
 
 
@@ -339,21 +339,3 @@ def _has_schedules(settings: Settings) -> bool:
         return schedules_available(conn)
     finally:
         conn.close()
-
-
-def _token_warnings(settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
-    """Token problems a real schedule will meet, read from backend/.env only: no LinkedIn call, never the token."""
-    try:
-        credentials = load_linkedin_credentials(settings.base_dir, today=now.astimezone(settings.timezone).date())
-    except CredentialsError as error:
-        return (f"{error}; real runs are refused without it, so this post will not be published until it is set.",)
-    expires_on = credentials.expires_on
-    if expires_on is None:
-        return ("LINKEDIN_TOKEN_CREATED is not set, so the token's expiry cannot be checked against this schedule.",)
-    publish_day = publish_at.astimezone(settings.timezone).date()
-    if publish_day >= expires_on:
-        return (
-            f"the LinkedIn access token expires on {expires_on}, on or before the scheduled day ({publish_day}); "
-            "renew it before then, or the post will not be published.",
-        )
-    return ()

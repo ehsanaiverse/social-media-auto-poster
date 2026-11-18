@@ -26,6 +26,10 @@ DUPLICATE_LABEL = "DUPLICATE"
 REAL_CONFIRMATION = "publish to LinkedIn"  # The API requires this text to start a real run.
 
 
+class RealPublishingUnavailable(Exception):
+    """Real publishing cannot start; the message says why."""
+
+
 def outside_warning(settings: Settings) -> str:
     return (
         f"Warning: the data folder is outside backend\\: {settings.data_dir} "

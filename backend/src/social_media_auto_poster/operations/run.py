@@ -35,7 +35,6 @@ from social_media_auto_poster.models import (
     ScheduleStatus,
 )
 from social_media_auto_poster.operations import clock
-from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.operations.common import (
     DEFAULT_INTERVAL_S,
     DUPLICATE_LABEL,
@@ -44,6 +43,7 @@ from social_media_auto_poster.operations.common import (
     EXIT_SETUP_ERROR,
     LOGGER_NAME,
     PLATFORM,
+    RealPublishingUnavailable,
     _describe_original,
     _local_time,
     _minutes,
@@ -51,6 +51,7 @@ from social_media_auto_poster.operations.common import (
     outside_warning,
 )
 from social_media_auto_poster.operations.logs import _run_scope
+from social_media_auto_poster.operations.platforms import adapter_for
 from social_media_auto_poster.operations.scan import _active_schedules
 from social_media_auto_poster.platforms.base import Publisher
 from social_media_auto_poster.platforms.simulator import Simulator
@@ -359,8 +360,8 @@ def _publisher_for(
         ]
         return RunRefusal("archive_history", "\n".join(lines))
     try:
-        publisher = linkedin_ops._real_publisher(settings)
-    except linkedin_ops.RealPublishingUnavailable as error:
+        publisher = adapter_for(PLATFORM).real_publisher(settings)
+    except RealPublishingUnavailable as error:
         logger.error("Real run refused: %s", error)
         return RunRefusal("token", f"Error: {error}; nothing was published.")
     close = getattr(publisher, "close", None)
