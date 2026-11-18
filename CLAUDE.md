@@ -163,6 +163,13 @@ Work **directly on `main`**: no new branches and no pull requests. For every cha
 4. Never force-push and never rewrite history (no `reset` of pushed commits, no `rebase` of `main`, no `--amend` of a pushed commit).
 5. Show the developer the test output and the list of new commits, and **push only after the developer says OK**.
 
+**The developer commits and pushes (from 2026-11-18).** Claude Code never runs `git add`, `git commit`, or `git push`, and never `--amend`, `reset`, or `stash`; read-only git commands (`status`, `diff`, `log`, `show`, `fetch`) are fine. After finishing a step, and only once the **full** suite (`python -m pytest -q` from `backend\`) passes, end the reply with:
+
+1. the pytest summary line;
+2. the `git status --short` output;
+3. a **Suggested commit** block, ready to paste in PowerShell (`git add <files...>` then `git commit -m "<one-line message>"`). Group files by one logical change: code, its tests, and its docs together, never one commit per file. If a step needs more than one commit, give the blocks in order, each leaving the tests green;
+4. no `Co-Authored-By` or any other trailer in suggested messages.
+
 `backup/main-before-pr1` and every `archive/*` tag must be kept.
 
 | # | Milestone | Status |
