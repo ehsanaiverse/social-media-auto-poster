@@ -1,9 +1,12 @@
 """The per-post workflow graph. One graph run per discovered candidate.
 
-Main path: check_stability -> validate -> check_duplicate -> mark_publishing -> publish -> record_result
+Main path: check_stability -> check_schedule -> validate -> check_duplicate -> mark_publishing -> publish
+           -> record_result
 
 Routes:
-- not stable / unreadable: check_stability or check_duplicate -> record_result -> END (no DB row)
+- not stable / unreadable: check_stability, check_schedule or check_duplicate -> record_result -> END (no DB row)
+- scheduled post changed or a file missing (D46): check_schedule or check_duplicate -> record_result
+                           (the schedule becomes INVALID) -> END (no DB row, publisher never called)
 - invalid:                 ... validate -> move_to_failed -> record_result -> END
 - duplicate:               ... check_duplicate (or mark_publishing) -> record_result -> END (no DB row)
 - FAILED/NEEDS_REVIEW:     ... publish -> move_to_failed -> record_result -> END
@@ -30,6 +33,7 @@ from langgraph.graph.state import CompiledStateGraph
 from social_media_auto_poster.graph import nodes
 from social_media_auto_poster.graph.state import JobState, WorkflowContext, new_job_state
 from social_media_auto_poster.models import PostCandidate
+from social_media_auto_poster.storage.schedules import ScheduleRecord
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,7 @@ def build_workflow(checkpointer: BaseCheckpointSaver | None = None) -> CompiledS
     graph = StateGraph(JobState, context_schema=WorkflowContext)
 
     graph.add_node(nodes.CHECK_STABILITY, nodes.check_stability)
+    graph.add_node(nodes.CHECK_SCHEDULE, nodes.check_schedule)
     graph.add_node(nodes.VALIDATE, nodes.validate)
     graph.add_node(nodes.CHECK_DUPLICATE, nodes.check_duplicate)
     graph.add_node(nodes.MARK_PUBLISHING, nodes.mark_publishing)
@@ -54,12 +59,17 @@ def build_workflow(checkpointer: BaseCheckpointSaver | None = None) -> CompiledS
     graph.add_conditional_edges(
         nodes.CHECK_STABILITY,
         nodes.route_after_stability,
-        {"stable": nodes.VALIDATE, "waiting": nodes.RECORD_RESULT},
+        {"stable": nodes.CHECK_SCHEDULE, "waiting": nodes.RECORD_RESULT},
+    )
+    graph.add_conditional_edges(
+        nodes.CHECK_SCHEDULE,
+        nodes.route_after_schedule_check,
+        {"confirmed": nodes.VALIDATE, "changed": nodes.RECORD_RESULT, "waiting": nodes.RECORD_RESULT},
     )
     graph.add_conditional_edges(
         nodes.VALIDATE,
         nodes.route_after_validate,
-        {"valid": nodes.CHECK_DUPLICATE, "invalid": nodes.MOVE_TO_FAILED},
+        {"valid": nodes.CHECK_DUPLICATE, "invalid": nodes.MOVE_TO_FAILED, "changed": nodes.RECORD_RESULT},
     )
     graph.add_conditional_edges(
         nodes.CHECK_DUPLICATE,
@@ -68,6 +78,7 @@ def build_workflow(checkpointer: BaseCheckpointSaver | None = None) -> CompiledS
             "new": nodes.MARK_PUBLISHING,
             "duplicate": nodes.RECORD_RESULT,
             "waiting": nodes.RECORD_RESULT,
+            "changed": nodes.RECORD_RESULT,
         },
     )
     graph.add_conditional_edges(
@@ -91,18 +102,20 @@ def build_workflow(checkpointer: BaseCheckpointSaver | None = None) -> CompiledS
     return graph.compile(checkpointer=checkpointer)
 
 
-def run_job(candidate: PostCandidate, context: WorkflowContext) -> JobState:
+def run_job(candidate: PostCandidate, context: WorkflowContext, schedule: ScheduleRecord | None = None) -> JobState:
     """Run one candidate through the graph and return its final state.
 
     The job ID is a random UUID. It becomes the database job ID if the job is
     recorded (duplicates and files still being copied are never recorded), and
     it is the graph thread ID in the checkpoint store. If the run ends normally,
     the thread is deleted; if it raises (or the process dies), the thread stays
-    for startup resume to find.
+    for startup resume to find. With ``schedule`` (D46), the job carries out that
+    schedule and publishes only the content its hashes confirm; ``context.schedules``
+    is then required.
     """
     job_id = uuid4().hex
     final = build_workflow(context.checkpointer).invoke(
-        new_job_state(job_id, candidate, context.mode),
+        new_job_state(job_id, candidate, context.mode, schedule=schedule),
         config={"configurable": {"thread_id": job_id}},
         context=context,
         **durability_for(context.checkpointer),

@@ -264,17 +264,54 @@ Job records live in `backend\database\app.db` (SQLite, created by `run`; ignored
 
 ## Workflow diagram
 
-Each paired post runs through one LangGraph graph (`backend/src/social_media_auto_poster/graph/workflow.py`). Edge labels show the routing decision at each step.
+Each paired post runs through one LangGraph graph (`backend/src/social_media_auto_poster/graph/workflow.py`). Edge labels show the routing decision at each step. GitHub draws the diagram from the Mermaid text below.
 
-![LangGraph workflow for one post](docs/langgraph_workflow.png)
-
-To regenerate the image after changing the graph (run from `backend\`):
-
-```powershell
-python -c "from social_media_auto_poster.graph.workflow import build_workflow; open('../docs/langgraph_workflow.png', 'wb').write(build_workflow().get_graph().draw_mermaid_png())"
+```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	check_stability(check_stability)
+	check_schedule(check_schedule)
+	validate(validate)
+	check_duplicate(check_duplicate)
+	mark_publishing(mark_publishing)
+	publish(publish)
+	move_to_failed(move_to_failed)
+	record_result(record_result)
+	archive(archive)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> check_stability;
+	check_duplicate -. &nbsp;new&nbsp; .-> mark_publishing;
+	check_duplicate -. &nbsp;changed&nbsp; .-> record_result;
+	check_schedule -. &nbsp;changed&nbsp; .-> record_result;
+	check_schedule -. &nbsp;confirmed&nbsp; .-> validate;
+	check_stability -. &nbsp;stable&nbsp; .-> check_schedule;
+	check_stability -. &nbsp;waiting&nbsp; .-> record_result;
+	mark_publishing -. &nbsp;new&nbsp; .-> publish;
+	mark_publishing -. &nbsp;duplicate&nbsp; .-> record_result;
+	move_to_failed --> record_result;
+	publish -. &nbsp;failed&nbsp; .-> move_to_failed;
+	publish -. &nbsp;recorded&nbsp; .-> record_result;
+	record_result -. &nbsp;end&nbsp; .-> __end__;
+	record_result -. &nbsp;published&nbsp; .-> archive;
+	validate -. &nbsp;valid&nbsp; .-> check_duplicate;
+	validate -. &nbsp;invalid&nbsp; .-> move_to_failed;
+	validate -. &nbsp;changed&nbsp; .-> record_result;
+	archive --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
 ```
 
-`draw_mermaid_png()` renders the diagram through the Mermaid.ink web service, so it needs internet access.
+The text is `draw_mermaid()`'s output, generated locally (nothing is sent anywhere). A test (`test_readme_diagram_matches_the_graph`) fails if the graph changes and this block does not. To regenerate it (from `backend\`), print the text and paste it between the fences above:
+
+```powershell
+python -c "from social_media_auto_poster.graph.workflow import build_workflow; print(build_workflow().get_graph().draw_mermaid())"
+```
 
 ## Architecture decisions
 

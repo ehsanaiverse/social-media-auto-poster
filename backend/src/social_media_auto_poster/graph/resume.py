@@ -8,8 +8,8 @@ part-way. What happens depends on the step the checkpoint says is next:
 =================================================  =================================================
 Next step                                          Action
 =================================================  =================================================
-check_stability, validate, check_duplicate,        Not resumed: publish never started (checkpoints
-mark_publishing                                    are saved before each step). A PUBLISHING row is
+check_stability, check_schedule, validate,        Not resumed: publish never started (checkpoints
+check_duplicate, mark_publishing                   are saved before each step). A PUBLISHING row is
                                                    settled as FAILED ("nothing was sent"), in either
                                                    mode; the post is processed again by this run.
 publish                                            Never resumed: the outcome is unknown. Left to
@@ -26,6 +26,10 @@ a node that no longer exists)
 
 Every thread is deleted afterwards, except one whose resume raised: it stays for
 the next run, and reconciliation skips its job.
+
+A checkpoint is readable if it has every *required* ``JobState`` field. Optional
+fields added later (the schedule fields, D46) may be absent, so checkpoints saved
+before they existed still resume.
 """
 
 import logging
@@ -41,10 +45,13 @@ from social_media_auto_poster.graph.workflow import build_workflow, durability_f
 from social_media_auto_poster.models import JobStatus, PostContent, PublishMode, PublishResult
 from social_media_auto_poster.services.reconcile import Recovery, settle_crashed_before_publish
 from social_media_auto_poster.storage.jobs import JobRepository
+from social_media_auto_poster.storage.schedules import ScheduleRepository
 
 logger = logging.getLogger(__name__)
 
-BEFORE_PUBLISH = frozenset({nodes.CHECK_STABILITY, nodes.VALIDATE, nodes.CHECK_DUPLICATE, nodes.MARK_PUBLISHING})
+BEFORE_PUBLISH = frozenset({
+    nodes.CHECK_STABILITY, nodes.CHECK_SCHEDULE, nodes.VALIDATE, nodes.CHECK_DUPLICATE, nodes.MARK_PUBLISHING,
+})
 RESUMABLE = frozenset({nodes.RECORD_RESULT, nodes.MOVE_TO_FAILED, nodes.ARCHIVE})
 
 
@@ -70,8 +77,13 @@ def resume_interrupted_jobs(
     checkpointer: BaseCheckpointSaver,
     repository: JobRepository,
     settings: Settings,
+    schedules: ScheduleRepository | None = None,
 ) -> ResumeResult:
-    """Handle every saved thread as the table above says."""
+    """Handle every saved thread as the table above says.
+
+    ``schedules`` lets a resumed scheduled job record its schedule's outcome; without it such a resume
+    fails closed (the thread is kept for the next run).
+    """
     result = ResumeResult()
     graph = build_workflow(checkpointer)
     for thread_id in saved_thread_ids(checkpointer):
@@ -85,7 +97,7 @@ def resume_interrupted_jobs(
         elif next_step == nodes.PUBLISH:
             pass  # Outcome unknown: never resumed. Reconciliation decides.
         else:  # RESUMABLE
-            context = _context(state, repository, settings, checkpointer)
+            context = _context(state, repository, settings, checkpointer, schedules)
             if not _resume(graph, thread_id, state, next_step, context, result):
                 continue  # Keep the thread for the next run.
         forget_thread(checkpointer, thread_id)
@@ -113,7 +125,7 @@ def _problem(values, next_steps: tuple, thread_id: str) -> str | None:
         return "empty checkpoint"
     if not next_steps:
         return "no next step (a finished job whose thread was not deleted, or a node that no longer exists)"
-    missing = sorted(set(JobState.__annotations__) - set(values or {}))
+    missing = sorted(set(JobState.__required_keys__) - set(values or {}))  # Optional fields may be absent.
     if missing:
         return f"saved state is missing {', '.join(missing)} (older or newer format)"
     if values["job_id"] != thread_id:
@@ -138,7 +150,11 @@ def _warn_unusable(thread_id: str, repository: JobRepository, problem: str) -> N
 
 
 def _context(
-    state: JobState, repository: JobRepository, settings: Settings, checkpointer: BaseCheckpointSaver
+    state: JobState,
+    repository: JobRepository,
+    settings: Settings,
+    checkpointer: BaseCheckpointSaver,
+    schedules: ScheduleRepository | None,
 ) -> WorkflowContext:
     return WorkflowContext(
         publisher=_NeverPublish(),
@@ -147,6 +163,7 @@ def _context(
         settings=settings,
         stability_interval_s=0,
         checkpointer=checkpointer,
+        schedules=schedules,
     )
 
 

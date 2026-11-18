@@ -1154,13 +1154,14 @@ def _run_locked(
             logger.error("Could not open the checkpoint store %s: %s", settings.checkpoint_db_path, error)
             return _refused(mode, RunRefusal("setup", ""))
         repository = JobRepository(conn)
+        schedules = ScheduleRepository(conn)
         # Real-mode checks come before anything changes, so a refused run leaves everything as it was.
         publisher = _publisher_for(mode, settings, repository, stack)
         if isinstance(publisher, RunRefusal):
             return _refused(mode, publisher)
         try:
             # Resume first: it settles what checkpoints can prove; reconciliation handles the rest.
-            resumed = resume_interrupted_jobs(checkpointer, repository, settings)
+            resumed = resume_interrupted_jobs(checkpointer, repository, settings, schedules=schedules)
             recoveries = resumed.recoveries + reconcile_interrupted_jobs(
                 repository, settings, skip=resumed.skip_reconcile
             )
@@ -1180,10 +1181,10 @@ def _run_locked(
             settings=settings,
             stability_interval_s=interval_s,
             checkpointer=checkpointer,
+            schedules=schedules,
         )
         return _process(
-            context, ScheduleRepository(conn), publish_simulated, tuple(resumed_lines), recoveries, earlier_problems,
-            counts,
+            context, schedules, publish_simulated, tuple(resumed_lines), recoveries, earlier_problems, counts,
         )
 
 

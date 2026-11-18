@@ -6,6 +6,7 @@ Nothing contacts a platform.
 import json
 import logging
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -147,7 +148,7 @@ def test_valid_post_with_simulator_ends_simulated_and_files_stay(settings, conte
 def test_simulated_run_is_recorded_and_never_archived(settings, context):
     path = visited_nodes(make_candidate(settings), context(Simulator()))
 
-    assert path == ["check_stability", "validate", "check_duplicate", "mark_publishing", "publish", "record_result"]
+    assert path == ["check_stability", "check_schedule", "validate", "check_duplicate", "mark_publishing", "publish", "record_result"]
 
 
 def test_unstable_file_stops_without_touching_anything(settings, context, monkeypatch, conn):
@@ -321,7 +322,7 @@ def test_duplicate_skips_publish(settings, context, repo):
 
     path = visited_nodes(candidate, context(publisher))
 
-    assert path == ["check_stability", "validate", "check_duplicate", "record_result"]
+    assert path == ["check_stability", "check_schedule", "validate", "check_duplicate", "record_result"]
     assert publisher.calls == 0
 
 
@@ -490,9 +491,18 @@ def test_graph_has_expected_nodes():
     graph = build_workflow().get_graph()
 
     assert set(graph.nodes) == {
-        "__start__", "check_stability", "validate", "check_duplicate", "mark_publishing", "publish",
-        "move_to_failed", "record_result", "archive", "__end__",
+        "__start__", "check_stability", "check_schedule", "validate", "check_duplicate", "mark_publishing",
+        "publish", "move_to_failed", "record_result", "archive", "__end__",
     }
+
+
+def test_readme_diagram_matches_the_graph():
+    """The README's Mermaid block is draw_mermaid()'s output, so the diagram cannot go stale."""
+    readme = (Path(__file__).resolve().parents[3] / "README.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+    blocks = re.findall(r"```mermaid\n(.*?)```", readme, flags=re.S)
+
+    assert len(blocks) == 1
+    assert blocks[0].strip() == build_workflow().get_graph().draw_mermaid().strip()
 
 
 # Publishing exactly the bytes that were hashed

@@ -32,6 +32,10 @@ class JobNotFoundError(Exception):
     """No job with the given ID."""
 
 
+class ScheduleNotSettledError(Exception):
+    """The schedule a new job belongs to is no longer SCHEDULED; the job was not created (nothing changed)."""
+
+
 @dataclass(frozen=True)
 class JobRecord:
     job_id: str
@@ -75,8 +79,15 @@ class JobRepository:
         caption_sha256: str | None,
         status: JobStatus,
         errors: tuple[str, ...] = (),
+        settle_schedule: str | None = None,
     ) -> JobRecord:
-        """Insert a job. Raises ``DuplicateJobError`` if a live job has the same content."""
+        """Insert a job. Raises ``DuplicateJobError`` if a live job has the same content.
+
+        With ``settle_schedule`` (D46), the same transaction also marks that schedule DONE with this job's
+        ID. Both are written or neither: if the schedule is no longer SCHEDULED, the insert is rolled back
+        and ``ScheduleNotSettledError`` is raised. This is how a scheduled post can be handed to exactly
+        one job, even if the process dies right after.
+        """
         timestamp = self._timestamp()
         try:
             with self._conn:
@@ -101,6 +112,16 @@ class JobRepository:
                         timestamp,
                     ),
                 )
+                if settle_schedule is not None:
+                    settled = self._conn.execute(
+                        """
+                        UPDATE schedules SET status = 'DONE', job_id = ?, updated_at = ?
+                        WHERE schedule_id = ? AND status = 'SCHEDULED'
+                        """,
+                        (job_id, timestamp, settle_schedule),
+                    )
+                    if settled.rowcount != 1:  # Raised inside the transaction: the insert is rolled back too.
+                        raise ScheduleNotSettledError(f"schedule {settle_schedule} is no longer SCHEDULED")
         except sqlite3.IntegrityError as error:
             if "jobs.platform, jobs.mode, jobs.media_sha256, jobs.caption_sha256" in str(error):
                 raise DuplicateJobError(f"A live job already exists for this content: {stem}") from error
