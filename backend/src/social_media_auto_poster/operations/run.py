@@ -27,6 +27,7 @@ from social_media_auto_poster.graph.workflow import run_job
 from social_media_auto_poster.ingestion.scanner import scan_incoming
 from social_media_auto_poster.models import (
     JobStatus,
+    Platform,
     PostCandidate,
     PostContent,
     PublishMode,
@@ -135,6 +136,7 @@ def run_once(
     publish_simulated: bool = False,
     interval_s: float = DEFAULT_INTERVAL_S,
     scheduled: bool = False,
+    platform: Platform = PLATFORM,
 ) -> RunReport:
     """One complete run: the lock, crash recovery, real-mode safeguards, and every complete post once.
 
@@ -142,17 +144,19 @@ def run_once(
     ``mode`` (at most one published per run; more than 6 hours late -> MISSED) and nothing else in
     incoming/. Returns a RunReport; a refusal is data in the report, not an exception. Raises
     RunLockHeldError if another run holds the lock, and OSError if the run cannot be set up. Log
-    handlers are the caller's job (the CLI and the API each attach their own).
+    handlers are the caller's job (the CLI and the API each attach their own). ``platform`` (default LinkedIn)
+    must have an adapter: otherwise UnsupportedPlatform is raised before the lock is taken or anything is written.
     """
+    adapter_for(platform)  # Refuse an unsupported platform before anything happens.
     started = time.monotonic()
     counts: Counter[str] = Counter()
     report: RunReport | None = None
     with single_run_lock(settings.lock_file), _run_scope():
-        logger.info("Run started: platform=%s mode=%s%s", PLATFORM, mode, " scheduled=yes" if scheduled else "")
+        logger.info("Run started: platform=%s mode=%s%s", platform, mode, " scheduled=yes" if scheduled else "")
         if data_dir_outside_base(settings):
             logger.warning(outside_warning(settings).removeprefix("Warning: "))
         try:
-            report = _run_locked(settings, mode, publish_simulated, interval_s, counts, scheduled)
+            report = _run_locked(settings, mode, publish_simulated, interval_s, counts, scheduled, platform)
             return report
         finally:
             exit_code = report.exit_code if report is not None else EXIT_SETUP_ERROR
@@ -171,11 +175,12 @@ def _run_locked(
     interval_s: float,
     counts: Counter[str],
     scheduled: bool = False,
+    platform: Platform = PLATFORM,
 ) -> RunReport:
     """Everything a run does while holding the lock, after "Run started" is logged."""
     if mode is PublishMode.REAL:
         # A real run never creates the data folder: a missing one usually means a wrong AUTOPOSTER_DATA_DIR.
-        missing = missing_platform_dirs(settings, PLATFORM)
+        missing = missing_platform_dirs(settings, platform)
         if missing:
             logger.error("Real run refused: data folders missing: %s", ", ".join(str(path) for path in missing))
             text = "\n".join([
@@ -205,13 +210,13 @@ def _run_locked(
         selection = now = None
         if scheduled:  # Read-only: what is due decides whether a publisher (and the token check) is needed.
             now = clock.now()
-            selection = select_due(schedules.due(platform=PLATFORM, mode=mode, now=now), mode=mode, now=now)
+            selection = select_due(schedules.due(platform=platform, mode=mode, now=now), mode=mode, now=now)
         if selection is not None and not selection.publish:
             # Nothing to publish: no real publisher, so no token check and no LinkedIn call (D46).
             publisher: Publisher | RunRefusal = _NothingToPublish()
         else:
             # Real-mode checks come before anything changes, so a refused run leaves everything as it was.
-            publisher = _publisher_for(mode, settings, repository, stack)
+            publisher = _publisher_for(mode, settings, repository, stack, platform)
         if isinstance(publisher, RunRefusal):
             return _refused(mode, publisher)
         try:
@@ -243,7 +248,7 @@ def _run_locked(
                 context, schedules, selection, now, tuple(resumed_lines), recoveries, earlier_problems, counts
             )
         return _process(
-            context, schedules, publish_simulated, tuple(resumed_lines), recoveries, earlier_problems, counts,
+            context, schedules, publish_simulated, tuple(resumed_lines), recoveries, earlier_problems, counts, platform,
         )
 
 
@@ -342,12 +347,12 @@ def _refused(mode: PublishMode, refusal: RunRefusal) -> RunReport:
 
 
 def _publisher_for(
-    mode: PublishMode, settings: Settings, repository: JobRepository, stack: ExitStack
+    mode: PublishMode, settings: Settings, repository: JobRepository, stack: ExitStack, platform: Platform = PLATFORM
 ) -> Publisher | RunRefusal:
     """The publisher for this run, or the refusal that stops a real run before anything changes."""
     if mode is PublishMode.SIMULATED:
         return Simulator()
-    unknown = archive_without_history(settings, repository, PLATFORM)
+    unknown = archive_without_history(settings, repository, platform)
     if unknown:
         logger.error("Real run refused: archive holds %d post folder(s) but the job database has no real jobs", len(unknown))
         lines = [
@@ -360,7 +365,7 @@ def _publisher_for(
         ]
         return RunRefusal("archive_history", "\n".join(lines))
     try:
-        publisher = adapter_for(PLATFORM).real_publisher(settings)
+        publisher = adapter_for(platform).real_publisher(settings)
     except RealPublishingUnavailable as error:
         logger.error("Real run refused: %s", error)
         return RunRefusal("token", f"Error: {error}; nothing was published.")
@@ -387,8 +392,9 @@ def _process(
     recoveries: list[Recovery],
     earlier_problems: bool,
     counts: Counter[str],
+    platform: Platform = PLATFORM,
 ) -> RunReport:
-    settings, platform = context.settings, PLATFORM
+    settings = context.settings
     result = scan_incoming(settings.incoming_dir(platform), platform)
     counts["pending"] = len(result.pending)
     counts["ambiguous"] = len(result.ambiguous)
@@ -401,7 +407,7 @@ def _process(
     )
     # Posts with an active schedule are left alone by every run except a scheduled one (D46), whatever
     # the modes; they also do not count toward the "only simulated" refusal below.
-    scheduled, candidates = _hold_scheduled(result.candidates, schedules, context)
+    scheduled, candidates = _hold_scheduled(result.candidates, schedules, context, platform)
     counts["scheduled"] = len(scheduled)
 
     if context.mode is PublishMode.REAL and not publish_simulated:
@@ -438,10 +444,11 @@ def _process(
 
 
 def _hold_scheduled(
-    candidates: tuple[PostCandidate, ...], schedules: ScheduleRepository, context: WorkflowContext
+    candidates: tuple[PostCandidate, ...], schedules: ScheduleRepository, context: WorkflowContext,
+    platform: Platform = PLATFORM,
 ) -> tuple[tuple[ScheduledPost, ...], tuple[PostCandidate, ...]]:
     """Split off the posts that have an active schedule: they stay in incoming/ and get no job."""
-    active = _active_schedules(schedules)
+    active = _active_schedules(schedules, platform)
     held: list[ScheduledPost] = []
     rest: list[PostCandidate] = []
     for candidate in candidates:

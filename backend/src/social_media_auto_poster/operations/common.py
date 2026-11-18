@@ -12,7 +12,7 @@ from social_media_auto_poster.storage.jobs import JobRecord
 # when all of this lived in main.py ("... run_id=... social_media_auto_poster.main Run finished: ...").
 LOGGER_NAME = "social_media_auto_poster.main"
 
-PLATFORM = Platform.LINKEDIN  # The only platform in scope.
+PLATFORM = Platform.LINKEDIN  # The default platform of every operation (the only one with an adapter).
 DEFAULT_INTERVAL_S = 1.0
 
 EXIT_OK = 0

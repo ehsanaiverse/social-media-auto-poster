@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.ingestion.scanner import scan_incoming
-from social_media_auto_poster.models import PostCandidate, PublishMode, ScheduleStatus
+from social_media_auto_poster.models import Platform, PostCandidate, PublishMode, ScheduleStatus
 from social_media_auto_poster.operations import clock
 from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, LOGGER_NAME, PLATFORM, _local_time
 from social_media_auto_poster.operations.logs import _run_scope
@@ -61,18 +61,21 @@ class ReconfirmResult:
 
 
 def schedule_post(
-    settings: Settings, name: str, at: str, *, real: bool, interval_s: float = DEFAULT_INTERVAL_S
+    settings: Settings, name: str, at: str, *, real: bool, interval_s: float = DEFAULT_INTERVAL_S,
+    platform: Platform = PLATFORM,
 ) -> ScheduleResult:
-    """Schedule the post ``name`` in LinkedIn's incoming/ for ``at`` (``YYYY-MM-DD HH:MM`` in the configured zone).
+    """Schedule the post ``name`` in ``platform``'s incoming/ (default LinkedIn) for ``at`` (``YYYY-MM-DD HH:MM`` in the configured zone).
 
     Real only when ``real`` is true (D46). The post is checked now, as a run would check it, and the schedule
     is bound to both files' hashes. Takes the run lock and opens the job database for writing (upgrading an
-    older one, with its backup). Raises ScheduleError (nothing changed) or RunLockHeldError.
+    older one, with its backup). Raises ScheduleError (nothing changed) or RunLockHeldError, and
+    UnsupportedPlatform for a platform without an adapter (before the lock; nothing changed).
     """
+    adapter = adapter_for(platform)
     mode = PublishMode.REAL if real else PublishMode.SIMULATED
     now = clock.now()
     with single_run_lock(settings.lock_file), _run_scope():
-        candidate = _find_post(settings, name)
+        candidate = _find_post(settings, name, platform)
         unstable = unstable_files(candidate, interval_s)
         if unstable:
             raise ScheduleError(
@@ -115,23 +118,27 @@ def schedule_post(
             "Schedule created: schedule_id=%s platform=%s mode=%s stem=%s publish_at=%s",
             record.schedule_id, record.platform, record.mode, record.stem, f"{record.publish_at:%Y-%m-%dT%H:%M:%SZ}",
         )
-    warnings = adapter_for(PLATFORM).schedule_warnings(settings, publish_at, now) if mode is PublishMode.REAL else ()
+    warnings = adapter.schedule_warnings(settings, publish_at, now) if mode is PublishMode.REAL else ()
     return ScheduleResult(record, _local_time(publish_at, settings.timezone), warnings)
 
 
-def unschedule_post(settings: Settings, name: str, *, expected_schedule_id: str | None = None) -> ScheduleRecord:
+def unschedule_post(
+    settings: Settings, name: str, *, expected_schedule_id: str | None = None, platform: Platform = PLATFORM
+) -> ScheduleRecord:
     """Cancel the active schedule of ``name``; its files are not touched. Raises ScheduleError or RunLockHeldError.
 
     With ``expected_schedule_id`` (the API), the active schedule must be that one, checked inside the run lock;
-    otherwise ScheduleError ``schedule_changed`` and nothing changes. The CLI passes nothing.
+    otherwise ScheduleError ``schedule_changed`` and nothing changes. The CLI passes nothing. UnsupportedPlatform
+    for a platform without an adapter (before the lock; nothing changed).
     """
+    adapter_for(platform)
     with single_run_lock(settings.lock_file), _run_scope():
         if not _has_schedules(settings):  # No database, or one from before schedules: nothing to cancel, nothing upgraded.
             raise ScheduleError("not_scheduled", f"'{name.strip()}' has no active schedule.")
         conn = _open_for_schedules(settings)
         try:
             schedules = ScheduleRepository(conn)
-            active = schedules.find_active(platform=PLATFORM, stem=name.strip())
+            active = schedules.find_active(platform=platform, stem=name.strip())
             if expected_schedule_id is not None and (active is None or active.schedule_id != expected_schedule_id):
                 raise _schedule_changed(name.strip(), active)
             if active is None:
@@ -189,6 +196,7 @@ def reconfirm_post(
     at: str | None = None,
     interval_s: float = DEFAULT_INTERVAL_S,
     expected_schedule_id: str | None = None,
+    platform: Platform = PLATFORM,
 ) -> ReconfirmResult:
     """Re-confirm a post's schedule with its current content (D46): a new schedule replaces the old one.
 
@@ -198,7 +206,9 @@ def reconfirm_post(
     one created in one transaction; an old INVALID one stays as it is. Takes the run lock. Raises
     ScheduleError (nothing changed) or RunLockHeldError. With ``expected_schedule_id`` (the API), the schedule
     re-confirmed must be that one, checked inside the lock (else ``schedule_changed``); the CLI passes nothing.
+    UnsupportedPlatform for a platform without an adapter (before the lock; nothing changed).
     """
+    adapter = adapter_for(platform)
     mode = PublishMode.REAL if real else PublishMode.SIMULATED
     now = clock.now()
     wanted = name.strip()
@@ -208,8 +218,8 @@ def reconfirm_post(
         conn = _open_for_schedules(settings)
         try:
             schedules = ScheduleRepository(conn)
-            old = schedules.find_active(platform=PLATFORM, stem=wanted) or schedules.latest_for_post(
-                platform=PLATFORM, stem=wanted
+            old = schedules.find_active(platform=platform, stem=wanted) or schedules.latest_for_post(
+                platform=platform, stem=wanted
             )
             if old is None or old.status not in (ScheduleStatus.SCHEDULED, ScheduleStatus.INVALID):
                 state = f"its latest schedule is {old.status}" if old else "it has no schedule"
@@ -218,7 +228,7 @@ def reconfirm_post(
                 )
             if expected_schedule_id is not None and old.schedule_id != expected_schedule_id:
                 raise _schedule_changed(wanted, old)
-            candidate = _find_post(settings, wanted)
+            candidate = _find_post(settings, wanted, platform)
             unstable = unstable_files(candidate, interval_s)
             if unstable:
                 raise ScheduleError(
@@ -271,7 +281,7 @@ def reconfirm_post(
     if old.mode is PublishMode.REAL and mode is PublishMode.SIMULATED:
         warnings.append("the old schedule was REAL; this one is SIMULATED because --real was not given.")
     if mode is PublishMode.REAL:
-        warnings.extend(adapter_for(PLATFORM).schedule_warnings(settings, publish_at, now))
+        warnings.extend(adapter.schedule_warnings(settings, publish_at, now))
     return ReconfirmResult(old, new, _local_time(publish_at, settings.timezone), tuple(warnings))
 
 
@@ -299,13 +309,13 @@ def _schedule_changed(name: str, current: ScheduleRecord | None) -> ScheduleErro
     )
 
 
-def _find_post(settings: Settings, name: str) -> PostCandidate:
-    """The complete post called ``name`` (compared without case) in LinkedIn's incoming/. Raises ScheduleError."""
-    folder = settings.incoming_dir(PLATFORM)
+def _find_post(settings: Settings, name: str, platform: Platform = PLATFORM) -> PostCandidate:
+    """The complete post called ``name`` (compared without case) in ``platform``'s incoming/. Raises ScheduleError."""
+    folder = settings.incoming_dir(platform)
     wanted = name.strip()
     if not folder.is_dir():
         raise ScheduleError("not_found", f"the incoming folder does not exist: {folder}")
-    result = scan_incoming(folder, PLATFORM)
+    result = scan_incoming(folder, platform)
     key = wanted.casefold()
     for group in result.ambiguous:
         if group and group[0].stem.casefold() == key:

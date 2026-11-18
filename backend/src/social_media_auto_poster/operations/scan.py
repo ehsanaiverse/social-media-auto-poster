@@ -13,8 +13,9 @@ from social_media_auto_poster.config import Settings
 from social_media_auto_poster.ingestion.scanner import scan_incoming
 from social_media_auto_poster.ingestion.stability import is_file_stable
 from social_media_auto_poster.ingestion.validation import validate_candidate
-from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode, ScanResult
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, ScanResult
 from social_media_auto_poster.operations.common import LOGGER_NAME, PLATFORM
+from social_media_auto_poster.operations.platforms import adapter_for
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.services.real_mode import archive_without_history, posts_only_simulated
 from social_media_auto_poster.services.scheduling import content_state
@@ -82,21 +83,24 @@ def find_duplicate(candidate: PostCandidate, repository: JobRepository, mode: Pu
 
 
 def scan_preview(
-    settings: Settings, *, folder: Path, mode: PublishMode, interval_s: float, check_archive: bool
+    settings: Settings, *, folder: Path, mode: PublishMode, interval_s: float, check_archive: bool,
+    platform: Platform = PLATFORM,
 ) -> ScanPreview:
     """Read-only report of ``folder``. Never moves, publishes, or creates anything.
 
     Raises FileNotFoundError if the folder does not exist. ``check_archive`` adds the
-    real-mode archive check (only meaningful for the configured incoming folder).
+    real-mode archive check (only meaningful for the configured incoming folder). ``platform`` (default
+    LinkedIn) must have an adapter, otherwise UnsupportedPlatform is raised before anything is read.
     """
-    result = scan_incoming(folder, PLATFORM)
+    adapter_for(platform)
+    result = scan_incoming(folder, platform)
     conn = _open_history_or_none(settings)
     try:
         repository = JobRepository(conn) if conn is not None else None
         # Schedules belong to the configured incoming folder. An older database (no schedules table) is
         # read as it is, never upgraded: it has no schedules.
-        own_folder = folder.resolve() == settings.incoming_dir(PLATFORM).resolve()
-        active = (_active_schedules(ScheduleRepository(conn))
+        own_folder = folder.resolve() == settings.incoming_dir(platform).resolve()
+        active = (_active_schedules(ScheduleRepository(conn), platform)
                   if own_folder and conn is not None and schedules_available(conn) else {})
         views = tuple(
             _view_candidate(c, repository, mode, interval_s, active.get(c.stem.casefold()), folder)
@@ -107,7 +111,7 @@ def scan_preview(
         interrupted = len(repository.list_by_status(JobStatus.PUBLISHING)) if repository is not None else 0
         unknown: tuple[Path, ...] = ()
         if mode is PublishMode.REAL and check_archive:
-            unknown = tuple(archive_without_history(settings, repository, PLATFORM))
+            unknown = tuple(archive_without_history(settings, repository, platform))
     finally:
         if conn is not None:
             conn.close()
@@ -115,9 +119,9 @@ def scan_preview(
                        unknown_archive=unknown, missing_schedules=missing)
 
 
-def _active_schedules(schedules: ScheduleRepository) -> dict[str, ScheduleRecord]:
-    """Active schedules of this platform by casefolded post name (names are compared without case)."""
-    return {s.stem.casefold(): s for s in schedules.list_active(platform=PLATFORM)}
+def _active_schedules(schedules: ScheduleRepository, platform: Platform = PLATFORM) -> dict[str, ScheduleRecord]:
+    """Active schedules of ``platform`` by casefolded post name (names are compared without case)."""
+    return {s.stem.casefold(): s for s in schedules.list_active(platform=platform)}
 
 
 def _view_candidate(
