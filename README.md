@@ -220,15 +220,18 @@ python -m social_media_auto_poster.main schedule launch --at "2026-12-01 09:00" 
 python -m social_media_auto_poster.main schedule launch --at "2026-12-01 09:00" --real   # a real LinkedIn post
 python -m social_media_auto_poster.main schedules                                         # active schedules (--all, --status S)
 python -m social_media_auto_poster.main unschedule launch                                 # cancel it
+python -m social_media_auto_poster.main reconfirm launch                                  # after changing the files (add --real for a real post)
 ```
 
 - The post is checked when you schedule it, as a run would check it: complete, valid (including the 3,000-character caption limit; for `--real`, also LinkedIn's image size limit), and not already published or scheduled. The time must be 5 minutes to 1 year ahead; a time skipped or repeated by a clock change is refused.
-- The schedule is tied to the exact files: **do not change them** before the scheduled time, or the schedule becomes `INVALID` and is never published.
+- The schedule is tied to the exact files. **If you change the image or the caption after scheduling, the post is never published automatically**: your confirmation (especially for a real post) covered the old content only. At the scheduled time the schedule becomes `INVALID` and the files stay in `incoming\`.
+- **You find out early.** `schedules` and `scan` compare the files with what you scheduled every time you run them, and show `CHANGED – will not be published; re-confirm` (or `FILE MISSING – will not be published; re-confirm` if a file was deleted or renamed). They only read; nothing is changed.
+- **To keep the post with its new content, re-confirm it:** `reconfirm launch` replaces the schedule with a new one for the files as they are now, at the same time (or a new one with `--at "YYYY-MM-DD HH:MM"`). Every check is made again. **`--real` must be given again** for a real post: without it the new schedule is simulated, even if the old one was real, and a warning says so. If the old time is less than 5 minutes away, give `--at`. `reconfirm` also works on an unchanged schedule (to switch between simulated and real, or with `--at` to move it), and on a schedule that already became `INVALID`.
 - Without `--real` the schedule is simulated. Nothing in `.env` can make it real.
 - Every run (`run`, `run --real`, and runs from the dashboard) **skips** a post with an active schedule and lists it under `SCHEDULED`. `unschedule` gives the post back to normal runs (then `run --real` would publish it).
 - **Not built yet:** publishing scheduled posts at their time (`run --real --scheduled`, run by Windows Task Scheduler). Until it is, scheduled posts are held in `incoming\` and not published.
 - With `--real`, a warning is printed if your LinkedIn token is missing or expires on or before the scheduled day. Scheduling never contacts LinkedIn.
-- Exit codes: `schedule` and `unschedule`: `0` done, `1` refused (nothing changed; the message says why), `2` invalid arguments (including a time not written as `YYYY-MM-DD HH:MM`), `4` a run is in progress. `schedules`: `0` listed, `1` the job database could not be read, `2` invalid arguments.
+- Exit codes: `schedule`, `unschedule` and `reconfirm`: `0` done, `1` refused (nothing changed; the message says why), `2` invalid arguments (including a time not written as `YYYY-MM-DD HH:MM`), `4` a run is in progress. `schedules`: `0` listed, `1` the job database could not be read, `2` invalid arguments.
 
 **Job database upgrade.** The first `schedule`, `run`, `resolve` or dashboard run after updating upgrades `backend\database\app.db` to version 2. Before changing it, it saves a copy next to it as `app.db.bak-v1` (or, if that file already exists, `app.db.bak-v1-<UTC time>`; an existing backup is never overwritten) and logs where. `scan`, `jobs` and `schedules` only read the database and never upgrade it (`unschedule` does not either: an older database has nothing to cancel). After the upgrade, older versions of the app refuse the database; to go back, restore the `.bak-v1` copy.
 

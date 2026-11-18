@@ -10,6 +10,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from social_media_auto_poster.ingestion.validation import validate_candidate
@@ -94,14 +95,20 @@ def parse_publish_at(text: str, *, zone: ZoneInfo, now: datetime) -> datetime:
 
 
 def check_schedulable(
-    candidate: PostCandidate, *, mode: PublishMode, jobs: JobRepository, schedules: ScheduleRepository
+    candidate: PostCandidate,
+    *,
+    mode: PublishMode,
+    jobs: JobRepository,
+    schedules: ScheduleRepository,
+    ignore_schedule_id: str | None = None,
 ) -> tuple[str, str]:
     """Whether ``candidate`` may be scheduled in ``mode``; returns its (media, caption) SHA-256 hashes.
 
     The same checks a run would make, done now instead of at the scheduled time: validation (including
     the caption rule), LinkedIn's pixel limit for a real schedule, a live job with this content in this
-    mode (duplicates are per mode, D20), and another active schedule for the same content. Raises
-    ``ScheduleError``; the caller has already checked that both files are stable.
+    mode (duplicates are per mode, D20), and another active schedule for the same content (except
+    ``ignore_schedule_id``: the schedule being re-confirmed). Raises ``ScheduleError``; the caller has
+    already checked that both files are stable.
     """
     errors = validate_candidate(candidate).errors
     if errors:
@@ -125,7 +132,8 @@ def check_schedulable(
             f"in {mode} mode; the same content is never published twice.",
         )
     other = schedules.find_active_by_content(
-        platform=candidate.platform, mode=mode, media_sha256=media_sha256, caption_sha256=caption_sha256
+        platform=candidate.platform, mode=mode, media_sha256=media_sha256, caption_sha256=caption_sha256,
+        exclude_schedule_id=ignore_schedule_id,
     )
     if other is not None:
         raise ScheduleError(
@@ -133,6 +141,35 @@ def check_schedulable(
             f"the same content is already scheduled as '{other.stem}' (schedule {other.schedule_id[:8]}).",
         )
     return media_sha256, caption_sha256
+
+
+# What an active schedule's files look like now, compared with what was confirmed (read-only, D46).
+CONTENT_OK = "ok"
+CONTENT_CHANGED = "changed"
+CONTENT_MISSING = "missing"
+CONTENT_UNREADABLE = "unreadable"
+CONTENT_LABELS = {
+    CONTENT_CHANGED: "CHANGED – will not be published; re-confirm",
+    CONTENT_MISSING: "FILE MISSING – will not be published; re-confirm",
+    CONTENT_UNREADABLE: "could not read the files",
+}
+
+
+def content_state(schedule: ScheduleRecord, folder: Path) -> str:
+    """Whether the schedule's two files in ``folder`` still have the confirmed hashes. Reads, never writes.
+
+    ``unreadable`` (for example a file locked while it is being copied) is not ``changed``: it may be fine.
+    """
+    media, caption = folder / schedule.media_name, folder / schedule.caption_name
+    if not (media.exists() and caption.exists()):
+        return CONTENT_MISSING
+    try:
+        hashes = (sha256_file(media), sha256_file(caption))
+    except FileNotFoundError:
+        return CONTENT_MISSING
+    except OSError:
+        return CONTENT_UNREADABLE
+    return CONTENT_OK if hashes == (schedule.media_sha256, schedule.caption_sha256) else CONTENT_CHANGED
 
 
 @dataclass(frozen=True)

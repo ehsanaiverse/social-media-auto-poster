@@ -69,38 +69,91 @@ class ScheduleRepository:
 
         Raises ``DuplicateScheduleError`` if the post (name compared without case) already has one.
         """
+        new = dict(schedule_id=schedule_id, platform=platform, mode=mode, stem=stem, media_name=media_name,
+                   caption_name=caption_name, media_sha256=media_sha256, caption_sha256=caption_sha256,
+                   publish_at=publish_at)
+        try:
+            with self._conn:
+                self._insert(**new)
+        except sqlite3.IntegrityError as error:
+            _raise_if_duplicate(error, stem)
+            raise
+        return self._require(schedule_id)
+
+    def replace(self, old_schedule_id: str, *, cancel_old: bool, **new) -> ScheduleRecord:
+        """Re-confirm (D46): create a new SCHEDULED schedule and, if ``cancel_old``, cancel the old one,
+        in **one** transaction. Both happen or neither; there is never a moment with both active.
+
+        ``new`` takes the same fields as ``create``. Raises ``ScheduleNotFoundError`` if the old schedule is
+        no longer SCHEDULED (when it was to be cancelled) and ``DuplicateScheduleError`` as ``create`` does.
+        """
+        reason = f"re-confirmed as {new['schedule_id'][:8]}"
+        try:
+            with self._conn:
+                if cancel_old:
+                    cancelled = self._conn.execute(
+                        """
+                        UPDATE schedules SET status = ?, reason = ?, updated_at = ?
+                        WHERE schedule_id = ? AND status = ?
+                        """,
+                        (ScheduleStatus.CANCELLED.value, reason, self._timestamp(), old_schedule_id,
+                         ScheduleStatus.SCHEDULED.value),
+                    )
+                    if cancelled.rowcount != 1:  # Raised inside the transaction: nothing is changed.
+                        raise ScheduleNotFoundError(f"No scheduled post with ID {old_schedule_id}")
+                self._insert(**new)
+        except sqlite3.IntegrityError as error:
+            _raise_if_duplicate(error, new["stem"])
+            raise
+        return self._require(new["schedule_id"])
+
+    def _insert(
+        self,
+        *,
+        schedule_id: str,
+        platform: Platform,
+        mode: PublishMode,
+        stem: str,
+        media_name: str,
+        caption_name: str,
+        media_sha256: str,
+        caption_sha256: str,
+        publish_at: datetime,
+    ) -> None:
+        """The INSERT of a new SCHEDULED schedule, inside the caller's transaction."""
         if publish_at.tzinfo is None:
             raise ValueError("publish_at must carry a time zone")
         timestamp = self._timestamp()
-        try:
-            with self._conn:
-                self._conn.execute(
-                    """
-                    INSERT INTO schedules (schedule_id, platform, mode, stem, stem_key, media_name, caption_name,
-                                           media_sha256, caption_sha256, publish_at, status, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        schedule_id,
-                        platform.value,
-                        mode.value,
-                        stem,
-                        stem.casefold(),
-                        media_name,
-                        caption_name,
-                        media_sha256,
-                        caption_sha256,
-                        _format(publish_at),
-                        ScheduleStatus.SCHEDULED.value,
-                        timestamp,
-                        timestamp,
-                    ),
-                )
-        except sqlite3.IntegrityError as error:
-            if "schedules.platform, schedules.stem_key" in str(error):
-                raise DuplicateScheduleError(f"'{stem}' already has an active schedule") from error
-            raise
-        return self._require(schedule_id)
+        self._conn.execute(
+            """
+            INSERT INTO schedules (schedule_id, platform, mode, stem, stem_key, media_name, caption_name,
+                                   media_sha256, caption_sha256, publish_at, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                schedule_id,
+                platform.value,
+                mode.value,
+                stem,
+                stem.casefold(),
+                media_name,
+                caption_name,
+                media_sha256,
+                caption_sha256,
+                _format(publish_at),
+                ScheduleStatus.SCHEDULED.value,
+                timestamp,
+                timestamp,
+            ),
+        )
+
+    def latest_for_post(self, *, platform: Platform, stem: str) -> ScheduleRecord | None:
+        """The most recently created schedule of this post (name compared without case), in any status."""
+        row = self._conn.execute(
+            f"{_SELECT} WHERE platform = ? AND stem_key = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (platform.value, stem.casefold()),
+        ).fetchone()
+        return _to_record(row) if row else None
 
     def get(self, schedule_id: str) -> ScheduleRecord | None:
         row = self._conn.execute(f"{_SELECT} WHERE schedule_id = ?", (schedule_id,)).fetchone()
@@ -115,16 +168,22 @@ class ScheduleRepository:
         return _to_record(row) if row else None
 
     def find_active_by_content(
-        self, *, platform: Platform, mode: PublishMode, media_sha256: str, caption_sha256: str
+        self, *, platform: Platform, mode: PublishMode, media_sha256: str, caption_sha256: str,
+        exclude_schedule_id: str | None = None,
     ) -> ScheduleRecord | None:
-        """The SCHEDULED schedule (any post name) for exactly this content on this platform and mode, if any."""
+        """The SCHEDULED schedule (any post name) for exactly this content on this platform and mode, if any.
+
+        ``exclude_schedule_id`` leaves one schedule out (re-confirming a schedule is not a conflict with itself).
+        """
         row = self._conn.execute(
             f"""
             {_SELECT}
             WHERE platform = ? AND mode = ? AND media_sha256 = ? AND caption_sha256 = ? AND status = ?
+              AND schedule_id IS NOT ?
             ORDER BY publish_at, rowid LIMIT 1
             """,
-            (platform.value, mode.value, media_sha256, caption_sha256, ScheduleStatus.SCHEDULED.value),
+            (platform.value, mode.value, media_sha256, caption_sha256, ScheduleStatus.SCHEDULED.value,
+             exclude_schedule_id),
         ).fetchone()
         return _to_record(row) if row else None
 
@@ -194,6 +253,11 @@ class ScheduleRepository:
 
     def _timestamp(self) -> str:
         return _format(self._now())
+
+
+def _raise_if_duplicate(error: sqlite3.IntegrityError, stem: str) -> None:
+    if "schedules.platform, schedules.stem_key" in str(error):
+        raise DuplicateScheduleError(f"'{stem}' already has an active schedule") from error
 
 
 def schedules_available(conn: sqlite3.Connection) -> bool:

@@ -76,16 +76,21 @@ from social_media_auto_poster.services.real_mode import (
 from social_media_auto_poster.services.reconcile import Recovery, reconcile_interrupted_jobs
 from social_media_auto_poster.services.run_lock import RunLockHeldError, single_run_lock
 from social_media_auto_poster.services.scheduling import (
+    CONTENT_LABELS,
+    CONTENT_MISSING,
+    MIN_LEAD,
     ScheduleError,
     ScheduleTimeError,
     check_schedulable,
     check_time_format,
+    content_state,
     parse_publish_at,
 )
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
 from social_media_auto_poster.storage.jobs import JobNotFoundError, JobRecord, JobRepository
 from social_media_auto_poster.storage.schedules import (
     DuplicateScheduleError,
+    ScheduleNotFoundError,
     ScheduleRecord,
     ScheduleRepository,
     schedules_available,
@@ -162,6 +167,18 @@ exit codes:
   4  a run is in progress
 """
 
+RECONFIRM_EPILOG = """\
+Use it when schedules or scan shows CHANGED or FILE MISSING: a changed post is never published
+automatically, because its schedule confirmed the old content only.
+
+exit codes:
+  0  re-confirmed (the old SCHEDULED schedule is CANCELLED; an old INVALID one stays INVALID)
+  1  refused, nothing changed: nothing to re-confirm (no SCHEDULED or INVALID schedule), the
+     same reasons as schedule, or the old time is less than 5 minutes ahead (give --at)
+  2  invalid command or option (including a time not in the form YYYY-MM-DD HH:MM)
+  4  a run is in progress
+"""
+
 SCHEDULES_EPILOG = """\
 Read-only: never locks, writes, creates or upgrades the job database.
 
@@ -235,6 +252,7 @@ class CandidateView:
     duplicate_check_failed: bool  # The files could not be read to check.
     simulated: JobRecord | None  # Real mode only: this content was simulated and a real run refuses it.
     schedule: ScheduleRecord | None = None  # An active schedule: runs skip the post until it is due.
+    schedule_content: str | None = None  # With a schedule: ok, changed, missing or unreadable (content_state).
 
     @property
     def stable(self) -> bool:
@@ -252,6 +270,8 @@ class ScanPreview:
     scan: ScanResult
     interrupted_jobs: int  # Jobs in PUBLISHING: a crash left them, and the next run recovers them.
     unknown_archive: tuple[Path, ...]  # Real mode only: archive folders the job database cannot account for.
+    # Active schedules whose post is no longer a complete pair in the folder: they will not be published.
+    missing_schedules: tuple["ScheduleView", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -292,9 +312,25 @@ class ScheduleResult:
 
 
 @dataclass(frozen=True)
+class ScheduleView:
+    """A schedule and, for an active one, whether its files still match what was confirmed (read-only)."""
+
+    schedule: ScheduleRecord
+    content: str | None  # ok, changed, missing or unreadable for SCHEDULED; None for finished schedules.
+
+
+@dataclass(frozen=True)
 class ScheduleList:
-    schedules: tuple[ScheduleRecord, ...]
+    schedules: tuple[ScheduleView, ...]
     available: bool  # False: no job database, or one from before schedules existed (it is not upgraded).
+
+
+@dataclass(frozen=True)
+class ReconfirmResult:
+    old: ScheduleRecord  # As it was before: SCHEDULED (now CANCELLED) or INVALID (stays INVALID).
+    new: ScheduleRecord
+    local_time: str
+    warnings: tuple[str, ...]  # Real -> simulated without --real; token problems for a real schedule.
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -437,6 +473,30 @@ def _build_parser() -> argparse.ArgumentParser:
     unschedule.add_argument("post", help="The post's name: its file names without the extension.")
     unschedule.set_defaults(handler=_unschedule)
 
+    reconfirm = commands.add_parser(
+        "reconfirm",
+        help="Re-confirm a post's schedule for its current files (after a change, or to change mode or time).",
+        description=(
+            "Replace the post's active schedule (or its latest INVALID one) with a new schedule that covers the "
+            "files as they are now. Every schedule check is made again. The time stays the same unless --at is "
+            "given. Without --real the new schedule is simulated, even if the old one was real."
+        ),
+        epilog=RECONFIRM_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    reconfirm.add_argument("post", help="The post's name: its file names without the extension.")
+    reconfirm.add_argument(
+        "--at", type=_schedule_time, metavar='"YYYY-MM-DD HH:MM"',
+        help="A new time, in AUTOPOSTER_TIMEZONE (default: keep the old time).",
+    )
+    reconfirm.add_argument(
+        "--real",
+        action="store_true",
+        help="Real post to LinkedIn. Never carried over: without it the new schedule is simulated.",
+    )
+    _add_interval_option(reconfirm)
+    reconfirm.set_defaults(handler=_reconfirm)
+
     schedules = commands.add_parser(
         "schedules",
         help="List scheduled posts. Read-only.",
@@ -503,11 +563,17 @@ def scan_preview(
     conn = _open_history_or_none(settings)
     try:
         repository = JobRepository(conn) if conn is not None else None
-        # An older database (no schedules table) is read as it is, never upgraded: it has no schedules.
-        active = _active_schedules(ScheduleRepository(conn)) if conn is not None and schedules_available(conn) else {}
+        # Schedules belong to the configured incoming folder. An older database (no schedules table) is
+        # read as it is, never upgraded: it has no schedules.
+        own_folder = folder.resolve() == settings.incoming_dir(PLATFORM).resolve()
+        active = (_active_schedules(ScheduleRepository(conn))
+                  if own_folder and conn is not None and schedules_available(conn) else {})
         views = tuple(
-            _view_candidate(c, repository, mode, interval_s, active.get(c.stem.casefold())) for c in result.candidates
+            _view_candidate(c, repository, mode, interval_s, active.get(c.stem.casefold()), folder)
+            for c in result.candidates
         )
+        present = {c.stem.casefold() for c in result.candidates}
+        missing = tuple(ScheduleView(s, content_state(s, folder)) for key, s in active.items() if key not in present)
         interrupted = len(repository.list_by_status(JobStatus.PUBLISHING)) if repository is not None else 0
         unknown: tuple[Path, ...] = ()
         if mode is PublishMode.REAL and check_archive:
@@ -515,7 +581,8 @@ def scan_preview(
     finally:
         if conn is not None:
             conn.close()
-    return ScanPreview(folder=folder, candidates=views, scan=result, interrupted_jobs=interrupted, unknown_archive=unknown)
+    return ScanPreview(folder=folder, candidates=views, scan=result, interrupted_jobs=interrupted,
+                       unknown_archive=unknown, missing_schedules=missing)
 
 
 def _active_schedules(schedules: ScheduleRepository) -> dict[str, ScheduleRecord]:
@@ -533,6 +600,7 @@ def _view_candidate(
     mode: PublishMode,
     interval_s: float,
     schedule: ScheduleRecord | None = None,
+    folder: Path | None = None,
 ) -> CandidateView:
     unstable = unstable_files(candidate, interval_s)
     errors = tuple(validate_candidate(candidate).errors)
@@ -548,7 +616,8 @@ def _view_candidate(
         if duplicate is None and not failed and mode is PublishMode.REAL:
             found = posts_only_simulated((candidate,), repository)
             simulated = found[0].simulated_job if found else None
-    return CandidateView(candidate, unstable, errors, duplicate, failed, simulated, schedule)
+    content = content_state(schedule, folder or candidate.media_path.parent) if schedule is not None else None
+    return CandidateView(candidate, unstable, errors, duplicate, failed, simulated, schedule, content)
 
 
 def _scan(args: argparse.Namespace) -> int:
@@ -574,6 +643,8 @@ def _scan(args: argparse.Namespace) -> int:
         else:
             _print_candidates(preview.candidates, mode, settings.timezone)
             _print_pending_and_ambiguous(result)
+        if preview.missing_schedules:
+            _print_missing_schedules(preview.missing_schedules, settings.timezone)
         if preview.interrupted_jobs:
             print(f"\nNote: {preview.interrupted_jobs} interrupted job(s) will be recovered by the next run.")
         if mode is PublishMode.REAL and args.dir is None and preview.unknown_archive:
@@ -604,15 +675,27 @@ def _print_candidates(views: tuple[CandidateView, ...], mode: PublishMode, zone:
     stability_width = max(len(s) for s in stability)
     print(f"\nCANDIDATES ({len(views)})")
     for view, pair, stable in zip(views, pairs, stability):
-        if not view.valid:
+        if view.schedule is not None:  # Runs skip it until it is due; say if it will not be published.
+            state = "valid" if view.valid else f"INVALID: {'; '.join(view.errors)}"
+            last = f"{state}   SCHEDULED for {_local_time(view.schedule.publish_at, zone)} ({view.schedule.mode})"
+            if view.schedule_content in CONTENT_LABELS:
+                last += f" – {CONTENT_LABELS[view.schedule_content]}"
+        elif not view.valid:
             last = f"INVALID: {'; '.join(view.errors)}"
-        elif view.schedule is not None:  # Runs skip it until it is due.
-            last = f"valid   SCHEDULED for {_local_time(view.schedule.publish_at, zone)} ({view.schedule.mode})"
         elif view.stable:
             last = f"valid   {_duplicate_label(view, mode)}"
         else:
             last = "valid"  # Not hashed while it may still be changing.
         print(f"  {view.candidate.stem:<{stem_width}}   {pair:<{pair_width}}   {stable:<{stability_width}}   {last}")
+
+
+def _print_missing_schedules(views: tuple[ScheduleView, ...], zone: ZoneInfo) -> None:
+    width = max(len(v.schedule.stem) for v in views)
+    print(f"\nSCHEDULED, FILES MISSING ({len(views)}) - these will not be published; re-confirm or unschedule them")
+    for view in views:
+        s = view.schedule
+        label = CONTENT_LABELS.get(view.content or "", CONTENT_LABELS[CONTENT_MISSING])
+        print(f"  {s.stem:<{width}}   {_local_time(s.publish_at, zone)} ({s.mode})   {label}")
 
 
 def _duplicate_label(view: CandidateView, mode: PublishMode) -> str:
@@ -921,11 +1004,102 @@ def list_schedules(settings: Settings, *, include_all: bool = False, status: Sch
             records = schedules.list_recent(limit)
         else:
             records = schedules.list_active()
-        return ScheduleList(tuple(records), available=True)
+        # Active schedules: compare their files with what was confirmed (reads the files, writes nothing).
+        views = tuple(
+            ScheduleView(r, content_state(r, settings.incoming_dir(r.platform))
+                         if r.status is ScheduleStatus.SCHEDULED else None)
+            for r in records
+        )
+        return ScheduleList(views, available=True)
     except sqlite3.Error as error:
         raise ScheduleError("no_database", f"could not read the job database: {error}") from None
     finally:
         conn.close()
+
+
+def reconfirm_post(
+    settings: Settings, name: str, *, real: bool, at: str | None = None, interval_s: float = DEFAULT_INTERVAL_S
+) -> ReconfirmResult:
+    """Re-confirm a post's schedule with its current content (D46): a new schedule replaces the old one.
+
+    Works on the post's active (SCHEDULED) schedule, changed or not, or else on its latest schedule if that
+    is INVALID. Every check ``schedule`` makes is made again. Real only with ``real`` (never carried over).
+    The time stays the old one unless ``at`` is given. The old SCHEDULED schedule is cancelled and the new
+    one created in one transaction; an old INVALID one stays as it is. Takes the run lock. Raises
+    ScheduleError (nothing changed) or RunLockHeldError.
+    """
+    mode = PublishMode.REAL if real else PublishMode.SIMULATED
+    now = _now()
+    wanted = name.strip()
+    with single_run_lock(settings.lock_file), _run_scope():
+        if not _has_schedules(settings):
+            raise ScheduleError("nothing_to_reconfirm", f"'{wanted}' has no schedule; nothing to re-confirm. Use schedule.")
+        conn = _open_for_schedules(settings)
+        try:
+            schedules = ScheduleRepository(conn)
+            old = schedules.find_active(platform=PLATFORM, stem=wanted) or schedules.latest_for_post(
+                platform=PLATFORM, stem=wanted
+            )
+            if old is None or old.status not in (ScheduleStatus.SCHEDULED, ScheduleStatus.INVALID):
+                state = f"its latest schedule is {old.status}" if old else "it has no schedule"
+                raise ScheduleError(
+                    "nothing_to_reconfirm", f"'{wanted}': {state}; nothing to re-confirm. Use schedule instead."
+                )
+            candidate = _find_post(settings, wanted)
+            unstable = unstable_files(candidate, interval_s)
+            if unstable:
+                raise ScheduleError(
+                    "not_stable",
+                    f"'{candidate.stem}' is still being copied ({' and '.join(unstable)} changing or locked); "
+                    "try again when both files are complete.",
+                )
+            if at is not None:
+                try:
+                    publish_at = parse_publish_at(at, zone=settings.timezone, now=now)
+                except ScheduleTimeError as error:
+                    raise ScheduleError("time", str(error)) from None
+            else:
+                publish_at = old.publish_at
+                if publish_at < now + MIN_LEAD:
+                    raise ScheduleError(
+                        "time",
+                        f"the old time {_local_time(publish_at, settings.timezone)} is less than 5 minutes ahead "
+                        "or already past; give --at with a new time.",
+                    )
+            active_old = old.schedule_id if old.status is ScheduleStatus.SCHEDULED else None
+            media_sha256, caption_sha256 = check_schedulable(
+                candidate, mode=mode, jobs=JobRepository(conn), schedules=schedules, ignore_schedule_id=active_old
+            )
+            try:
+                new = schedules.replace(
+                    old.schedule_id,
+                    cancel_old=active_old is not None,
+                    schedule_id=str(uuid4()),
+                    platform=candidate.platform,
+                    mode=mode,
+                    stem=candidate.stem,
+                    media_name=candidate.media_path.name,
+                    caption_name=candidate.caption_path.name,
+                    media_sha256=media_sha256,
+                    caption_sha256=caption_sha256,
+                    publish_at=publish_at,
+                )
+            except (ScheduleNotFoundError, DuplicateScheduleError):  # Cannot happen while we hold the lock.
+                raise ScheduleError(
+                    "already_scheduled", f"'{candidate.stem}' changed while re-confirming; nothing was changed."
+                ) from None
+        finally:
+            conn.close()
+        logger.info(
+            "Schedule re-confirmed: old=%s new=%s platform=%s mode=%s stem=%s publish_at=%s",
+            old.schedule_id, new.schedule_id, new.platform, new.mode, new.stem, f"{new.publish_at:%Y-%m-%dT%H:%M:%SZ}",
+        )
+    warnings: list[str] = []
+    if old.mode is PublishMode.REAL and mode is PublishMode.SIMULATED:
+        warnings.append("the old schedule was REAL; this one is SIMULATED because --real was not given.")
+    if mode is PublishMode.REAL:
+        warnings.extend(_token_warnings(settings, publish_at, now))
+    return ReconfirmResult(old, new, _local_time(publish_at, settings.timezone), tuple(warnings))
 
 
 def _find_post(settings: Settings, name: str) -> PostCandidate:
@@ -1050,18 +1224,47 @@ def _schedules(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _print_schedule_table(records: tuple[ScheduleRecord, ...], zone: ZoneInfo) -> None:
-    stem_width = max(16, *(len(r.stem) for r in records))
+def _print_schedule_table(views: tuple[ScheduleView, ...], zone: ZoneInfo) -> None:
+    stem_width = max(16, *(len(v.schedule.stem) for v in views))
     when = f"WHEN ({zone.key})"
     print(f"  {'ID':<9} {'POST':<{stem_width}} {'MODE':<10} {when:<22} {'UTC':<17} STATUS")
-    for r in records:
+    for view in views:
+        r = view.schedule
         local = f"{r.publish_at.astimezone(zone):%Y-%m-%d %H:%M}"
         print(f"  {r.schedule_id[:8]:<9} {r.stem:<{stem_width}} {r.mode:<10} {local:<22} "
               f"{r.publish_at:%Y-%m-%d %H:%M}  {r.status}")
+        if view.content in CONTENT_LABELS:  # Found by reading the files now; the row itself is unchanged.
+            print(f"  {'':<9} - {CONTENT_LABELS[view.content]}")
         if r.job_id:
             print(f"  {'':<9} - job {r.job_id[:8]}")
         if r.reason:
             print(f"  {'':<9} - {r.reason}")
+
+
+def _reconfirm(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    try:
+        with logging_to(verbose=False, log_file=settings.log_file):
+            result = reconfirm_post(settings, args.post, real=args.real, at=args.at, interval_s=args.interval)
+    except ScheduleError as error:
+        print(f"Error: {error.message}", file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    except RunLockHeldError:
+        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        return EXIT_LOCKED
+
+    new, old = result.new, result.old
+    kind = ("REAL: to be published to LinkedIn" if new.mode is PublishMode.REAL
+            else "simulated: nothing will be sent to LinkedIn")
+    old_now = "now CANCELLED" if old.status is ScheduleStatus.SCHEDULED else f"which stays {old.status}"
+    print(f"Re-confirmed '{new.stem}' for {result.local_time} ({new.publish_at:%Y-%m-%d %H:%M} UTC), {kind}.")
+    print(f"Schedule ID: {new.schedule_id[:8]} (replaces {old.schedule_id[:8]}, {old_now}).")
+    print("The schedule now covers the files as they are; keep them unchanged until then.")
+    print("Note: publishing scheduled posts (run --scheduled) is not built yet. Until it is, this post is held in "
+          "incoming/ and every run skips it.")
+    for warning in result.warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+    return EXIT_OK
 
 
 # run
