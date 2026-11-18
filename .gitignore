@@ -23,23 +23,27 @@ ENV/
 .env.*
 !.env.example
 
-# Local data and state
-/data/**/*
-!/data/**/.gitkeep
-/database/
+# Runtime folders (backend/ is the base folder)
+/backend/data/
+/backend/database/
+/backend/logs/
+/backend/sandbox/
+
+# Databases, logs, and the run lock, wherever they are
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite3
-
-# Logs
 *.log
 *.log.[0-9]*
 autoposter.lock
-/logs/*
-!/logs/.gitkeep
+
+# Frontend (React)
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
 
 # Editors and operating systems
 .vscode/
@@ -47,7 +51,3 @@ autoposter.lock
 .DS_Store
 Thumbs.db
 Desktop.ini
-
-# Developer tools
-/sandbox/
-.ipynb_checkpoints/

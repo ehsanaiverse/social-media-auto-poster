@@ -1,0 +1,98 @@
+"""Graph state (small, serializable) and run context (live dependencies).
+
+State is saved by the checkpointer from Milestone 3, so it holds only plain
+values: IDs, path strings, status strings, hashes, and lists of error strings.
+Never image bytes or file handles. Live objects (publisher, settings, the job
+repository) are passed as LangGraph run context instead, via
+``invoke(..., context=...)``.
+"""
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import NotRequired, TypedDict
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
+
+from social_media_auto_poster.config import Settings
+from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode
+from social_media_auto_poster.platforms.base import Publisher
+from social_media_auto_poster.services.archive import post_folder_name
+from social_media_auto_poster.storage.jobs import JobRepository
+from social_media_auto_poster.storage.schedules import ScheduleRecord, ScheduleRepository
+
+
+class JobState(TypedDict):
+    """The state of one post job as it moves through the graph."""
+
+    job_id: str
+    platform: str
+    mode: str  # A PublishMode value; on every job log line.
+    stem: str
+    media_path: str
+    caption_path: str
+    status: str  # A JobStatus value.
+    errors: list[str]  # Lists, not tuples: state is serialized as JSON-like data.
+    retry_later: bool  # True if a file was still being copied or unreadable; nothing else happened.
+    media_sha256: str | None  # Set by check_duplicate.
+    caption_sha256: str | None
+    duplicate_of: str | None  # Job ID of the live job that already handles this content.
+    simulated: bool | None  # Set by the publish node; None if publish never ran.
+    platform_post_id: str | None
+    destination: str | None  # Folder the files were moved to, if they were moved.
+    # Name of the post's folder in failed/ or archive/, fixed when the job starts so a
+    # resumed move (after a crash) finds the folder an interrupted move began.
+    folder_name: str
+    # Scheduled posts (D46). NotRequired, so checkpoints saved before these fields existed
+    # still resume (resume checks only JobState.__required_keys__). Read them with .get().
+    schedule_id: NotRequired[str | None]  # The schedule this job carries out; None for an ordinary job.
+    expected_media_sha256: NotRequired[str | None]  # The hashes the user confirmed when scheduling.
+    expected_caption_sha256: NotRequired[str | None]
+    schedule_problem: NotRequired[str | None]  # Why the schedule becomes INVALID (content changed, file missing).
+
+
+@dataclass(frozen=True)
+class WorkflowContext:
+    """Dependencies for one graph run. Not part of state; never serialized."""
+
+    publisher: Publisher
+    mode: PublishMode  # Must match the publisher; the database rejects a mismatch.
+    repository: JobRepository
+    settings: Settings
+    stability_interval_s: float
+    # The checkpoint store (M3). None runs the graph without saving checkpoints (tests, tools).
+    checkpointer: BaseCheckpointSaver | None = None
+    # Schedules (D46), on the same connection as ``repository``. Required for a job that has a schedule_id.
+    schedules: ScheduleRepository | None = None
+
+
+def new_job_state(
+    job_id: str,
+    candidate: PostCandidate,
+    mode: PublishMode,
+    *,
+    now: datetime | None = None,
+    schedule: ScheduleRecord | None = None,
+) -> JobState:
+    """The starting state for a newly discovered candidate, carrying out ``schedule`` if given."""
+    return JobState(
+        job_id=job_id,
+        platform=candidate.platform.value,
+        mode=mode.value,
+        stem=candidate.stem,
+        media_path=str(candidate.media_path),
+        caption_path=str(candidate.caption_path),
+        status=JobStatus.DISCOVERED.value,
+        errors=[],
+        retry_later=False,
+        media_sha256=None,
+        caption_sha256=None,
+        duplicate_of=None,
+        simulated=None,
+        platform_post_id=None,
+        destination=None,
+        folder_name=post_folder_name(candidate.stem, now or datetime.now(UTC)),
+        schedule_id=schedule.schedule_id if schedule else None,
+        expected_media_sha256=schedule.media_sha256 if schedule else None,
+        expected_caption_sha256=schedule.caption_sha256 if schedule else None,
+        schedule_problem=None,
+    )

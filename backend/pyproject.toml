@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "social-media-auto-poster"
+version = "0.1.0"
+description = "A local, folder-driven social media publishing automation tool."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "langgraph>=1.2.17,<2",
+    # 3.1.2: newest release, verified on Python 3.14; past the CVE-2025-67644 fix (3.0.1). It requires
+    # langgraph-checkpoint>=4.3.0, past the CVE-2025-64439 fix (3.0.0).
+    "langgraph-checkpoint-sqlite>=3.1.2,<4",
+    # LinkedIn API calls (Milestone 4). 0.28.1 is the newest release, verified on Python 3.14.
+    "httpx>=0.28.1,<1",
+    "python-dotenv>=1.2,<2",
+    # Time zone data for zoneinfo (schedules, D46): Windows has none of its own. 2026.6 is the newest release
+    # (checked on PyPI 2026-11-17); pure data, no Python code. No upper bound: the one exception to the
+    # upper-bound rule (CLAUDE.md, "Dependencies"), because newer time zone data is always the correct data.
+    "tzdata>=2026.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1,<10",
+]
+# The local API (backend/app). Optional: the CLI never imports these. Versions verified on PyPI.
+api = [
+    "fastapi>=0.162.0,<1",
+    "uvicorn>=0.54.0,<1",
+    "python-multipart>=0.0.32,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
