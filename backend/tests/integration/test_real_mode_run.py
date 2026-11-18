@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import run as run_ops
 from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.models import JobStatus, Platform, PublishResult
@@ -84,7 +85,7 @@ def test_real_mode_is_refused_without_a_linkedin_token(settings, capsys):
     assert run("--real") == 1
 
     captured = capsys.readouterr()
-    assert "LINKEDIN_ACCESS_TOKEN is not set in backend\.env; nothing was published" in captured.err
+    assert "LINKEDIN_ACCESS_TOKEN is not set in backend\\.env; nothing was published" in captured.err
     assert (settings.incoming_dir(LINKEDIN) / "launch.jpg").exists()
     assert rows(settings) == []
 
@@ -222,7 +223,7 @@ def test_a_refused_real_run_changes_nothing(settings, linkedin, monkeypatch):
     (settings.archive_dir(LINKEDIN) / "20261020T100000Z_old-post").mkdir(parents=True)
     add_post(settings, "launch")
     resumed = []
-    monkeypatch.setattr(cli, "resume_interrupted_jobs", lambda *args: resumed.append(args))
+    monkeypatch.setattr(run_ops, "resume_interrupted_jobs", lambda *args, **kwargs: resumed.append(args))
 
     assert run("--real") == 1
 

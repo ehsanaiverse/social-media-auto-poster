@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import run as run_ops
 from social_media_auto_poster.graph import nodes
 from social_media_auto_poster.graph.workflow import run_job
 
@@ -185,7 +186,7 @@ def test_header_is_printed_before_any_job_runs(base, incoming, monkeypatch, caps
         seen_before_job.append(capsys.readouterr().out)
         return run_job(candidate, context)
 
-    monkeypatch.setattr(cli, "run_job", spy)
+    monkeypatch.setattr(run_ops, "run_job", spy)
 
     run()
 

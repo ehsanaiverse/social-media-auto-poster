@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import run as run_ops
 from social_media_auto_poster.operations import logs
 from social_media_auto_poster.config import load_settings
 from social_media_auto_poster.graph import nodes
@@ -53,7 +54,7 @@ def finals(monkeypatch) -> list[dict]:
         captured.append(final)
         return final
 
-    monkeypatch.setattr(cli, "run_job", spy)
+    monkeypatch.setattr(run_ops, "run_job", spy)
     return captured
 
 
@@ -256,7 +257,7 @@ def test_unexpected_error_in_one_job_does_not_stop_others(incoming, monkeypatch,
             raise RuntimeError("bug")
         return run_job(candidate, context)
 
-    monkeypatch.setattr(cli, "run_job", flaky)
+    monkeypatch.setattr(run_ops, "run_job", flaky)
 
     exit_code = run()
 
@@ -436,7 +437,7 @@ def test_recovery_database_failure_stops_the_run(base, incoming, finals, monkeyp
     def broken(repository, settings, **_):
         raise sqlite3.OperationalError("disk I/O error")
 
-    monkeypatch.setattr(cli, "reconcile_interrupted_jobs", broken)
+    monkeypatch.setattr(run_ops, "reconcile_interrupted_jobs", broken)
 
     assert run() == cli.EXIT_SETUP_ERROR
     assert finals == []
