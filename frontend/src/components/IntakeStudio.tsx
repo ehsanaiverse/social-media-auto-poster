@@ -1,10 +1,12 @@
 import React, { useEffect, useId, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { AlertCircle, CheckCircle2, FolderInput, Globe, Hash, ImagePlus, Inbox, Loader2, Monitor, Send, Smartphone, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CalendarClock, CheckCircle2, FolderInput, Globe, Hash, ImagePlus, Inbox, Loader2, Monitor, Send, Smartphone, X } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
-import { MAX_CAPTION_BYTES, MAX_REAL_CAPTION_CHARS, captionLength, imageErrors, postNameError, utf8Bytes } from '../lib/postRules';
+import { MAX_CAPTION_CHARS, captionError as captionProblem, captionLength, imageErrors, postNameError } from '../lib/postRules';
+import { newChoice, scheduleFields, scheduleProblem, type ScheduleChoice } from '../lib/schedules';
 import { PLATFORMS, platformById } from '../lib/platforms';
 import { cn } from '../utils/cn';
+import { ScheduleFields } from './ScheduleFields';
 
 const LinkedInMark = platformById('linkedin').Icon;
 import { SectionHeading } from './ui/SectionHeading';
@@ -13,7 +15,7 @@ import { EASE_OUT, Reveal, SpotlightCard } from './ui/motion';
 const TAGS = ['#Hiring', '#Engineering', '#Automation', '#BuildInPublic', '#Startups'];
 
 export const IntakeStudio: React.FC = () => {
-  const { createPost, isCreatingPost, linkedInStatus, connection } = useApi();
+  const { createPost, isCreatingPost, linkedInStatus, connection, scheduleTimezone } = useApi();
   const fileInputId = useId();
 
   const [name, setName] = useState('');
@@ -24,6 +26,11 @@ export const IntakeStudio: React.FC = () => {
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [isDragOver, setIsDragOver] = useState(false);
   const [touched, setTouched] = useState(false);
+  // When: now (the next time you publish) or at a chosen time (D46).
+  const [when, setWhen] = useState<'now' | 'schedule'>('now');
+  const [choice, setChoice] = useState<ScheduleChoice>(() => newChoice(scheduleTimezone));
+  // The last post was added but its schedule was refused: which post, and why.
+  const [notScheduled, setNotScheduled] = useState<{ name: string; reason: string } | null>(null);
 
   // Free the preview URL when the image changes or the section unmounts.
   useEffect(() => {
@@ -37,15 +44,13 @@ export const IntakeStudio: React.FC = () => {
   }, [image]);
 
   const nameError = postNameError(name);
-  const bytes = utf8Bytes(caption);
   const chars = captionLength(caption);
-  const captionError = !caption.trim()
-    ? 'Please write a caption.'
-    : bytes > MAX_CAPTION_BYTES
-      ? 'The caption is too long.'
-      : null;
-  const tooLongForReal = chars > MAX_REAL_CAPTION_CHARS;
-  const canSubmit = connection === 'online' && !nameError && !captionError && image && imageProblems.length === 0 && !isCreatingPost;
+  // Over 3,000 characters is refused in every mode (D45), so it blocks adding the post.
+  const captionError = captionProblem(caption);
+  const tooLong = chars > MAX_CAPTION_CHARS;
+  const whenProblem = when === 'schedule' ? scheduleProblem(choice, scheduleTimezone) : null;
+  const canSubmit =
+    connection === 'online' && !nameError && !captionError && image && imageProblems.length === 0 && !whenProblem && !isCreatingPost;
 
   const pickImage = async (file: File) => {
     setImage(file);
@@ -62,12 +67,17 @@ export const IntakeStudio: React.FC = () => {
     e.preventDefault();
     setTouched(true);
     if (!canSubmit || !image) return;
-    const res = await createPost({ name: name.trim(), image, caption });
+    setNotScheduled(null);
+    const res = await createPost({ name: name.trim(), image, caption }, when === 'schedule' ? scheduleFields(choice) : undefined);
     if (res) {
+      // The post was added either way; only its schedule can have been refused.
+      if (res.scheduleError) setNotScheduled({ name: res.post.name, reason: res.scheduleError });
       setName('');
       setCaption('');
       clearImage();
       setTouched(false);
+      setWhen('now');
+      setChoice(newChoice(scheduleTimezone));
     }
   };
 
@@ -75,8 +85,8 @@ export const IntakeStudio: React.FC = () => {
   const checks = [
     { ok: !nameError, label: 'Post has a name' },
     { ok: Boolean(image) && imageProblems.length === 0, label: 'Picture added' },
-    { ok: !captionError, label: 'Caption written' },
-    { ok: !tooLongForReal, label: 'Fits LinkedIn’s length limit' }
+    { ok: Boolean(caption.trim()), label: 'Caption written' },
+    { ok: !tooLong, label: 'Fits LinkedIn’s length limit' }
   ];
 
   return (
@@ -246,8 +256,8 @@ export const IntakeStudio: React.FC = () => {
                   <label htmlFor="post-caption" className="text-sm font-medium text-slate-200">
                     Caption
                   </label>
-                  <span className={cn('font-mono text-[11px]', tooLongForReal ? 'text-amber-300' : 'text-slate-500')}>
-                    {chars.toLocaleString()} / {MAX_REAL_CAPTION_CHARS.toLocaleString()}
+                  <span className={cn('font-mono text-[11px]', tooLong ? 'text-rose-300' : 'text-slate-500')}>
+                    {chars.toLocaleString()} / {MAX_CAPTION_CHARS.toLocaleString()}
                   </span>
                 </div>
                 <textarea
@@ -256,23 +266,19 @@ export const IntakeStudio: React.FC = () => {
                   value={caption}
                   onChange={(e) => setCaption(e.target.value)}
                   placeholder="What do you want to share?"
-                  aria-invalid={touched && Boolean(captionError)}
+                  aria-invalid={(touched && Boolean(captionError)) || tooLong}
                   aria-describedby="post-caption-help"
                   className="field resize-y text-sm leading-relaxed"
                 />
                 <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/5">
                   <motion.div
-                    className={cn('h-full rounded-full', tooLongForReal ? 'bg-amber-400' : 'bg-emerald-400/70')}
-                    animate={{ width: `${Math.min(100, (chars / MAX_REAL_CAPTION_CHARS) * 100)}%` }}
+                    className={cn('h-full rounded-full', tooLong ? 'bg-rose-400' : 'bg-emerald-400/70')}
+                    animate={{ width: `${Math.min(100, (chars / MAX_CAPTION_CHARS) * 100)}%` }}
                     transition={{ duration: 0.3, ease: EASE_OUT }}
                   />
                 </div>
-                <p id="post-caption-help" className={cn('mt-1.5 text-xs', (touched && captionError) || tooLongForReal ? 'text-amber-300' : 'text-slate-500')}>
-                  {touched && captionError
-                    ? captionError
-                    : tooLongForReal
-                      ? 'Too long for LinkedIn. Please keep it under 3,000 characters.'
-                      : 'Hashtags like #hiring work as usual.'}
+                <p id="post-caption-help" className={cn('mt-1.5 text-xs', (touched || tooLong) && captionError ? 'text-rose-300' : 'text-slate-500')}>
+                  {(touched || tooLong) && captionError ? captionError : 'Hashtags like #hiring work as usual.'}
                 </p>
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                   <Hash className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
@@ -290,9 +296,66 @@ export const IntakeStudio: React.FC = () => {
                 </div>
               </div>
 
+              {/* When: now, or at a chosen time (D46) */}
+              <fieldset>
+                <legend className="mb-2 text-sm font-medium text-slate-200">When</legend>
+                <div className="segmented" role="radiogroup" aria-label="When">
+                  {(
+                    [
+                      ['now', 'Now'],
+                      ['schedule', 'Schedule']
+                    ] as const
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      role="radio"
+                      aria-checked={when === id}
+                      onClick={() => setWhen(id)}
+                      className={cn('relative min-h-9 whitespace-nowrap rounded-lg px-4 text-xs font-medium transition-colors', when === id ? 'text-slate-50' : 'text-slate-400 hover:text-slate-200')}
+                    >
+                      {when === id && <motion.span layoutId="when-pill" className="absolute inset-0 rounded-lg bg-white/10 ring-1 ring-inset ring-white/10" />}
+                      <span className="relative">{label}</span>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-xs text-slate-500">
+                  {when === 'now' ? 'It waits in your queue and goes out the next time you publish.' : 'It waits in your queue and goes out at the time you choose.'}
+                </p>
+                {when === 'schedule' && (
+                  <div className="mt-4">
+                    <ScheduleFields idPrefix="post-when" choice={choice} onChange={setChoice} timeZone={scheduleTimezone} problem={whenProblem} />
+                  </div>
+                )}
+              </fieldset>
+
+              {notScheduled && (
+                <div className="flex items-start gap-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4 text-sm text-amber-100" role="alert">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+                  <div className="min-w-0 flex-1">
+                    <p>
+                      <strong className="font-semibold">'{notScheduled.name}' was added, but it is not scheduled:</strong> {notScheduled.reason}
+                    </p>
+                    <p className="mt-1 text-xs text-amber-200/90">
+                      It is in your queue as an ordinary post, so it goes out the next time you publish. To post it later instead, use Schedule on it in
+                      your queue.
+                    </p>
+                  </div>
+                  <button type="button" onClick={() => setNotScheduled(null)} aria-label="Dismiss" className="-m-1 grid h-8 w-8 shrink-0 place-items-center rounded-lg text-amber-200 hover:bg-white/5">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+
               <button type="submit" disabled={!canSubmit} className="btn btn-primary w-full">
-                {isCreatingPost ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}
-                {isCreatingPost ? 'Adding…' : 'Add to queue'}
+                {isCreatingPost ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : when === 'schedule' ? (
+                  <CalendarClock className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Send className="h-4 w-4" aria-hidden="true" />
+                )}
+                {isCreatingPost ? 'Adding…' : when === 'schedule' ? (choice.real ? 'Add and schedule live' : 'Add and schedule test') : 'Add to queue'}
               </button>
             </form>
 
@@ -389,7 +452,7 @@ export const IntakeStudio: React.FC = () => {
               </SpotlightCard>
             </motion.div>
             <p className="text-xs leading-relaxed text-slate-500">
-              A preview of your post. Nothing is posted until you publish.
+              A preview of your post. Nothing is posted until you publish, or until its scheduled time.
             </p>
             <div className="flex items-start gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4">
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-emerald-500/10 text-emerald-300 ring-1 ring-inset ring-emerald-400/25">

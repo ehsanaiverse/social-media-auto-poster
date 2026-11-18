@@ -14,7 +14,7 @@ interface Step {
 const STEPS: Step[] = [
   { icon: ImagePlus, title: 'Add', text: 'Drop in a picture and write your caption.' },
   { icon: ShieldCheck, title: 'Check', text: 'We make sure the files are complete and not posted before.' },
-  { icon: Send, title: 'Post', text: 'It goes out to your accounts, exactly once.' },
+  { icon: Send, title: 'Post', text: 'It goes out to your accounts exactly once: now, or at a time you choose.' },
   { icon: CheckCircle2, title: 'Done', text: 'It is saved in your history, and the files are tidied away.' }
 ];
 
@@ -31,7 +31,7 @@ export const WorkflowGraph: React.FC = () => {
       <div className="hr-fade absolute inset-x-0 top-0" />
       <div className="page-container">
         <SectionHeading index="04" icon={GitBranch} eyebrow="How it works" title="Four simple steps">
-          You add the post. We take care of the rest.
+          You add the post and choose when it goes out: now, or at a time you pick. We take care of the rest.
         </SectionHeading>
 
         <Reveal className="relative">

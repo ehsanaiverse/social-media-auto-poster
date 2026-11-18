@@ -17,7 +17,8 @@ export function postNameError(raw: string): string | null {
 }
 
 export const MAX_CAPTION_BYTES = 64 * 1024; // ingestion/validation.py read cap, not LinkedIn's limit
-export const MAX_REAL_CAPTION_CHARS = 3000; // real mode only (D36)
+// LinkedIn's caption limit. The backend refuses a longer caption in every mode, tests and uploads included (D45).
+export const MAX_CAPTION_CHARS = 3000;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // proposal in api-plan open question 3
 
 // ingestion/validation.py: EXPECTED_TYPE and the file-signature check.
@@ -52,6 +53,14 @@ export async function imageErrors(file: File): Promise<string[]> {
 export const captionLength = (caption: string): number => caption.length;
 
 export const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
+
+// What stops a caption from being added, as the backend's validation would say it; null when it is fine.
+export function captionError(caption: string): string | null {
+  if (!caption.trim()) return 'Please write a caption.';
+  if (captionLength(caption) > MAX_CAPTION_CHARS) return 'The caption is longer than 3,000 characters, which LinkedIn does not allow.';
+  if (utf8Bytes(caption) > MAX_CAPTION_BYTES) return 'The caption is too long.';
+  return null;
+}
 
 // The phrase typed to confirm a real publish (api-plan open question 2).
 export const CONFIRM_PHRASE = 'publish to LinkedIn';

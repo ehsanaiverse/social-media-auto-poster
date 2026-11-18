@@ -1,6 +1,7 @@
 import React from 'react';
-import { AlertTriangle, CheckCircle2, FlaskConical, Loader2, XCircle, type LucideIcon } from 'lucide-react';
-import type { JobStatus } from '../../types/api';
+import { AlertTriangle, Ban, CalendarClock, CheckCircle2, FlaskConical, Loader2, XCircle, type LucideIcon } from 'lucide-react';
+import { SCHEDULE_STATUS_LABEL } from '../../lib/schedules';
+import type { JobStatus, ScheduleStatus } from '../../types/api';
 import { cn } from '../../utils/cn';
 
 // Plain-language names for the backend's statuses.
@@ -39,6 +40,32 @@ export const StatusBadge: React.FC<{ status: JobStatus; className?: string }> = 
       )}
       <Icon className={cn('h-3.5 w-3.5', status === 'PUBLISHING' && 'animate-spin')} aria-hidden="true" />
       <span>{STATUS_LABEL[status] ?? status}</span>
+    </span>
+  );
+};
+
+// The same badge for a schedule's status (D46).
+const SCHEDULE_STYLES: Record<ScheduleStatus, { icon: LucideIcon; className: string }> = {
+  SCHEDULED: { icon: CalendarClock, className: 'border-teal-700/50 bg-teal-950/70 text-teal-300' },
+  DONE: { icon: CheckCircle2, className: 'border-emerald-700/50 bg-emerald-950/70 text-emerald-300' },
+  INVALID: { icon: XCircle, className: 'border-rose-700/50 bg-rose-950/70 text-rose-300' },
+  CANCELLED: { icon: Ban, className: 'border-white/10 bg-white/[0.04] text-slate-400' },
+  MISSED: { icon: AlertTriangle, className: 'border-amber-700/50 bg-amber-950/70 text-amber-300' }
+};
+
+export const ScheduleBadge: React.FC<{ status: ScheduleStatus; className?: string }> = ({ status, className }) => {
+  const style = SCHEDULE_STYLES[status] ?? SCHEDULE_STYLES.INVALID;
+  const Icon = style.icon;
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium',
+        style.className,
+        className
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+      <span>{SCHEDULE_STATUS_LABEL[status] ?? status}</span>
     </span>
   );
 };

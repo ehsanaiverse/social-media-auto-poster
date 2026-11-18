@@ -4,10 +4,11 @@ import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { AnimatedNumber, EASE_OUT } from './motion';
 
-export type Tone = 'emerald' | 'sky' | 'violet' | 'amber' | 'rose' | 'slate';
+export type Tone = 'emerald' | 'teal' | 'sky' | 'violet' | 'amber' | 'rose' | 'slate';
 
 const TONES: Record<Tone, { hex: string; text: string; tile: string }> = {
   emerald: { hex: '#34d399', text: 'text-emerald-300', tile: 'bg-emerald-500/10 ring-emerald-400/25' },
+  teal: { hex: '#5eead4', text: 'text-teal-300', tile: 'bg-teal-500/10 ring-teal-400/25' },
   sky: { hex: '#38bdf8', text: 'text-sky-300', tile: 'bg-sky-500/10 ring-sky-400/25' },
   violet: { hex: '#a78bfa', text: 'text-violet-300', tile: 'bg-violet-500/10 ring-violet-400/25' },
   amber: { hex: '#fbbf24', text: 'text-amber-300', tile: 'bg-amber-500/10 ring-amber-400/25' },

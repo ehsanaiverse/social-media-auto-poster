@@ -10,7 +10,11 @@ import type {
   ResolveResponse,
   RunReport,
   RunRequest,
-  ScanResponse
+  ScanResponse,
+  ScheduleCreateRequest,
+  ScheduleListResponse,
+  ScheduleReconfirmRequest,
+  ScheduleResponse
 } from '../types/api';
 
 // The API binds to 127.0.0.1 only (docs/api-plan.md, rule 3). Set VITE_API_BASE
@@ -73,5 +77,15 @@ export const apiService = {
 
   resolveJob: (id: string, req: ResolveRequest) => postJson<ResolveResponse>(`/jobs/${encodeURIComponent(id)}/resolve`, req),
 
-  getLinkedInStatus: (check = false) => request<LinkedInStatusResponse>(`/linkedin/status?check=${check}`)
+  getLinkedInStatus: (check = false) => request<LinkedInStatusResponse>(`/linkedin/status?check=${check}`),
+
+  // Scheduled posts (D46). Reading never changes anything; the others take the run lock (409 while busy).
+  getSchedules: (all = false) => request<ScheduleListResponse>(all ? '/schedules?all=true' : '/schedules'),
+
+  createSchedule: (req: ScheduleCreateRequest) => postJson<ScheduleResponse>('/schedules', req),
+
+  cancelSchedule: (id: string) => postJson<ScheduleResponse>(`/schedules/${encodeURIComponent(id)}/cancel`, {}),
+
+  reconfirmSchedule: (id: string, req: ScheduleReconfirmRequest) =>
+    postJson<ScheduleResponse>(`/schedules/${encodeURIComponent(id)}/reconfirm`, req)
 };

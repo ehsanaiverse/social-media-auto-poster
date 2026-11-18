@@ -9,10 +9,28 @@ import type {
   ResolveResponse,
   RunReport,
   RunRequest,
-  ScanResponse
+  ScanResponse,
+  ScheduleItem,
+  ScheduleReconfirmRequest,
+  ScheduleResponse
 } from '../types/api';
 import { errorMessage, isApiError } from '../types/api';
 import { apiService } from '../services/apiService';
+import { DEFAULT_TIMEZONE, modeWord } from '../lib/schedules';
+
+// "When" for a new post: its publish time and mode, the request fields without the name.
+export type ScheduleWhen = ScheduleReconfirmRequest;
+
+export interface CreatePostResult {
+  post: PostCreateResponse;
+  schedule: ScheduleResponse | null;
+  // The post was added, but scheduling it was refused: why. The post stays in the queue, unscheduled.
+  scheduleError: string | null;
+}
+
+// The Schedule dialog: a post to schedule, or a schedule to re-confirm.
+export type ScheduleDialog = { kind: 'create'; name: string } | { kind: 'reconfirm'; schedule: ScheduleItem };
+export type ScheduleView = 'active' | 'all';
 
 export interface ToastMessage {
   id: string;
@@ -47,7 +65,22 @@ interface ApiContextType {
   executeRun: (req: RunRequest) => Promise<RunReport | null>;
 
   isCreatingPost: boolean;
-  createPost: (payload: PostCreatePayload) => Promise<PostCreateResponse | null>;
+  // With `when`, the post is added and then scheduled.
+  createPost: (payload: PostCreatePayload, when?: ScheduleWhen) => Promise<CreatePostResult | null>;
+
+  // Scheduled posts (D46). `schedules` is always the active ones; `allSchedules` is loaded for the "All" view.
+  schedules: ScheduleItem[];
+  allSchedules: ScheduleItem[];
+  scheduleTimezone: string;
+  isLoadingSchedules: boolean;
+  scheduleView: ScheduleView;
+  setScheduleView: (view: ScheduleView) => void;
+  refreshSchedules: () => Promise<void>;
+  scheduleDialog: ScheduleDialog | null;
+  setScheduleDialog: (dialog: ScheduleDialog | null) => void;
+  createSchedule: (name: string, when: ScheduleWhen) => Promise<ScheduleResponse | null>;
+  cancelSchedule: (schedule: ScheduleItem) => Promise<ScheduleResponse | null>;
+  reconfirmSchedule: (schedule: ScheduleItem, when: ScheduleWhen) => Promise<ScheduleResponse | null>;
 
   resolvingJob: JobSummary | null;
   setResolvingJob: (job: JobSummary | null) => void;
@@ -92,6 +125,15 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [isCreatingPost, setIsCreatingPost] = useState(false);
   const [resolvingJob, setResolvingJob] = useState<JobSummary | null>(null);
+
+  const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
+  const [allSchedules, setAllSchedules] = useState<ScheduleItem[]>([]);
+  const [scheduleTimezone, setScheduleTimezone] = useState(DEFAULT_TIMEZONE);
+  const [isLoadingSchedules, setIsLoadingSchedules] = useState(false);
+  const [scheduleView, setScheduleView] = useState<ScheduleView>('active');
+  const [scheduleDialog, setScheduleDialog] = useState<ScheduleDialog | null>(null);
+  const scheduleViewRef = useRef(scheduleView);
+  scheduleViewRef.current = scheduleView;
 
   const [linkedInStatus, setLinkedInStatus] = useState<LinkedInStatusResponse | null>(null);
   const [isCheckingLinkedIn, setIsCheckingLinkedIn] = useState(false);
@@ -151,6 +193,23 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [addToast, noteError]);
 
+  const refreshSchedules = useCallback(async () => {
+    setIsLoadingSchedules(true);
+    try {
+      const active = await apiService.getSchedules(false);
+      setSchedules(active.schedules);
+      setScheduleTimezone(active.timezone || DEFAULT_TIMEZONE);
+      setAllSchedules(scheduleViewRef.current === 'all' ? (await apiService.getSchedules(true)).schedules : []);
+    } catch (err) {
+      noteError(err);
+      setSchedules([]);
+      setAllSchedules([]);
+      if (!isApiError(err) || err.status !== 0) addToast('error', "Couldn't load the scheduled posts", errorMessage(err, 'Please try again.'));
+    } finally {
+      setIsLoadingSchedules(false);
+    }
+  }, [addToast, noteError]);
+
   const refreshLinkedInStatus = useCallback(
     async (check = false) => {
       setIsCheckingLinkedIn(true);
@@ -175,14 +234,16 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setConnection('checking');
     if (await apiService.ping()) {
       setConnection('online');
-      await Promise.all([refreshScan(), refreshJobs(), refreshLinkedInStatus()]);
+      await Promise.all([refreshScan(), refreshJobs(), refreshLinkedInStatus(), refreshSchedules()]);
     } else {
       setConnection('offline');
       setScanData(null);
       setJobs([]);
       setLinkedInStatus(null);
+      setSchedules([]);
+      setAllSchedules([]);
     }
-  }, [refreshScan, refreshJobs, refreshLinkedInStatus]);
+  }, [refreshScan, refreshJobs, refreshLinkedInStatus, refreshSchedules]);
 
   // First load.
   useEffect(() => {
@@ -196,7 +257,19 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setScanData(null);
     setJobs([]);
     setLinkedInStatus(null);
+    setSchedules([]);
+    setAllSchedules([]);
   }, [connection]);
+
+  // Switching the scheduled-posts view reloads that list.
+  const firstScheduleView = useRef(true);
+  useEffect(() => {
+    if (firstScheduleView.current) {
+      firstScheduleView.current = false;
+      return;
+    }
+    if (connection === 'online') void refreshSchedules();
+  }, [scheduleView, refreshSchedules, connection]);
 
   // While offline, keep looking for the API so the page fills in on its own.
   useEffect(() => {
@@ -218,26 +291,106 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [jobStatusFilter, refreshJobs, connection]);
 
   const createPost = useCallback(
-    async (payload: PostCreatePayload) => {
+    async (payload: PostCreatePayload, when?: ScheduleWhen): Promise<CreatePostResult | null> => {
       setIsCreatingPost(true);
       try {
-        const res = await apiService.addPost(payload);
-        addToast(
-          res.duplicate_of ? 'warning' : 'success',
-          `Added '${res.name}' to your queue`,
-          res.duplicate_of ? 'It matches an earlier post, so it will be skipped.' : 'Publish it whenever you are ready.'
-        );
-        await refreshScan();
-        return res;
-      } catch (err) {
-        noteError(err);
-        addToast('error', 'Post not added', errorMessage(err, 'Something went wrong. Please try again.'));
-        return null;
+        let post: PostCreateResponse;
+        try {
+          post = await apiService.addPost(payload);
+        } catch (err) {
+          noteError(err);
+          addToast('error', 'Post not added', errorMessage(err, 'Something went wrong. Please try again.'));
+          return null;
+        }
+        if (!when) {
+          addToast(
+            post.duplicate_of ? 'warning' : 'success',
+            `Added '${post.name}' to your queue`,
+            post.duplicate_of ? 'It matches an earlier post, so it will be skipped.' : 'Publish it whenever you are ready.'
+          );
+          await refreshScan();
+          return { post, schedule: null, scheduleError: null };
+        }
+        // The post is in the queue now. Scheduling it is a second step that can be refused on its own.
+        try {
+          const schedule = await apiService.createSchedule({ name: post.name, ...when });
+          addToast(
+            'success',
+            `Added and scheduled '${post.name}'`,
+            `It goes out at ${schedule.schedule.publish_at_local} (${modeWord(schedule.schedule.mode)}).${schedule.warnings?.length ? ` ${schedule.warnings.join(' ')}` : ''}`
+          );
+          return { post, schedule, scheduleError: null };
+        } catch (err) {
+          noteError(err);
+          const reason = errorMessage(err, 'Something went wrong.');
+          addToast('warning', `Added '${post.name}', but not scheduled`, reason);
+          return { post, schedule: null, scheduleError: reason };
+        } finally {
+          await Promise.all([refreshScan(), refreshSchedules()]);
+        }
       } finally {
         setIsCreatingPost(false);
       }
     },
-    [addToast, noteError, refreshScan]
+    [addToast, noteError, refreshScan, refreshSchedules]
+  );
+
+  const createSchedule = useCallback(
+    async (name: string, when: ScheduleWhen) => {
+      try {
+        const res = await apiService.createSchedule({ name, ...when });
+        addToast(
+          'success',
+          `Scheduled '${name}'`,
+          `It goes out at ${res.schedule.publish_at_local} (${modeWord(res.schedule.mode)}).${res.warnings?.length ? ` ${res.warnings.join(' ')}` : ''}`
+        );
+        setScheduleDialog(null);
+        await Promise.all([refreshScan(), refreshSchedules()]);
+        return res;
+      } catch (err) {
+        noteError(err);
+        addToast('error', STATUS_TITLES[isApiError(err) ? err.status : -1] ?? 'Not scheduled', errorMessage(err, 'Please try again.'));
+        return null;
+      }
+    },
+    [addToast, noteError, refreshScan, refreshSchedules]
+  );
+
+  const cancelSchedule = useCallback(
+    async (schedule: ScheduleItem) => {
+      try {
+        const res = await apiService.cancelSchedule(schedule.schedule_id);
+        addToast('success', `Cancelled the schedule of '${schedule.name}'`, 'The post stays in your queue and goes out the next time you publish.');
+        await Promise.all([refreshScan(), refreshSchedules()]);
+        return res;
+      } catch (err) {
+        noteError(err);
+        addToast('error', STATUS_TITLES[isApiError(err) ? err.status : -1] ?? 'Not cancelled', errorMessage(err, 'Please try again.'));
+        return null;
+      }
+    },
+    [addToast, noteError, refreshScan, refreshSchedules]
+  );
+
+  const reconfirmSchedule = useCallback(
+    async (schedule: ScheduleItem, when: ScheduleWhen) => {
+      try {
+        const res = await apiService.reconfirmSchedule(schedule.schedule_id, when);
+        addToast(
+          'success',
+          `Re-confirmed '${schedule.name}'`,
+          `It goes out at ${res.schedule.publish_at_local} (${modeWord(res.schedule.mode)}), as it is now.${res.warnings?.length ? ` ${res.warnings.join(' ')}` : ''}`
+        );
+        setScheduleDialog(null);
+        await Promise.all([refreshScan(), refreshSchedules()]);
+        return res;
+      } catch (err) {
+        noteError(err);
+        addToast('error', STATUS_TITLES[isApiError(err) ? err.status : -1] ?? 'Not re-confirmed', errorMessage(err, 'Please try again.'));
+        return null;
+      }
+    },
+    [addToast, noteError, refreshScan, refreshSchedules]
   );
 
   const executeRun = useCallback(
@@ -318,6 +471,18 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       executeRun,
       isCreatingPost,
       createPost,
+      schedules,
+      allSchedules,
+      scheduleTimezone,
+      isLoadingSchedules,
+      scheduleView,
+      setScheduleView,
+      refreshSchedules,
+      scheduleDialog,
+      setScheduleDialog,
+      createSchedule,
+      cancelSchedule,
+      reconfirmSchedule,
       resolvingJob,
       setResolvingJob,
       resolveJob,
@@ -331,7 +496,9 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [
       connection, retryConnection, scanData, scanReal, isScanning, refreshScan, jobs, isLoadingJobs, jobStatusFilter,
       refreshJobs, selectedJob, openJob, closeJob, isRunning, lastRunReport, executeRun, isCreatingPost, createPost,
-      resolvingJob, resolveJob, linkedInStatus, isCheckingLinkedIn, refreshLinkedInStatus, toasts, addToast, removeToast
+      resolvingJob, resolveJob, linkedInStatus, isCheckingLinkedIn, refreshLinkedInStatus, toasts, addToast, removeToast,
+      schedules, allSchedules, scheduleTimezone, isLoadingSchedules, scheduleView, refreshSchedules, scheduleDialog,
+      createSchedule, cancelSchedule, reconfirmSchedule
     ]
   );
 

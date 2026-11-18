@@ -18,6 +18,8 @@ export interface Candidate {
   errors: string[];
   duplicate_of: string | null;
   only_simulated: boolean;
+  // An active schedule (D46): runs skip the post until a scheduled run posts it.
+  schedule?: CandidateSchedule | null;
   // Optional display extras.
   image_filename?: string;
   caption_filename?: string;
@@ -33,6 +35,8 @@ export interface ScanResponse {
   pending: CountOrList;
   ambiguous: CountOrList;
   warnings: string[];
+  // Active schedules whose post is no longer a complete pair in the folder: they will not be posted.
+  missing_schedules?: ScheduleItem[];
 }
 
 export interface RunRequest {
@@ -131,5 +135,49 @@ export const isApiError = (err: unknown): err is ApiError =>
 export const errorMessage = (err: unknown, fallback: string): string =>
   isApiError(err) ? err.message : err instanceof Error ? err.message : fallback;
 
-// A candidate the next run would process.
-export const isReady = (c: Candidate): boolean => c.stable && c.valid && !c.duplicate_of;
+// A candidate the next dashboard run would process. A dashboard run skips scheduled posts (D46).
+export const isReady = (c: Candidate): boolean => c.stable && c.valid && !c.duplicate_of && !c.schedule;
+
+// Scheduled posts (D46): GET/POST /api/schedules, /api/schedules/{id}/cancel and /reconfirm.
+
+// Whether an active schedule's files still match what was confirmed.
+export type ContentState = 'ok' | 'changed' | 'missing' | 'unreadable';
+export type ScheduleStatus = 'SCHEDULED' | 'DONE' | 'INVALID' | 'CANCELLED' | 'MISSED';
+
+export interface CandidateSchedule {
+  schedule_id: string;
+  mode: JobMode;
+  publish_at: string; // UTC
+  publish_at_local: string; // "2026-12-01 09:00 Asia/Karachi"
+  content_state: ContentState | null;
+}
+
+export interface ScheduleItem extends CandidateSchedule {
+  name: string;
+  status: ScheduleStatus;
+  reason: string | null;
+  job_id: string | null;
+  created_at: string;
+}
+
+export interface ScheduleListResponse {
+  timezone: string;
+  available: boolean;
+  schedules: ScheduleItem[];
+}
+
+// publish_at is "YYYY-MM-DD HH:MM" in the poster's time zone, sent exactly as typed.
+export interface ScheduleCreateRequest {
+  name: string;
+  publish_at: string;
+  real: boolean;
+  confirm: string | null;
+}
+
+export type ScheduleReconfirmRequest = Omit<ScheduleCreateRequest, 'name'>;
+
+export interface ScheduleResponse {
+  schedule: ScheduleItem;
+  warnings?: string[];
+  replaces?: string;
+}

@@ -1,6 +1,6 @@
 import React, { Suspense, lazy } from 'react';
 import { motion } from 'framer-motion';
-import { AlertTriangle, ArrowRight, CheckCircle2, Clock, Inbox, Play, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Clock, Inbox, Play, type LucideIcon } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
 import { PLATFORMS } from '../lib/platforms';
 import { scrollToSection } from '../lib/sections';
@@ -58,16 +58,27 @@ const PlatformOrbit: React.FC = () => (
 );
 
 export const HeroSection: React.FC = () => {
-  const { scanData, jobs, isRunning } = useApi();
+  const { scanData, jobs, isRunning, schedules } = useApi();
 
   const candidates = scanData?.candidates ?? [];
+  // Scheduled posts are not "ready": publishing from this page skips them (D46).
   const ready = candidates.filter(isReady).length;
+  const scheduled = schedules.filter((s) => s.status === 'SCHEDULED').length;
+  const scheduledProblems = schedules.filter((s) => s.status === 'SCHEDULED' && s.content_state && s.content_state !== 'ok').length;
   const waiting = candidates.filter((c) => !c.stable).length + countOf(scanData?.pending);
   const posted = jobs.filter((j) => j.status === 'PUBLISHED').length;
   const needsReview = jobs.filter((j) => j.status === 'NEEDS_REVIEW').length;
 
   const metrics: Metric[] = [
     { target: 'scan', icon: Inbox, label: 'Ready to post', value: ready, tone: 'emerald', hint: 'Waiting in your queue' },
+    {
+      target: 'scheduled',
+      icon: CalendarClock,
+      label: 'Scheduled',
+      value: scheduled,
+      tone: scheduledProblems ? 'amber' : 'teal',
+      hint: scheduledProblems ? `${scheduledProblems} need re-confirming` : 'Going out at their time'
+    },
     { target: 'scan', icon: Clock, label: 'Waiting', value: waiting, tone: 'sky', hint: 'Still uploading' },
     { target: 'jobs', icon: CheckCircle2, label: 'Posted', value: posted, tone: 'violet', hint: 'Live on your accounts' },
     { target: 'jobs', icon: AlertTriangle, label: 'Need your check', value: needsReview, tone: needsReview ? 'amber' : 'slate', hint: needsReview ? 'Tap to review' : 'All clear' }
@@ -160,7 +171,7 @@ export const HeroSection: React.FC = () => {
         </div>
 
         {/* Stats */}
-        <div className="mt-10 grid grid-cols-2 gap-3 sm:gap-4 lg:mt-12 lg:grid-cols-4">
+        <div className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:mt-12 lg:grid-cols-5">
           {metrics.map((m, i) => (
             <StatCard key={m.label} index={i} label={m.label} value={m.value} icon={m.icon} tone={m.tone} hint={m.hint} total={total} onClick={() => scrollToSection(m.target)} />
           ))}

@@ -6,6 +6,8 @@ import { Navbar } from './components/Navbar';
 import { HeroSection } from './components/HeroSection';
 import { IntakeStudio } from './components/IntakeStudio';
 import { ScanQueueStation } from './components/ScanQueueStation';
+import { ScheduledPosts } from './components/ScheduledPosts';
+import { ScheduleModal } from './components/ScheduleModal';
 import { RunnerConsole } from './components/RunnerConsole';
 import { WorkflowGraph } from './components/WorkflowGraph';
 import { JobsLedger } from './components/JobsLedger';
@@ -35,6 +37,7 @@ export const App: React.FC = () => (
           <HeroSection />
           <IntakeStudio />
           <ScanQueueStation />
+          <ScheduledPosts />
           <RunnerConsole />
           <WorkflowGraph />
           <JobsLedger />
@@ -44,6 +47,7 @@ export const App: React.FC = () => (
         <Footer />
         <JobDetailsModal />
         <ResolveModal />
+        <ScheduleModal />
         <ToastContainer />
       </div>
     </ApiProvider>

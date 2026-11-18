@@ -52,7 +52,9 @@ export const RunnerConsole: React.FC = () => {
   const [phrase, setPhrase] = useState('');
   const [step, setStep] = useState(0);
 
+  // Scheduled posts are skipped by this run (D46): they go out at their own time.
   const ready = scanData?.candidates.filter(isReady).length ?? 0;
+  const scheduled = scanData?.candidates.filter((c) => c.stable && c.schedule).length ?? 0;
   const tokenState = linkedInStatus?.state ?? 'unknown';
   const tokenUsable = tokenState === 'valid' || tokenState === 'expiring';
   const phraseOk = phrase.trim() === CONFIRM_PHRASE;
@@ -133,6 +135,12 @@ export const RunnerConsole: React.FC = () => {
                 {isRunning ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}
                 {isRunning ? 'Working…' : `Post ${ready} to LinkedIn`}
               </motion.button>
+
+              {scheduled > 0 && (
+                <p className="text-center text-xs text-slate-500">
+                  {scheduled} scheduled post{scheduled === 1 ? '' : 's'} not included: {scheduled === 1 ? 'it goes' : 'they go'} out at {scheduled === 1 ? 'its' : 'their'} own time.
+                </p>
+              )}
 
               {connection !== 'online' && (
                 <p className="flex items-center justify-center gap-2 text-xs text-slate-400">

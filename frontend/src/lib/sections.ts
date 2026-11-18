@@ -1,4 +1,4 @@
-import { GitBranch, History, Inbox, type LucideIcon, Play, ScanLine, ShieldCheck, Sparkles } from 'lucide-react';
+import { CalendarClock, GitBranch, History, Inbox, type LucideIcon, Play, ScanLine, ShieldCheck, Sparkles } from 'lucide-react';
 
 export interface SectionLink {
   id: string;
@@ -11,6 +11,7 @@ export const SECTIONS: SectionLink[] = [
   { id: 'overview', label: 'Home', icon: Sparkles },
   { id: 'intake', label: 'New post', icon: Inbox },
   { id: 'scan', label: 'Queue', icon: ScanLine },
+  { id: 'scheduled', label: 'Scheduled', icon: CalendarClock },
   { id: 'runner', label: 'Publish', icon: Play },
   { id: 'workflow', label: 'How it works', icon: GitBranch },
   { id: 'jobs', label: 'History', icon: History },

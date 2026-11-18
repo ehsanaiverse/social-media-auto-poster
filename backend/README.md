@@ -58,6 +58,19 @@ python -m app                           # http://127.0.0.1:8000 (Ctrl+C to stop)
 
 Open `http://127.0.0.1:8000/docs` for the list of endpoints. Runs are simulated unless a request says `"real": true` **and** `"confirm": "publish to LinkedIn"`. Real runs have the same safeguards as `run --real`, and they need the same run lock as the commands (a second run gets `409`).
 
+### Dashboard
+
+With the API running, start the dashboard from a second PowerShell window:
+
+```powershell
+cd D:\social-media-auto-poster\frontend
+npm ci          # once, and after package-lock.json changes
+npm run dev     # http://localhost:5173
+npm test        # frontend tests (Vitest); also npm run typecheck and npm run build
+```
+
+To try the dashboard without touching your real posts, database or token, start the API with its own base folder: `$env:AUTOPOSTER_BASE_DIR = "D:\social-media-auto-poster\backend\sandbox\ui"` in the API's window, then one `python -m social_media_auto_poster.main run` there (it creates the sandbox's folders), then `python -m app`. That folder has no `.env`, so nothing can be posted for real from it.
+
 ## Test
 
 ```powershell

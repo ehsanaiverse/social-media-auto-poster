@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertTriangle,
   ArrowRight,
+  CalendarClock,
   CheckCircle2,
   Clock,
   Copy,
@@ -17,24 +18,32 @@ import {
   type LucideIcon
 } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
+import { contentWarning, modeWord } from '../lib/schedules';
 import { scrollToSection } from '../lib/sections';
 import { countOf, type Candidate } from '../types/api';
 import { cn } from '../utils/cn';
 import { SectionHeading } from './ui/SectionHeading';
 import { AnimatedNumber, EASE_OUT, Reveal } from './ui/motion';
 
-type CandidateState = 'ready' | 'waiting' | 'invalid' | 'duplicate';
+type CandidateState = 'ready' | 'scheduled' | 'waiting' | 'invalid' | 'duplicate';
 type Filter = 'all' | CandidateState;
 
 const STATE: Record<CandidateState, { label: string; icon: LucideIcon; hex: string; text: string; tile: string; note: string }> = {
   ready: { label: 'Ready', icon: CheckCircle2, hex: '#34d399', text: 'text-emerald-300', tile: 'bg-emerald-500/10 ring-emerald-400/25', note: 'Goes out the next time you publish.' },
+  // The note for a scheduled post is its time and mode (see noteOf); publishing from this page skips it.
+  scheduled: { label: 'Scheduled', icon: CalendarClock, hex: '#5eead4', text: 'text-teal-300', tile: 'bg-teal-500/10 ring-teal-400/25', note: 'Scheduled.' },
   waiting: { label: 'Waiting', icon: Clock, hex: '#38bdf8', text: 'text-sky-300', tile: 'bg-sky-500/10 ring-sky-400/25', note: "Still uploading. We'll pick it up automatically." },
   invalid: { label: 'Has a problem', icon: XCircle, hex: '#fb7185', text: 'text-rose-300', tile: 'bg-rose-500/10 ring-rose-400/25', note: "Won't be posted. Fix it and add it again." },
   duplicate: { label: 'Already done', icon: Copy, hex: '#a78bfa', text: 'text-violet-300', tile: 'bg-violet-500/10 ring-violet-400/25', note: 'Already posted, so it will be skipped.' }
 };
-const ORDER: CandidateState[] = ['ready', 'waiting', 'invalid', 'duplicate'];
+const ORDER: CandidateState[] = ['ready', 'scheduled', 'waiting', 'invalid', 'duplicate'];
 
-const stateOf = (c: Candidate): CandidateState => (!c.stable ? 'waiting' : !c.valid ? 'invalid' : c.duplicate_of ? 'duplicate' : 'ready');
+// A scheduled post is never "ready": a run from this page skips it (D46).
+const stateOf = (c: Candidate): CandidateState =>
+  !c.stable ? 'waiting' : c.schedule ? 'scheduled' : !c.valid ? 'invalid' : c.duplicate_of ? 'duplicate' : 'ready';
+
+const noteOf = (c: Candidate, key: CandidateState): string =>
+  key === 'scheduled' && c.schedule ? `Scheduled for ${c.schedule.publish_at_local} (${modeWord(c.schedule.mode)}).` : STATE[key].note;
 
 // A ring split into one coloured arc per state, drawn in when it scrolls into view.
 const QueueRing: React.FC<{ counts: Record<CandidateState, number>; total: number }> = ({ counts, total }) => {
@@ -82,9 +91,11 @@ const QueueRing: React.FC<{ counts: Record<CandidateState, number>; total: numbe
 };
 
 const PostRow: React.FC<{ candidate: Candidate; index: number }> = ({ candidate: c, index }) => {
+  const { setScheduleDialog } = useApi();
   const key = stateOf(c);
   const s = STATE[key];
   const Icon = s.icon;
+  const warning = c.schedule ? contentWarning(c.schedule.content_state) : null;
   return (
     <motion.li
       layout
@@ -110,7 +121,13 @@ const PostRow: React.FC<{ candidate: Candidate; index: number }> = ({ candidate:
               </span>
             )}
           </div>
-          <p className="mt-1 text-sm text-slate-400">{s.note}</p>
+          <p className="mt-1 text-sm text-slate-400">{noteOf(c, key)}</p>
+          {warning && (
+            <p className="mt-2.5 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-100" role="status">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" aria-hidden="true" />
+              {warning}
+            </p>
+          )}
           {(c.image_filename || c.caption_filename) && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {c.image_filename && (
@@ -143,12 +160,30 @@ const PostRow: React.FC<{ candidate: Candidate; index: number }> = ({ candidate:
             {s.label}
           </span>
           {key === 'ready' && (
+            <span className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setScheduleDialog({ kind: 'create', name: c.name })}
+                className="inline-flex min-h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-teal-300 transition-colors hover:bg-teal-500/10 hover:text-teal-200"
+              >
+                <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" /> Schedule
+              </button>
+              <button
+                type="button"
+                onClick={() => scrollToSection('runner')}
+                className="inline-flex min-h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-500/10 hover:text-emerald-200"
+              >
+                Publish <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+              </button>
+            </span>
+          )}
+          {key === 'scheduled' && (
             <button
               type="button"
-              onClick={() => scrollToSection('runner')}
-              className="inline-flex min-h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-500/10 hover:text-emerald-200"
+              onClick={() => scrollToSection('scheduled')}
+              className="inline-flex min-h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-teal-300 transition-colors hover:bg-teal-500/10 hover:text-teal-200"
             >
-              Publish <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+              {warning ? 'Re-confirm or cancel' : 'Manage'} <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
             </button>
           )}
         </div>
@@ -165,6 +200,7 @@ export const ScanQueueStation: React.FC = () => {
   const candidates = scanData?.candidates ?? [];
   const counts = candidates.reduce<Record<CandidateState, number>>((acc, c) => ((acc[stateOf(c)] += 1), acc), {
     ready: 0,
+    scheduled: 0,
     waiting: 0,
     invalid: 0,
     duplicate: 0
@@ -172,7 +208,9 @@ export const ScanQueueStation: React.FC = () => {
   const visible = filter === 'all' ? candidates : candidates.filter((c) => stateOf(c) === filter);
   const pending = Array.isArray(scanData?.pending) ? (scanData.pending as unknown[]).map(String) : [];
   const ambiguous = countOf(scanData?.ambiguous);
-  const onlySimulated = candidates.filter((c) => c.only_simulated);
+  // A scheduled post is skipped by a run from this page, so the "only tested" choice does not apply to it.
+  const onlySimulated = candidates.filter((c) => c.only_simulated && !c.schedule);
+  const missingSchedules = scanData?.missing_schedules ?? [];
 
   return (
     <section id="scan" className="relative py-16 lg:py-20">
@@ -193,7 +231,7 @@ export const ScanQueueStation: React.FC = () => {
                 <p className="text-center text-sm text-slate-400 lg:text-left">
                   {offline ? 'Not connected. Start your poster to see your queue.' : `${candidates.length} post${candidates.length === 1 ? '' : 's'} in your folder`}
                 </p>
-                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
                   {ORDER.map((key) => {
                     const s = STATE[key];
                     const active = filter === key;
@@ -245,6 +283,24 @@ export const ScanQueueStation: React.FC = () => {
           )}
             {/* Notices */}
             <div className="space-y-2.5">
+              {missingSchedules.length > 0 && (
+                <div className="flex items-start gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4 text-sm text-amber-100" role="status">
+                  <CalendarClock className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+                  <div>
+                    <p>
+                      <strong className="font-semibold">Scheduled, but its files are gone:</strong> these will not be posted. Put the files back and
+                      re-confirm, or cancel the schedule.
+                    </p>
+                    <ul className="mt-1 space-y-0.5 text-xs text-amber-200/90">
+                      {missingSchedules.map((s) => (
+                        <li key={s.schedule_id}>
+                          {s.name}: FILE MISSING, scheduled for {s.publish_at_local} ({modeWord(s.mode)})
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
               {onlySimulated.length > 0 && (
                 <div className="flex items-start gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4 text-sm text-amber-100">
                   <FlaskConical className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />

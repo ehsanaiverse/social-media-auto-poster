@@ -27,12 +27,16 @@ interface ModalProps {
 export const Modal: React.FC<ModalProps> = ({ open, onClose, title, subtitle, icon, children, footer, className }) => {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  // The latest onClose, so the effect below runs only when the dialog opens or closes. Callers pass a new
+  // function on every render; depending on it moved focus back to the panel after each key typed in a field.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
       if (e.key === 'Tab' && panelRef.current) {
         const items = panelRef.current.querySelectorAll<HTMLElement>(
           'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select, [tabindex]:not([tabindex="-1"])'
@@ -58,7 +62,7 @@ export const Modal: React.FC<ModalProps> = ({ open, onClose, title, subtitle, ic
       document.removeEventListener('keydown', onKey);
       previous?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   return (
     <AnimatePresence>
