@@ -27,7 +27,7 @@ from collections.abc import Generator
 from contextlib import ExitStack, closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
@@ -53,7 +53,9 @@ from social_media_auto_poster.models import (
     JobStatus,
     Platform,
     PostCandidate,
+    PostContent,
     PublishMode,
+    PublishResult,
     ScanResult,
     ScheduleStatus,
 )
@@ -79,12 +81,14 @@ from social_media_auto_poster.services.scheduling import (
     CONTENT_LABELS,
     CONTENT_MISSING,
     MIN_LEAD,
+    DueSelection,
     ScheduleError,
     ScheduleTimeError,
     check_schedulable,
     check_time_format,
     content_state,
     parse_publish_at,
+    select_due,
 )
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db, open_app_db_read_only
 from social_media_auto_poster.storage.jobs import JobNotFoundError, JobRecord, JobRepository
@@ -226,6 +230,7 @@ class ScheduledPost:
     mode: PublishMode  # The schedule's mode, not the run's.
     publish_at: datetime  # UTC.
     publish_at_local: str  # "2026-12-01 09:00 Asia/Karachi".
+    late_by: timedelta | None = None  # Scheduled runs: how long after publish_at this run handled it.
 
 
 @dataclass(frozen=True)
@@ -239,6 +244,11 @@ class RunReport:
     scan: ScanResult | None  # None when the run stopped before scanning.
     footer: str
     scheduled: tuple[ScheduledPost, ...] = ()  # Skipped: they have an active schedule.
+    # Scheduled runs only (run --scheduled, D46):
+    scheduled_run: bool = False
+    due: tuple[ScheduledPost, ...] = ()  # Carried out by this run (at most one), with how late.
+    missed: tuple[ScheduledPost, ...] = ()  # More than 6 hours late: marked MISSED, nothing sent.
+    waiting: tuple[ScheduledPost, ...] = ()  # Also due and in time: left for the next scheduled runs.
 
 
 @dataclass(frozen=True)
@@ -421,6 +431,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--publish-simulated",
         action="store_true",
         help="With --real: also publish posts whose content was already simulated (refused otherwise).",
+    )
+    run.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="Publish only scheduled posts that are due (at most one per run), nothing else. "
+             "With --real: real schedules; without: simulated schedules. For Windows Task Scheduler.",
     )
     run.set_defaults(handler=_run)
 
@@ -1180,8 +1196,8 @@ def _schedule(args: argparse.Namespace) -> int:
     print(f"Scheduled '{record.stem}' for {result.local_time} ({record.publish_at:%Y-%m-%d %H:%M} UTC), {kind}.")
     print(f"Schedule ID: {record.schedule_id[:8]}")
     print("Keep both files unchanged in incoming/ until then; a changed file makes the schedule INVALID.")
-    print("Note: publishing scheduled posts (run --scheduled) is not built yet. Until it is, this post is held in "
-          "incoming/ and every run skips it.")
+    print("A scheduled run publishes it at or after that time: run --scheduled (add --real for a real post), "
+          "for example every 15 minutes from Windows Task Scheduler. Until then every other run skips it.")
     for warning in result.warnings:
         print(f"Warning: {warning}", file=sys.stderr)
     return EXIT_OK
@@ -1260,8 +1276,8 @@ def _reconfirm(args: argparse.Namespace) -> int:
     print(f"Re-confirmed '{new.stem}' for {result.local_time} ({new.publish_at:%Y-%m-%d %H:%M} UTC), {kind}.")
     print(f"Schedule ID: {new.schedule_id[:8]} (replaces {old.schedule_id[:8]}, {old_now}).")
     print("The schedule now covers the files as they are; keep them unchanged until then.")
-    print("Note: publishing scheduled posts (run --scheduled) is not built yet. Until it is, this post is held in "
-          "incoming/ and every run skips it.")
+    print("A scheduled run publishes it at or after that time: run --scheduled (add --real for a real post), "
+          "for example every 15 minutes from Windows Task Scheduler. Until then every other run skips it.")
     for warning in result.warnings:
         print(f"Warning: {warning}", file=sys.stderr)
     return EXIT_OK
@@ -1276,22 +1292,25 @@ def run_once(
     *,
     publish_simulated: bool = False,
     interval_s: float = DEFAULT_INTERVAL_S,
+    scheduled: bool = False,
 ) -> RunReport:
     """One complete run: the lock, crash recovery, real-mode safeguards, and every complete post once.
 
-    Simulated unless ``mode`` is REAL. Returns a RunReport; a refusal is data in the report, not an
-    exception. Raises RunLockHeldError if another run holds the lock, and OSError if the run cannot
-    be set up. Log handlers are the caller's job (the CLI and the API each attach their own).
+    Simulated unless ``mode`` is REAL. With ``scheduled`` (D46) it handles only the due schedules of
+    ``mode`` (at most one published per run; more than 6 hours late -> MISSED) and nothing else in
+    incoming/. Returns a RunReport; a refusal is data in the report, not an exception. Raises
+    RunLockHeldError if another run holds the lock, and OSError if the run cannot be set up. Log
+    handlers are the caller's job (the CLI and the API each attach their own).
     """
     started = time.monotonic()
     counts: Counter[str] = Counter()
     report: RunReport | None = None
     with single_run_lock(settings.lock_file), _run_scope():
-        logger.info("Run started: platform=%s mode=%s", PLATFORM, mode)
+        logger.info("Run started: platform=%s mode=%s%s", PLATFORM, mode, " scheduled=yes" if scheduled else "")
         if data_dir_outside_base(settings):
             logger.warning(outside_warning(settings).removeprefix("Warning: "))
         try:
-            report = _run_locked(settings, mode, publish_simulated, interval_s, counts)
+            report = _run_locked(settings, mode, publish_simulated, interval_s, counts, scheduled)
             return report
         finally:
             exit_code = report.exit_code if report is not None else EXIT_SETUP_ERROR
@@ -1305,6 +1324,10 @@ def run_once(
 
 def _run(args: argparse.Namespace) -> int:
     mode = _mode(args)
+    if args.scheduled and args.publish_simulated:
+        print("Error: --scheduled cannot be combined with --publish-simulated: a scheduled run publishes only "
+              "scheduled posts, each confirmed when it was scheduled.", file=sys.stderr)
+        return EXIT_USAGE
     if args.publish_simulated and mode is not PublishMode.REAL:
         print("Error: --publish-simulated only applies together with --real.", file=sys.stderr)
         return EXIT_USAGE
@@ -1313,8 +1336,11 @@ def _run(args: argparse.Namespace) -> int:
         with logging_to(verbose=args.verbose, log_file=settings.log_file):
             # flush: when output is piped, stdout is buffered and stderr warnings would overtake it.
             banner = "   (REAL MODE: posts are published to LinkedIn)" if mode is PublishMode.REAL else ""
+            if args.scheduled:
+                banner += "   (scheduled run: only scheduled posts that are due)"
             print(f"Processing LinkedIn incoming: {settings.incoming_dir(PLATFORM)}{banner}", flush=True)
-            report = run_once(settings, mode, publish_simulated=args.publish_simulated, interval_s=args.interval)
+            report = run_once(settings, mode, publish_simulated=args.publish_simulated, interval_s=args.interval,
+                              scheduled=args.scheduled)
     except RunLockHeldError:
         print("Another run is in progress; try again when it has finished.", file=sys.stderr)
         return EXIT_LOCKED
@@ -1326,7 +1352,12 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _run_locked(
-    settings: Settings, mode: PublishMode, publish_simulated: bool, interval_s: float, counts: Counter[str]
+    settings: Settings,
+    mode: PublishMode,
+    publish_simulated: bool,
+    interval_s: float,
+    counts: Counter[str],
+    scheduled: bool = False,
 ) -> RunReport:
     """Everything a run does while holding the lock, after "Run started" is logged."""
     if mode is PublishMode.REAL:
@@ -1358,8 +1389,16 @@ def _run_locked(
             return _refused(mode, RunRefusal("setup", ""))
         repository = JobRepository(conn)
         schedules = ScheduleRepository(conn)
-        # Real-mode checks come before anything changes, so a refused run leaves everything as it was.
-        publisher = _publisher_for(mode, settings, repository, stack)
+        selection = now = None
+        if scheduled:  # Read-only: what is due decides whether a publisher (and the token check) is needed.
+            now = _now()
+            selection = select_due(schedules.due(platform=PLATFORM, mode=mode, now=now), mode=mode, now=now)
+        if selection is not None and not selection.publish:
+            # Nothing to publish: no real publisher, so no token check and no LinkedIn call (D46).
+            publisher: Publisher | RunRefusal = _NothingToPublish()
+        else:
+            # Real-mode checks come before anything changes, so a refused run leaves everything as it was.
+            publisher = _publisher_for(mode, settings, repository, stack)
         if isinstance(publisher, RunRefusal):
             return _refused(mode, publisher)
         try:
@@ -1386,9 +1425,105 @@ def _run_locked(
             checkpointer=checkpointer,
             schedules=schedules,
         )
+        if selection is not None:
+            return _process_scheduled(
+                context, schedules, selection, now, tuple(resumed_lines), recoveries, earlier_problems, counts
+            )
         return _process(
             context, schedules, publish_simulated, tuple(resumed_lines), recoveries, earlier_problems, counts,
         )
+
+
+class _NothingToPublish:
+    """The publisher of a scheduled run with nothing due: never called, so no publisher is built (no token check)."""
+
+    def publish(self, post: PostContent, /) -> PublishResult:
+        raise RuntimeError("A scheduled run with nothing due must never publish.")
+
+
+def _process_scheduled(
+    context: WorkflowContext,
+    schedules: ScheduleRepository,
+    selection: DueSelection,
+    now: datetime,
+    resumed: tuple[JobLine, ...],
+    recoveries: list[Recovery],
+    earlier_problems: bool,
+    counts: Counter[str],
+) -> RunReport:
+    """A scheduled run (D46): mark the missed schedules, then carry out at most one due schedule.
+
+    Nothing else in incoming/ is looked at, so the "only simulated" refusal (D38) has nothing to refuse:
+    every post handled here was confirmed when it was scheduled. The post is built from the file names
+    stored in the schedule, so a deleted or renamed file is reported by the workflow ("file missing").
+    """
+    zone = context.settings.timezone
+    missed: list[ScheduledPost] = []
+    for schedule in selection.missed:
+        late = now - schedule.publish_at
+        reason = (f"more than 6 hours late (due {_local_time(schedule.publish_at, zone)}, "
+                  f"{_minutes(late)} min late); nothing was sent")
+        try:
+            schedules.mark_missed(schedule.schedule_id, reason=reason)
+        except ScheduleNotFoundError:  # Settled meanwhile (for example by startup resume).
+            continue
+        logger.warning(
+            "Schedule missed: schedule_id=%s platform=%s mode=%s stem=%s publish_at=%s late_by_minutes=%d",
+            schedule.schedule_id, schedule.platform, schedule.mode, schedule.stem,
+            f"{schedule.publish_at:%Y-%m-%dT%H:%M:%SZ}", _minutes(late),
+        )
+        missed.append(_scheduled_post(schedule, zone, late))
+
+    lines: list[JobLine] = []
+    due: list[ScheduledPost] = []
+    for item in selection.publish:
+        current = schedules.get(item.schedule.schedule_id)
+        if current is None or current.status is not ScheduleStatus.SCHEDULED:
+            continue  # Settled meanwhile (for example by startup resume): nothing to do.
+        logger.info(
+            "Scheduled post due: schedule_id=%s platform=%s mode=%s stem=%s publish_at=%s late_by_minutes=%d",
+            current.schedule_id, current.platform, current.mode, current.stem,
+            f"{current.publish_at:%Y-%m-%dT%H:%M:%SZ}", _minutes(item.late_by),
+        )
+        folder = context.settings.incoming_dir(current.platform)
+        candidate = PostCandidate(current.platform, current.stem, folder / current.media_name,
+                                  folder / current.caption_name)
+        lines.append(_run_one(candidate, context, schedule=current))
+        due.append(_scheduled_post(current, zone, item.late_by))
+    counts.update(line.outcome for line in lines)
+
+    waiting = tuple(_scheduled_post(s, zone, now - s.publish_at) for s in selection.waiting)
+    needs_human = any(r.status is JobStatus.NEEDS_REVIEW for r in recoveries)
+    problems = needs_human or earlier_problems or bool(missed) or any(line.problem for line in lines)
+    return RunReport(
+        mode=context.mode,
+        exit_code=EXIT_JOB_PROBLEMS if problems else EXIT_OK,
+        refusal=None,
+        resumed=resumed,
+        recoveries=tuple(recoveries),
+        jobs=tuple(lines),
+        scan=ScanResult(candidates=(), pending=(), ambiguous=()),
+        footer=_footer(context.mode, tuple(lines)),
+        scheduled_run=True,
+        due=tuple(due),
+        missed=tuple(missed),
+        waiting=waiting,
+    )
+
+
+def _scheduled_post(schedule: ScheduleRecord, zone: ZoneInfo, late_by: timedelta | None = None) -> ScheduledPost:
+    return ScheduledPost(
+        stem=schedule.stem,
+        schedule_id=schedule.schedule_id,
+        mode=schedule.mode,
+        publish_at=schedule.publish_at,
+        publish_at_local=_local_time(schedule.publish_at, zone),
+        late_by=late_by,
+    )
+
+
+def _minutes(delta: timedelta) -> int:
+    return int(delta.total_seconds() // 60)
 
 
 def _refused(mode: PublishMode, refusal: RunRefusal) -> RunReport:
@@ -1588,9 +1723,9 @@ def _footer(mode: PublishMode, lines: tuple[JobLine, ...]) -> str:
     return footer
 
 
-def _run_one(candidate: PostCandidate, context: WorkflowContext) -> JobLine:
+def _run_one(candidate: PostCandidate, context: WorkflowContext, schedule: ScheduleRecord | None = None) -> JobLine:
     try:
-        final = run_job(candidate, context)
+        final = run_job(candidate, context) if schedule is None else run_job(candidate, context, schedule=schedule)
     except Exception:  # A bug or a database failure, not a publish outcome. Keep going.
         logger.exception(
             "Unexpected error; job abandoned: platform=%s mode=%s stem=%s", candidate.platform, context.mode, candidate.stem
@@ -1610,8 +1745,15 @@ def _describe(final: JobState, context: WorkflowContext) -> JobLine:
         "destination": destination,
     }
 
+    if final.get("schedule_problem"):  # D46: changed or missing content; no job, nothing sent.
+        note = (f"{final['schedule_problem']}; not published, files stay in incoming/ "
+                "(reconfirm to schedule the files as they are now)")
+        return JobLine(stem, "SCHEDULE INVALID", note, (), problem=True, outcome="schedule_invalid")
     if final["retry_later"]:
         return JobLine(stem, "WAITING (still copying)", "will retry on next run", (), problem=False, outcome="waiting")
+    if final["duplicate_of"] and final.get("schedule_id"):
+        note = f"duplicate {_duplicate_note(final['duplicate_of'], context)}; the schedule is INVALID"
+        return JobLine(stem, "SCHEDULE INVALID", note, (), problem=True, outcome="schedule_invalid")
     if final["duplicate_of"]:
         note = _duplicate_note(final["duplicate_of"], context)
         return JobLine(stem, DUPLICATE_LABEL, note, (), problem=False, outcome="duplicates")
@@ -1662,8 +1804,13 @@ def _print_run_report(report: RunReport, settings: Settings) -> None:
         return
     if report.scan is None:  # Setup error: the log says what happened.
         return
+    if report.scheduled_run:
+        _print_scheduled_run(report)
     if report.jobs:
         _print_jobs(list(report.jobs))
+    elif report.scheduled_run:
+        if not report.missed:
+            print("\nNo scheduled post is due.")
     else:
         print("\nNothing else to process." if report.scheduled else "\nNothing to process.")
     _print_pending_and_ambiguous(report.scan)
@@ -1671,6 +1818,23 @@ def _print_run_report(report: RunReport, settings: Settings) -> None:
     if any(line.label == DUPLICATE_LABEL for line in report.jobs):
         print("Duplicates stay in incoming/; delete them when you no longer need them.")
     print(f"Log: {settings.log_file}")
+
+
+def _print_scheduled_run(report: RunReport) -> None:
+    def late(post: ScheduledPost) -> str:
+        minutes = _minutes(post.late_by) if post.late_by is not None else 0
+        return "on time" if minutes <= 0 else f"{minutes} min late"
+
+    for title, note, posts in (
+        ("DUE", "carried out by this run (one per run)", report.due),
+        ("MISSED", "more than 6 hours late; not published, nothing sent (schedule them again)", report.missed),
+        ("WAITING", "also due; one post per run, so they go in the next scheduled runs", report.waiting),
+    ):
+        if posts:
+            width = max(len(p.stem) for p in posts)
+            print(f"\n{title} ({len(posts)}) - {note}")
+            for post in posts:
+                print(f"  {post.stem:<{width}}   {post.publish_at_local} ({post.mode}), {late(post)}")
 
 
 def _print_scheduled(posts: tuple[ScheduledPost, ...]) -> None:

@@ -211,7 +211,7 @@ python -m social_media_auto_poster.main jobs --id 8a61f3de      # every detail o
 
 Shows job ID, time (UTC), post name, mode (`simulated` or `real`), status, and any errors; `--id` adds both SHA-256 hashes, file names, post ID, and where the files went. It never creates or changes the database. Exit code 0 on success; 1 if the database cannot be read or the `--id` prefix matches no job or more than one.
 
-### Scheduling (being built, D46)
+### Scheduling (D46)
 
 Schedule a post that is already in `incoming\` (its name, without the extension) for a date and time in your time zone (`AUTOPOSTER_TIMEZONE` in `backend\.env`, default `Asia/Karachi`):
 
@@ -221,6 +221,7 @@ python -m social_media_auto_poster.main schedule launch --at "2026-12-01 09:00" 
 python -m social_media_auto_poster.main schedules                                         # active schedules (--all, --status S)
 python -m social_media_auto_poster.main unschedule launch                                 # cancel it
 python -m social_media_auto_poster.main reconfirm launch                                  # after changing the files (add --real for a real post)
+python -m social_media_auto_poster.main run --real --scheduled                            # publish the oldest due real schedule (Task Scheduler)
 ```
 
 - The post is checked when you schedule it, as a run would check it: complete, valid (including the 3,000-character caption limit; for `--real`, also LinkedIn's image size limit), and not already published or scheduled. The time must be 5 minutes to 1 year ahead; a time skipped or repeated by a clock change is refused.
@@ -229,7 +230,7 @@ python -m social_media_auto_poster.main reconfirm launch                        
 - **To keep the post with its new content, re-confirm it:** `reconfirm launch` replaces the schedule with a new one for the files as they are now, at the same time (or a new one with `--at "YYYY-MM-DD HH:MM"`). Every check is made again. **`--real` must be given again** for a real post: without it the new schedule is simulated, even if the old one was real, and a warning says so. If the old time is less than 5 minutes away, give `--at`. `reconfirm` also works on an unchanged schedule (to switch between simulated and real, or with `--at` to move it), and on a schedule that already became `INVALID`.
 - Without `--real` the schedule is simulated. Nothing in `.env` can make it real.
 - Every run (`run`, `run --real`, and runs from the dashboard) **skips** a post with an active schedule and lists it under `SCHEDULED`. `unschedule` gives the post back to normal runs (then `run --real` would publish it).
-- **Not built yet:** publishing scheduled posts at their time (`run --real --scheduled`, run by Windows Task Scheduler). Until it is, scheduled posts are held in `incoming\` and not published.
+- **Publishing at the scheduled time: `run --scheduled`.** `run --real --scheduled` publishes real schedules that are due; `run --scheduled` (without `--real`) does the same for simulated ones. It is meant to run every 15 minutes from Windows Task Scheduler (setup instructions will follow). It handles **only** scheduled posts that are due, never anything else in `incoming\`, and **at most one post per run**, the oldest first; the others wait for the next run. A post up to **6 hours late** (for example, the PC was off) is still published, and the output and log say how late. After that it becomes `MISSED` and is not published; schedule it again. When nothing is due, the run does not contact LinkedIn at all. The same safeguards as `run --real` apply (data folders, archive vs. job history, the token check); an expired token stops the run with nothing changed. A post you scheduled for real is published even if you simulated it before (scheduling it for real was your confirmation). A `MISSED` or `INVALID` schedule makes the run end with exit code `3`, so it shows up in Task Scheduler's history. `--scheduled` cannot be combined with `--publish-simulated`.
 - With `--real`, a warning is printed if your LinkedIn token is missing or expires on or before the scheduled day. Scheduling never contacts LinkedIn.
 - Exit codes: `schedule`, `unschedule` and `reconfirm`: `0` done, `1` refused (nothing changed; the message says why), `2` invalid arguments (including a time not written as `YYYY-MM-DD HH:MM`), `4` a run is in progress. `schedules`: `0` listed, `1` the job database could not be read, `2` invalid arguments.
 

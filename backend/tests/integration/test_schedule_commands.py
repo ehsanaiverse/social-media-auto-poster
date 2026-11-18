@@ -132,7 +132,7 @@ def test_schedule_stores_a_simulated_schedule_with_both_hashes_in_utc(settings, 
     out = capsys.readouterr().out
     assert "Scheduled 'launch' for 2026-12-01 09:00 Asia/Karachi (2026-12-01 04:00 UTC)" in out
     assert "simulated: nothing will be sent to LinkedIn" in out
-    assert "held" in out  # run --scheduled does not exist yet: the output must not promise publishing.
+    assert "run --scheduled" in out  # Says how the post will be published.
 
 
 def test_schedule_real_needs_the_flag(settings, capsys):
