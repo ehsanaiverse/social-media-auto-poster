@@ -7,7 +7,7 @@ These rules are binding. If `README.md` or other docs disagree with this file, t
 
 A Windows-first, folder-driven social media auto-poster. A user drops an image and a matching caption file into a platform's `incoming/` folder; the application detects, validates, tracks, and (eventually) publishes the post through official platform APIs.
 
-- **LinkedIn** is the only platform in scope. Facebook and Instagram have folders only; do not implement them.
+- **LinkedIn** is the platform in scope for real publishing. Instagram: simulated only (D49). Real Instagram is forbidden until D48 is accepted. Facebook has folders only; do not implement it.
 - **Publishing is simulated** until Milestone 4. No code may contact LinkedIn (or any platform) before then.
 - The developer has intermediate Python/AI experience: favour readable code, explain design decisions, and build incrementally.
 - The Python application lives in `backend/`. A local FastAPI API (`backend/app/`) and a React dashboard (`frontend/`) are built (see "3. Web UI" below, D32 and D42). Both are optional; the CLI does not need them.

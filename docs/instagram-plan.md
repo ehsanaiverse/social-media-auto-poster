@@ -1,6 +1,6 @@
 # Plan: multi-platform refactor and Instagram (simulated)
 
-**Status:** plan only, 2026-11-19. Nothing here is built. Real Instagram publishing and the R2 media host are **future** work, blocked on the presigned-URL spike and on D48 being accepted (`docs/instagram-api-notes.md`, section 13). This plan also needs a decision of its own, because `CLAUDE.md` currently says "Facebook and Instagram have folders only; do not implement them" (see section 9, question 1).
+**Status:** plan only, 2026-11-19. Nothing here is built. Real Instagram publishing and the R2 media host are **future** work, blocked on the presigned-URL spike and on D48 being accepted (`docs/instagram-api-notes.md`, section 13). Simulated Instagram (steps A–F) is allowed by **D49**; real Instagram stays forbidden until D48 is accepted.
 
 **Labels:** **[existing]** is how the code works today (checked against the source on 2026-11-19). **[proposed]** is what this plan would build. **[future]** is out of scope until the spike and D48.
 
@@ -247,7 +247,7 @@ The Task Scheduler script needs no change: `run --real --scheduled` now covers e
 - `schedules.due(platform=None, mode, now)` returns the due schedules of every platform; `select_due` already sorts them oldest `publish_at` first and keeps at most `MAX_SCHEDULED_PER_RUN = 1`. So one run publishes at most one post on one platform, and the 15-minute spacing holds across platforms.
 - The publisher (and its token check, data-folder check and archive-history check) is built **only for the platform of the selected schedule**. Nothing due → `_NothingToPublish`, no token check, no network, as today.
 - `MISSED` marking covers every platform. As in D46, setup checks run **before** anything changes, so a refused run leaves every schedule as it was.
-- **Consequence to decide** (section 9, question 4): if the oldest due schedule is on a platform whose setup is refused (expired token), the whole run is refused (exit 1), and later schedules on the other platform wait and can become `MISSED`.
+- **Decided (D49):** a platform whose setup is refused (expired token, missing data folders, archive without history) is **skipped** for that run, with the reason logged and shown. Its schedules are not changed: they stay due and become `MISSED` normally after 6 hours. The oldest due schedule of the remaining platforms is published (still at most one). Still open: that run's exit code (1 or 3, never 0).
 
 ### 5.3 API (FastAPI)
 
@@ -349,7 +349,8 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
 
 - **A1 Rules registry.** New `platforms/rules.py` (`PostRules`, `RULES` with LinkedIn only) and `platforms/image_header.py` (reader moved from `linkedin/image_size.py`, which re-exports it). `validate_candidate` uses `rules_for`; `check_schedulable` uses `rules.real_media_problems` and `display_name`.
 - **A2 Adapter registry.** `operations/platforms.py` (`PlatformAdapter`, `ADAPTERS`, `adapter_for`); `LinkedInAdapter` in `operations/linkedin.py`, delegating to the module-level `_real_publisher` and to `_token_warnings` (moved there from `operations/schedules.py`). `_publisher_for(mode, settings, repository, stack, platform)` calls `adapter_for(platform).real_publisher(settings)`.
-- **A3 Platform parameter.** `run_once`, `scan_preview`, `schedule_post`/`unschedule_post`/`reconfirm_post` and `JobService` take `platform: Platform = Platform.LINKEDIN`. `PLATFORM` is renamed `DEFAULT_PLATFORM` (kept for the API's defaults). Texts (footer, banner, refusals, error report) are built from `display_name`. `REAL_CONFIRMATION` comes from the adapter, and `app/models/schemas.py` imports it instead of copying it.
+- **A3 Platform parameter.** `run_once`, `scan_preview`, `schedule_post`/`unschedule_post`/`reconfirm_post` and `JobService` take `platform: Platform = Platform.LINKEDIN`. `PLATFORM` is renamed `DEFAULT_PLATFORM` (kept for the API's defaults). Texts (footer, banner, refusals, error report) are built from `display_name`. `REAL_CONFIRMATION` comes from the adapter, and `app/models/schemas.py` imports it instead of copying it (single source of truth, D49; a test checks that the API and the CLI use the same phrase).
+- **A4 `has_jobs` per platform (D49, moved here from step D).** `JobRepository.has_jobs(mode=, platform=None)`; `archive_without_history` passes its platform. Tests: a real job on one platform does not silence another platform's archive check; LinkedIn's existing refusal tests are unchanged.
 - **Files:** `platforms/rules.py` (new), `platforms/image_header.py` (new), `platforms/linkedin/image_size.py`, `ingestion/validation.py`, `services/scheduling.py`, `services/archive.py`, `operations/{platforms (new), linkedin, common, run, scan, schedules}.py`, `cli/commands.py`, `app/services/job_service.py`, `app/models/schemas.py`, `app/routers/{run,schedules}.py`.
 - **Tests:** all ~872 pass **unchanged**. New: `test_platform_registry.py` (LinkedIn registered; Facebook raises `UnsupportedPlatform`; LinkedIn rules equal today's constants: 3,000, jpg/jpeg/png, pixel limit real-only). `test_patch_targets.py` needs no edit if `_real_publisher` stays defined and used in `operations/linkedin.py`: confirm it is run and still finds ≥ 60 patches, and add to its "made-up modules" a case for an adapter method that calls a module-level function (accepted).
 - **Proof of zero change:** before and after, compare `--help` of every command, the output of the sandbox tester's scripted run, and `git grep` for the old LinkedIn strings.
@@ -395,15 +396,14 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
 
 ### Step D: schema v3 and wiring (simulated Instagram runs end to end)
 
-- **Files:** `storage/database.py` (migration 3), `storage/jobs.py` (`remote_ref`, `media_host_key`, `has_jobs(platform=)`), `services/real_mode.py`, `graph/nodes.py` (`publish` passes `record=` to recording publishers), `services/reconcile.py` (the Instagram rows of section 7; LinkedIn path unchanged), `operations/resolve.py` (`check`), `operations/run.py` (remote checker for real runs of that platform; `due(platform=None)` for scheduled runs), `operations/scan.py`, `operations/schedules.py`.
+- **Files:** `storage/database.py` (migration 3), `storage/jobs.py` (`remote_ref`, `media_host_key`), `graph/nodes.py` (`publish` passes `record=` to recording publishers), `services/reconcile.py` (the Instagram rows of section 7; LinkedIn path unchanged), `operations/resolve.py` (`check`), `operations/run.py` (remote checker for real runs of that platform; `due(platform=None)` for scheduled runs), `operations/scan.py`, `operations/schedules.py`.
 - **Tests:**
   - migration v2 → v3 with `app.db.bak-v2`; reading a v2 database read-only;
-  - `has_jobs` per platform; an archive check per platform (a real LinkedIn job does not silence Instagram's);
   - simulated Instagram end to end (`SIMULATED`, files stay, footer says Instagram);
   - the same files in both platforms → two independent jobs, each duplicate-checked on its own platform;
   - a crash with a fake recording publisher: `PUBLISHING` + no `remote_ref` → `FAILED`; with `remote_ref` and a fake checker → `PUBLISHED`/`FAILED`/`NEEDS_REVIEW`; in a simulated run → `NEEDS_REVIEW` without any checker call;
   - `resolve --check` per outcome, and refused for LinkedIn;
-  - `run --scheduled` with due schedules on both platforms → exactly one published, the oldest; a refused setup for the selected platform → every schedule unchanged, exit 1;
+  - `run --scheduled` with due schedules on both platforms → exactly one published, the oldest; a refused platform is skipped (D49): its schedules unchanged and still due, the oldest due schedule of the other platform published, the skip logged and shown, and the exit code not 0; a skipped schedule more than 6 hours late becomes `MISSED` in a later run;
   - `run --real --platform instagram` → exit 1, nothing changed;
   - every existing LinkedIn test unchanged.
 - **Risks:**
@@ -437,12 +437,14 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
 
 ## 9. Open questions for you
 
-1. **Scope rule.** `CLAUDE.md` says "Facebook and Instagram have folders only; do not implement them." Steps B–F implement simulated Instagram. Do you want a separate decision (D49, "multi-platform refactor and simulated Instagram") that amends this rule now, leaving D48 for real Instagram only?
-2. **The publisher with fakes (step C) before the spike:** build the section 7 state machine now against fakes, or wait until the spike has shown how Meta behaves (it could change the mapping)?
+Questions 1, 2, 4 and 6 are **DECIDED (D49)**; the rest are answered when their step is built.
+
+1. **DECIDED (D49).** ~~**Scope rule.**~~ Instagram may be implemented in simulated mode only; real Instagram is forbidden until D48 is accepted. `CLAUDE.md` is updated.
+2. **DECIDED (D49).** ~~**The publisher with fakes (step C) before the spike.**~~ Built against fakes now (step C); updated if the spike shows different behaviour.
 3. **LinkedIn's pixel limit:** keep it real-only (exactly as today, the plan's default), or move it into validation for every mode like the caption rule (D45)? The latter is a small LinkedIn behaviour change.
-4. **Scheduled runs across platforms:** if the oldest due schedule's platform is refused (e.g. an expired token), refuse the whole run (D46 as it is; recommended for simplicity), or skip that platform this run and publish the oldest due post of another?
+4. **DECIDED (D49).** ~~**Scheduled runs across platforms.**~~ A platform whose setup is refused is **skipped** for that run (logged with the reason); the other platforms continue, still at most one post per run; the skipped schedules stay due and become `MISSED` normally after 6 hours. Still open: that run's exit code (1 or 3, never 0).
 5. **Wording of a cross-platform scheduled run** with nothing due: today "Simulation mode: nothing was sent to LinkedIn in this run." Keep it while only LinkedIn has schedules, or always say "to any platform" (one scheduled-run test changes)?
-6. **Uncertain Instagram rules:** inclusive aspect-ratio boundaries, rejecting CMYK, the EXIF orientation policy (refuse when the two readings disagree), counting e-mail addresses as mentions. Accept these conservative defaults?
+6. **DECIDED (D49).** ~~**Uncertain Instagram rules.**~~ The cautious defaults are accepted: inclusive aspect-ratio limits, CMYK rejected, rejected when EXIF orientation makes the two readings disagree, e-mail addresses count as mentions.
 7. **One post to several platforms:** a dashboard feature only (checkboxes writing to each `incoming/`), or should the CLI also support it (for example a drop folder shared by platforms)? The plan keeps per-platform folders.
 8. **Confirmation phrase** for Instagram: `publish to Instagram` (one phrase per platform), or one phrase for all real posts?
 9. **`jobs`/`schedules` output:** add a platform column only when a non-LinkedIn row is shown (keeps today's output identical), or always?
