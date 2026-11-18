@@ -17,6 +17,11 @@ dependencies = [
 dev = [
     "pytest>=9.1,<10",
 ]
+# Optional: only for notebooks/workflow.ipynb. ipykernel alone is enough for VS Code notebooks.
+notebook = [
+    "ipykernel>=7.4.0,<8",
+    "jupyter>=1.1.1,<2",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -80,6 +80,7 @@ def test_ensure_data_dirs_is_idempotent_and_keeps_files(tmp_path):
     assert existing.read_text(encoding="utf-8") == "caption"
 
 
+<<<<<<< HEAD
 # Fake, isolated values only; never real credentials.
 FAKE_SECRET = "fake-secret-for-tests"
 
@@ -148,3 +149,14 @@ def test_client_secret_is_not_in_repr_or_str(tmp_path):
     settings = load_settings(base_dir=tmp_path, environ={LINKEDIN_CLIENT_SECRET_VAR: FAKE_SECRET})
     assert FAKE_SECRET not in repr(settings)
     assert FAKE_SECRET not in str(settings)
+=======
+def test_log_and_lock_files_live_under_base_dir(tmp_path):
+    settings = load_settings(base_dir=tmp_path, environ={DATA_DIR_VAR: "elsewhere"})
+    assert settings.log_file == tmp_path.resolve() / "logs" / "autoposter.log"
+    assert settings.lock_file == tmp_path.resolve() / "autoposter.lock"
+
+
+def test_app_db_lives_under_base_dir(tmp_path):
+    settings = load_settings(base_dir=tmp_path, environ={DATA_DIR_VAR: "elsewhere"})
+    assert settings.app_db_path == tmp_path.resolve() / "database" / "app.db"
+>>>>>>> 5e14b18aa6da3c8a01d8506a8ecde8a1e6b2fe12

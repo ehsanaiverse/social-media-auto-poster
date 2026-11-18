@@ -49,6 +49,18 @@ class Settings:
     def failed_dir(self, platform: Platform) -> Path:
         return self.platform_dir(platform) / "failed"
 
+    @property
+    def log_file(self) -> Path:
+        return self.base_dir / "logs" / "autoposter.log"
+
+    @property
+    def lock_file(self) -> Path:
+        return self.base_dir / "autoposter.lock"
+
+    @property
+    def app_db_path(self) -> Path:
+        return self.base_dir / "database" / "app.db"
+
 
 def _optional(environ: Mapping[str, str | None], name: str) -> str | None:
     """Return the stripped value, or ``None`` if the variable is missing or blank."""

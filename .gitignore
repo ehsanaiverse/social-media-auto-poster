@@ -26,13 +26,18 @@ ENV/
 # Local data and state
 /data/**/*
 !/data/**/.gitkeep
+/database/
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
-*.db-journal
 
 # Logs
 *.log
+*.log.[0-9]*
+autoposter.lock
 /logs/*
 !/logs/.gitkeep
 
@@ -42,3 +47,7 @@ ENV/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Developer tools
+/sandbox/
+.ipynb_checkpoints/
