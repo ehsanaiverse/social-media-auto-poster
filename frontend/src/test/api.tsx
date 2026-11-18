@@ -27,6 +27,8 @@ export const candidate = (name: string, extra: Partial<Candidate> = {}): Candida
   duplicate_of: null,
   only_simulated: false,
   schedule: null,
+  media_name: `${name}.jpg`,
+  caption_name: `${name}.txt`,
   ...extra
 });
 

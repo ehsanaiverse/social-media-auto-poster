@@ -128,19 +128,18 @@ const PostRow: React.FC<{ candidate: Candidate; index: number }> = ({ candidate:
               {warning}
             </p>
           )}
-          {(c.image_filename || c.caption_filename) && (
+          {(c.media_name || c.caption_name) && (
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {c.image_filename && (
+              {c.media_name && (
                 <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-2 py-0.5 text-[11px] text-slate-400 ring-1 ring-inset ring-white/[0.06]">
                   <FileImage className="h-3 w-3" aria-hidden="true" />
-                  {c.image_filename}
-                  {c.file_size_bytes ? <span className="text-slate-600">· {(c.file_size_bytes / 1024).toFixed(0)} KB</span> : null}
+                  {c.media_name}
                 </span>
               )}
-              {c.caption_filename && (
+              {c.caption_name && (
                 <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-2 py-0.5 text-[11px] text-slate-400 ring-1 ring-inset ring-white/[0.06]">
                   <FileText className="h-3 w-3" aria-hidden="true" />
-                  {c.caption_filename}
+                  {c.caption_name}
                 </span>
               )}
             </div>

@@ -56,6 +56,15 @@ describe('the queue', () => {
     expect(screen.getByRole('button', { name: /^Ready/, pressed: false })).toHaveTextContent('Ready1');
   });
 
+  it('shows the file names the API sends (media_name, caption_name) as chips', async () => {
+    // Names as GET /api/scan sends them: pairing ignores case, so they can differ from the post name.
+    mockApi({ scan: scanOf([candidate('photo-post', { media_name: 'Photo-Post.PNG', caption_name: 'photo-post.txt' })]) });
+    renderWithApi(<ScanQueueStation />);
+    const row = await rowOf('photo-post');
+    expect(within(row).getByText('Photo-Post.PNG')).toBeInTheDocument();
+    expect(within(row).getByText('photo-post.txt')).toBeInTheDocument();
+  });
+
   it('says nothing is ready when every post is scheduled', async () => {
     mockApi({ scan: scanOf([scheduledCandidate(later)]), schedules: schedulesOf([later]) });
     renderWithApi(<ScanQueueStation />);

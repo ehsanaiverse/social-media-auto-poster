@@ -20,10 +20,9 @@ export interface Candidate {
   only_simulated: boolean;
   // An active schedule (D46): runs skip the post until a scheduled run posts it.
   schedule?: CandidateSchedule | null;
-  // Optional display extras.
-  image_filename?: string;
-  caption_filename?: string;
-  file_size_bytes?: number;
+  // The post's two files in incoming/, as GET /api/scan names them (job_service.py: _candidate_to_dict).
+  media_name: string;
+  caption_name: string;
 }
 
 // The backend's ScanResult holds pending files and ambiguous stem groups as
