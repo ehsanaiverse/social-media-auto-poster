@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import logs
 from social_media_auto_poster.config import load_settings
 from social_media_auto_poster.graph import nodes
 from social_media_auto_poster.graph.workflow import run_job
@@ -281,7 +282,7 @@ def test_log_file_has_one_line_per_job_and_no_caption_text(base, incoming, final
 
 
 def test_log_file_rotates(base, incoming, monkeypatch):
-    monkeypatch.setattr(cli, "LOG_MAX_BYTES", 300)
+    monkeypatch.setattr(logs, "LOG_MAX_BYTES", 300)
     add_post(incoming, "launch")
 
     run()

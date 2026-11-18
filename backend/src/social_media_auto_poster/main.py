@@ -23,12 +23,9 @@ import sqlite3
 import sys
 import time
 from collections import Counter
-from collections.abc import Generator
-from contextlib import ExitStack, closing, contextmanager
-from contextvars import ContextVar
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -59,6 +56,25 @@ from social_media_auto_poster.models import (
     ScanResult,
     ScheduleStatus,
 )
+from social_media_auto_poster.operations import clock
+from social_media_auto_poster.operations.common import (
+    DEFAULT_INTERVAL_S,
+    DUPLICATE_LABEL,
+    EXIT_JOB_PROBLEMS,
+    EXIT_LOCKED,
+    EXIT_OK,
+    EXIT_SETUP_ERROR,
+    EXIT_USAGE,
+    MIN_JOB_ID_PREFIX,
+    PLATFORM,
+    REAL_CONFIRMATION,
+    _describe_original,
+    _local_time,
+    _minutes,
+    _relative_to_data,
+    outside_warning,
+)
+from social_media_auto_poster.operations.logs import _run_scope, logging_to
 from social_media_auto_poster.platforms.base import Publisher
 from social_media_auto_poster.platforms.linkedin.check import run_check
 from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
@@ -102,28 +118,11 @@ from social_media_auto_poster.storage.schedules import (
 
 logger = logging.getLogger(__name__)
 
-PLATFORM = Platform.LINKEDIN  # The only platform in scope.
-DEFAULT_INTERVAL_S = 1.0
-LOG_MAX_BYTES = 1_000_000
-LOG_BACKUP_COUNT = 5
-
-EXIT_OK = 0
-EXIT_SETUP_ERROR = 1  # Also: run --real refused before publishing anything.
-EXIT_USAGE = 2  # argparse uses it too.
-EXIT_JOB_PROBLEMS = 3
-EXIT_LOCKED = 4
-
 # Outcome counters reported on the "Run finished" log line, in this order.
 RUN_COUNTS = (
     "simulated", "published", "failed", "needs_review", "duplicates",
     "waiting", "pending", "ambiguous", "recovered", "resumed", "errors", "scheduled",
 )
-MIN_JOB_ID_PREFIX = 6
-DUPLICATE_LABEL = "DUPLICATE"
-REAL_CONFIRMATION = "publish to LinkedIn"  # The API requires this text to start a real run.
-
-# The current run's short ID, added to every log-file line by _RunIdFilter. "-" outside a run.
-_RUN_ID: ContextVar[str] = ContextVar("run_id", default="-")
 
 RUN_EPILOG = """\
 exit codes:
@@ -606,10 +605,6 @@ def _active_schedules(schedules: ScheduleRepository) -> dict[str, ScheduleRecord
     return {s.stem.casefold(): s for s in schedules.list_active(platform=PLATFORM)}
 
 
-def _local_time(moment: datetime, zone: ZoneInfo) -> str:
-    return f"{moment.astimezone(zone):%Y-%m-%d %H:%M} {zone.key}"
-
-
 def _view_candidate(
     candidate: PostCandidate,
     repository: JobRepository | None,
@@ -803,10 +798,6 @@ def _show_job(repository: JobRepository, prefix: str) -> int:
 # resolve
 
 
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
 def resolve_job(settings: Settings, job_prefix: str, *, published_post_id: str | None = None) -> ResolveResult:
     """Settle a NEEDS_REVIEW job: PUBLISHED with ``published_post_id``, or FAILED (retryable) without it.
 
@@ -855,7 +846,7 @@ def _resolve_in_database(repository: JobRepository, prefix: str, published_post_
 
     status = JobStatus.PUBLISHED if published else JobStatus.FAILED
     post_id = published_post_id.strip() if published else None
-    stamp = f"{_utc_now():%Y-%m-%dT%H:%M:%SZ}"
+    stamp = f"{clock.utc_now():%Y-%m-%dT%H:%M:%SZ}"
     note = (
         f"resolved manually as PUBLISHED (post ID {post_id}) at {stamp}"
         if published
@@ -913,11 +904,6 @@ def _print_resolve_next_steps(job: JobRecord, status: JobStatus, settings: Setti
 # schedule, unschedule, schedules (D46)
 
 
-def _now() -> datetime:
-    """The current time for scheduling; tests replace it, so none depends on the real clock."""
-    return datetime.now(UTC)
-
-
 def schedule_post(
     settings: Settings, name: str, at: str, *, real: bool, interval_s: float = DEFAULT_INTERVAL_S
 ) -> ScheduleResult:
@@ -928,7 +914,7 @@ def schedule_post(
     older one, with its backup). Raises ScheduleError (nothing changed) or RunLockHeldError.
     """
     mode = PublishMode.REAL if real else PublishMode.SIMULATED
-    now = _now()
+    now = clock.now()
     with single_run_lock(settings.lock_file), _run_scope():
         candidate = _find_post(settings, name)
         unstable = unstable_files(candidate, interval_s)
@@ -1045,7 +1031,7 @@ def reconfirm_post(
     ScheduleError (nothing changed) or RunLockHeldError.
     """
     mode = PublishMode.REAL if real else PublishMode.SIMULATED
-    now = _now()
+    now = clock.now()
     wanted = name.strip()
     with single_run_lock(settings.lock_file), _run_scope():
         if not _has_schedules(settings):
@@ -1391,7 +1377,7 @@ def _run_locked(
         schedules = ScheduleRepository(conn)
         selection = now = None
         if scheduled:  # Read-only: what is due decides whether a publisher (and the token check) is needed.
-            now = _now()
+            now = clock.now()
             selection = select_due(schedules.due(platform=PLATFORM, mode=mode, now=now), mode=mode, now=now)
         if selection is not None and not selection.publish:
             # Nothing to publish: no real publisher, so no token check and no LinkedIn call (D46).
@@ -1522,10 +1508,6 @@ def _scheduled_post(schedule: ScheduleRecord, zone: ZoneInfo, late_by: timedelta
     )
 
 
-def _minutes(delta: timedelta) -> int:
-    return int(delta.total_seconds() // 60)
-
-
 def _refused(mode: PublishMode, refusal: RunRefusal) -> RunReport:
     return RunReport(
         mode=mode, exit_code=EXIT_SETUP_ERROR, refusal=refusal, resumed=(), recoveries=(), jobs=(), scan=None, footer=""
@@ -1534,17 +1516,6 @@ def _refused(mode: PublishMode, refusal: RunRefusal) -> RunReport:
 
 class RealPublishingUnavailable(Exception):
     """Real publishing cannot start; the message says why."""
-
-
-def _today() -> date:
-    return date.today()
-
-
-def outside_warning(settings: Settings) -> str:
-    return (
-        f"Warning: the data folder is outside backend\\: {settings.data_dir} "
-        f"(check {DATA_DIR_VAR} in backend\\.env)"
-    )
 
 
 def _linkedin_client(access_token: str) -> LinkedInClient:
@@ -1556,7 +1527,7 @@ def _real_publisher(settings: Settings) -> Publisher:
 
     The token is checked with LinkedIn (``/v2/userinfo``) here, before anything changes.
     """
-    today = _today()
+    today = clock.today()
     try:
         credentials = load_linkedin_credentials(settings.base_dir, today=today)
     except CredentialsError as error:
@@ -1775,20 +1746,6 @@ def _duplicate_note(job_id: str, context: WorkflowContext) -> str:
     return f"{_describe_original(original)}; files left in incoming/"
 
 
-def _describe_original(original: JobRecord) -> str:
-    """How duplicates refer to the job that already handles their content (shared by run and scan)."""
-    return f"of job {original.job_id[:8]} ({original.status}, {original.created_at:%Y-%m-%d})"
-
-
-def _relative_to_data(destination: str | None, settings: Settings) -> str | None:
-    if destination is None:
-        return None
-    try:
-        return str(Path(destination).relative_to(settings.data_dir))
-    except ValueError:
-        return destination
-
-
 def _print_run_report(report: RunReport, settings: Settings) -> None:
     """The terminal view of a run. Everything it shows is already in ``report``."""
     if report.resumed:
@@ -1875,7 +1832,7 @@ def _mode(args: argparse.Namespace) -> PublishMode:
 
 def linkedin_status(settings: Settings, *, check: bool, today: date | None = None) -> LinkedInStatus:
     """The LinkedIn token's state from backend/.env. With ``check``, also asks LinkedIn (read-only, no post)."""
-    today = today or _today()
+    today = today or clock.today()
     try:
         credentials = load_linkedin_credentials(settings.base_dir, today=today)
     except CredentialsError as error:
@@ -1904,13 +1861,13 @@ def _linkedin_check(args: argparse.Namespace) -> int:
     settings = load_settings()
     print("LinkedIn check (no post is ever created)")
     try:
-        credentials = load_linkedin_credentials(settings.base_dir, today=_today())
+        credentials = load_linkedin_credentials(settings.base_dir, today=clock.today())
     except CredentialsError as error:
         print(f"  PROBLEM  {error}")
         print("\nNot ready for run --real: fix the problem above.")
         return EXIT_SETUP_ERROR
     with logging_to(verbose=False, log_file=None), closing(_linkedin_client(credentials.access_token)) as client:
-        report = run_check(credentials, client, today=_today(), upload_test=args.upload_test)
+        report = run_check(credentials, client, today=clock.today(), upload_test=args.upload_test)
     print("\n".join(report.lines))
     print("\nReady for run --real." if report.ok else "\nNot ready for run --real: fix the problems above.")
     return EXIT_OK if report.ok else EXIT_SETUP_ERROR
@@ -1931,49 +1888,6 @@ def _print_pending_and_ambiguous(result: ScanResult) -> None:
             print(f"  {group[0].stem}: {', '.join(p.name for p in group)}")
 
 
-@contextmanager
-def logging_to(*, verbose: bool, log_file: Path | None, console: bool = True) -> Generator[None, None, None]:
-    """Attach log handlers for one command or request: the terminal (``console``) and an optional rotating file.
-
-    Handlers are removed and closed afterwards, so Windows never keeps the log
-    file locked once the command returns. Log lines carry IDs, stems, platform,
-    status, and error messages only, never caption text.
-    """
-    handlers: list[logging.Handler] = []
-    if console:
-        stream_handler = logging.StreamHandler(sys.stderr)
-        stream_handler.setLevel(logging.INFO if verbose else logging.WARNING)
-        stream_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-        handlers.append(stream_handler)
-
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            log_file, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
-        )
-        file_handler.setLevel(logging.INFO)
-        file_handler.addFilter(_RunIdFilter())
-        formatter = logging.Formatter(
-            "%(asctime)s %(levelname)s run_id=%(run_id)s %(name)s %(message)s", "%Y-%m-%dT%H:%M:%SZ"
-        )
-        formatter.converter = time.gmtime  # UTC, matching archive folder names and error reports.
-        file_handler.setFormatter(formatter)
-        handlers.append(file_handler)
-
-    root = logging.getLogger()
-    previous_level = root.level
-    root.setLevel(logging.INFO)
-    for handler in handlers:
-        root.addHandler(handler)
-    try:
-        yield
-    finally:
-        for handler in handlers:
-            root.removeHandler(handler)
-            handler.close()
-        root.setLevel(previous_level)
-
-
 def _job_id_prefix(text: str) -> str:
     prefix = text.strip().lower()
     if len(prefix) < MIN_JOB_ID_PREFIX:
@@ -1989,24 +1903,6 @@ def _positive_int(text: str) -> int:
     if value < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
     return value
-
-
-class _RunIdFilter(logging.Filter):
-    """Adds the current run's ID to every record (log file only; terminal lines stay short)."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.run_id = _RUN_ID.get()
-        return True
-
-
-@contextmanager
-def _run_scope() -> Generator[str, None, None]:
-    """Give everything logged inside the block (including graph nodes) a new short run ID."""
-    token = _RUN_ID.set(uuid4().hex[:8])
-    try:
-        yield _RUN_ID.get()
-    finally:
-        _RUN_ID.reset(token)
 
 
 def _non_negative_float(text: str) -> float:

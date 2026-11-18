@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import clock
 from social_media_auto_poster.models import JobStatus, Platform, PublishMode
 from social_media_auto_poster.services.run_lock import single_run_lock
 from social_media_auto_poster.storage.database import open_app_db
@@ -22,7 +23,7 @@ def base(tmp_path, monkeypatch) -> Path:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
-    monkeypatch.setattr(cli, "_utc_now", lambda: FIXED_NOW)
+    monkeypatch.setattr(clock, "utc_now", lambda: FIXED_NOW)
     return tmp_path
 
 

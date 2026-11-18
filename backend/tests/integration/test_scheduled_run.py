@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import clock as clock_module
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.models import Platform, PublishResult
 
@@ -34,7 +35,7 @@ class FakePublisher:
 @pytest.fixture
 def clock(monkeypatch) -> dict:
     now = {"now": SCHEDULED_AT}
-    monkeypatch.setattr(cli, "_now", lambda: now["now"])
+    monkeypatch.setattr(clock_module, "now", lambda: now["now"])
     return now
 
 

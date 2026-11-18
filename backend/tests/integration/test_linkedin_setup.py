@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from social_media_auto_poster import main as cli
+from social_media_auto_poster.operations import clock
 from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.platforms.linkedin import check
 from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
@@ -22,7 +23,7 @@ def base(tmp_path, monkeypatch) -> Path:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AUTOPOSTER_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("AUTOPOSTER_DATA_DIR", "data")
-    monkeypatch.setattr(cli, "_today", lambda: TODAY)
+    monkeypatch.setattr(clock, "today", lambda: TODAY)
     monkeypatch.setattr(check, "POLL_INTERVAL_S", 0)
     return tmp_path
 
