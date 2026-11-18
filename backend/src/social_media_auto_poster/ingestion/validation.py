@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from social_media_auto_poster.models import Platform, PostCandidate, ValidationResult
-from social_media_auto_poster.platforms.linkedin.caption import caption_problem as linkedin_caption_problem
+from social_media_auto_poster.platforms.rules import RULES
 
 JPEG_SIGNATURE = b"\xff\xd8\xff"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -17,12 +17,8 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 EXPECTED_TYPE = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG"}
 
 # A safety guard so a wrong or huge file is never read into memory.
-# This is NOT a platform's caption limit; those are in CAPTION_RULES.
+# This is NOT a platform's caption limit; those are in platforms/rules.py.
 MAX_CAPTION_BYTES = 64 * 1024
-
-# Each platform's own caption rule (text -> why it cannot be posted, or None). Checked here, so scan,
-# every run (simulated or real) and uploads refuse the caption, not only the real publisher (D45).
-CAPTION_RULES: dict[Platform, Callable[[str], str | None]] = {Platform.LINKEDIN: linkedin_caption_problem}
 
 
 def validate_candidate(candidate: PostCandidate) -> ValidationResult:
@@ -33,9 +29,19 @@ def validate_candidate(candidate: PostCandidate) -> ValidationResult:
     """
     errors = [
         *_media_errors(candidate.media_path),
-        *_caption_errors(candidate.caption_path, CAPTION_RULES.get(candidate.platform)),
+        *_caption_errors(candidate.caption_path, _caption_rule(candidate.platform)),
     ]
     return ValidationResult(is_valid=not errors, errors=tuple(errors))
+
+
+def _caption_rule(platform: Platform) -> Callable[[str], list[str]] | None:
+    """The platform's own caption rule (platforms/rules.py), or None for a platform without one.
+
+    Checked here, so scan, every run (simulated or real) and uploads refuse the caption,
+    not only the real publisher (D45).
+    """
+    rules = RULES.get(platform)
+    return rules.caption_problems if rules is not None else None
 
 
 def _media_errors(path: Path) -> list[str]:
@@ -80,7 +86,7 @@ def decode_caption(data: bytes) -> str:
     return data.decode("utf-8-sig")
 
 
-def _caption_errors(path: Path, platform_rule: Callable[[str], str | None] | None) -> list[str]:
+def _caption_errors(path: Path, platform_rule: Callable[[str], list[str]] | None) -> list[str]:
     try:
         with path.open("rb") as f:
             data = f.read(MAX_CAPTION_BYTES + 1)
@@ -97,5 +103,4 @@ def _caption_errors(path: Path, platform_rule: Callable[[str], str | None] | Non
         return ["caption is not valid UTF-8 text"]
     if not text.strip():
         return ["caption is empty"]
-    problem = platform_rule(text) if platform_rule is not None else None
-    return [problem] if problem is not None else []
+    return platform_rule(text) if platform_rule is not None else []

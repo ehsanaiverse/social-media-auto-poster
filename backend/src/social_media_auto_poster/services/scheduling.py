@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from social_media_auto_poster.ingestion.validation import validate_candidate
 from social_media_auto_poster.models import PostCandidate, PublishMode, ScheduleStatus
-from social_media_auto_poster.platforms.linkedin.image_size import image_problem
+from social_media_auto_poster.platforms.rules import RULES
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.storage.jobs import JobRepository
 from social_media_auto_poster.storage.schedules import ScheduleRecord, ScheduleRepository
@@ -106,8 +106,9 @@ def check_schedulable(
     """Whether ``candidate`` may be scheduled in ``mode``; returns its (media, caption) SHA-256 hashes.
 
     The same checks a run would make, done now instead of at the scheduled time: validation (including
-    the caption rule), LinkedIn's pixel limit for a real schedule, a live job with this content in this
-    mode (duplicates are per mode, D20), and another active schedule for the same content (except
+    the caption rule), the platform's real-only media rules for a real schedule (LinkedIn: its pixel
+    limit), a live job with this content in this mode (duplicates are per mode, D20), and another
+    active schedule for the same content (except
     ``ignore_schedule_id``: the schedule being re-confirmed). Raises ``ScheduleError``; the caller has
     already checked that both files are stable.
     """
@@ -115,10 +116,13 @@ def check_schedulable(
     if errors:
         raise ScheduleError("invalid", f"'{candidate.stem}' is not valid: {'; '.join(errors)}.")
     try:
-        if mode is PublishMode.REAL:
-            problem = image_problem(candidate.media_path.read_bytes())
-            if problem is not None:
-                raise ScheduleError("invalid", f"'{candidate.stem}' cannot be posted to LinkedIn: {problem}.")
+        rules = RULES.get(candidate.platform)
+        if mode is PublishMode.REAL and rules is not None:
+            problems = rules.real_media_problems(candidate.media_path.read_bytes())
+            if problems:
+                raise ScheduleError(
+                    "invalid", f"'{candidate.stem}' cannot be posted to {rules.display_name}: {'; '.join(problems)}."
+                )
         media_sha256, caption_sha256 = sha256_file(candidate.media_path), sha256_file(candidate.caption_path)
     except OSError as error:
         raise ScheduleError("unreadable", f"the files of '{candidate.stem}' could not be read: {error}") from None
