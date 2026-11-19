@@ -1,6 +1,6 @@
 import React from 'react';
 import { useApi } from '../context/ApiContext';
-import { platformById } from '../lib/platforms';
+import { platformBadge, platformById } from '../lib/platforms';
 import { cn } from '../utils/cn';
 
 // One platform choice shared by the queue, the scheduled posts, publishing and the history.
@@ -28,7 +28,7 @@ export const PlatformPicker: React.FC = () => {
           >
             <Icon className="h-3.5 w-3.5" />
             {p.name}
-            {!p.real_available && <span className="text-[10px] uppercase tracking-wide text-slate-400">test only</span>}
+            {platformBadge(platformById(p.id).id, platforms) === 'test' && <span className="text-[10px] uppercase tracking-wide text-slate-400">test only</span>}
           </button>
         );
       })}

@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { Clock, Gauge, HardDrive, KeyRound, RefreshCw, ShieldCheck, UserRound } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
 import type { LinkedInTokenState } from '../types/api';
-import { PLATFORMS, type Platform } from '../lib/platforms';
+import { PLATFORMS, platformBadge, type Platform } from '../lib/platforms';
 import { cn } from '../utils/cn';
 import { SectionHeading } from './ui/SectionHeading';
 import { AnimatedNumber, EASE_OUT } from './ui/motion';
@@ -195,9 +195,9 @@ const ComingSoonCard: React.FC<{ platform: Platform; index: number }> = ({ platf
 );
 
 export const LinkedInSentinel: React.FC = () => {
-  // Instagram gets its card once the poster offers it (GET /api/platforms); until then it is "Coming soon".
+  // A platform gets its card once the poster offers it (platformBadge, GET /api/platforms); until then "Coming soon".
   const { platforms } = useApi();
-  const hasInstagram = platforms.some((p) => p.id === 'instagram');
+  const hasInstagram = platformBadge('instagram', platforms) !== 'soon';
   return (
   <section id="linkedin" className="relative py-16 lg:py-20">
     <div className="hr-fade absolute inset-x-0 top-0" />
@@ -208,7 +208,7 @@ export const LinkedInSentinel: React.FC = () => {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {PLATFORMS.map((p, i) =>
-          p.live ? (
+          p.id === 'linkedin' ? (
             <LinkedInCard key={p.id} platform={p} />
           ) : p.id === 'instagram' && hasInstagram ? (
             <InstagramCard key={p.id} platform={p} index={i} />

@@ -1,7 +1,8 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { ArrowRight, CheckCircle2, FileImage, FileText, FolderOpen, Play } from 'lucide-react';
-import { PLATFORMS } from '../lib/platforms';
+import { useApi } from '../context/ApiContext';
+import { BADGE_LABEL, PLATFORMS, platformBadge } from '../lib/platforms';
 import { scrollToSection } from '../lib/sections';
 import { cn } from '../utils/cn';
 import { EASE_OUT } from './ui/motion';
@@ -14,8 +15,17 @@ const TARGETS = PLATFORMS.map((p, i) => ({ platform: p, x: 330, y: 45 + i * 70 }
 
 const pathTo = (y: number) => `M ${FOLDER.x + 40} ${FOLDER.y} C 210 ${FOLDER.y}, 220 ${y}, 296 ${y}`;
 
-// Light travels from the folder to each platform; only the live one is solid.
-const FlowVisual: React.FC = () => (
+// Light travels from the folder to each platform: solid green to a Live one, solid amber to a Test one,
+// dashed grey to one that is coming soon (platformBadge, from GET /api/platforms).
+const LINE = {
+  live: { stroke: 'url(#cta-flow)', width: 2, dash: undefined, dot: '#6ee7b7', r: 4, dur: '2.4s' },
+  test: { stroke: 'url(#cta-flow-test)', width: 1.75, dash: undefined, dot: '#fcd34d', r: 3.5, dur: '2.8s' },
+  soon: { stroke: 'rgba(148,163,184,0.18)', width: 1.5, dash: '4 6', dot: '#64748b', r: 2.5, dur: '3.6s' }
+} as const;
+
+const FlowVisual: React.FC = () => {
+  const { platforms } = useApi();
+  return (
   <div className="relative mx-auto aspect-[4/3] w-full max-w-[520px]">
     <svg viewBox="0 0 400 300" className="absolute inset-0 h-full w-full" aria-hidden="true">
       <defs>
@@ -23,29 +33,37 @@ const FlowVisual: React.FC = () => (
           <stop offset="0" stopColor="#34d399" stopOpacity="0.15" />
           <stop offset="1" stopColor="#34d399" stopOpacity="0.8" />
         </linearGradient>
+        <linearGradient id="cta-flow-test" x1="0" x2="1">
+          <stop offset="0" stopColor="#fbbf24" stopOpacity="0.12" />
+          <stop offset="1" stopColor="#fbbf24" stopOpacity="0.7" />
+        </linearGradient>
         <filter id="cta-glow">
           <feGaussianBlur stdDeviation="2.5" />
         </filter>
       </defs>
-      {TARGETS.map(({ platform, y }, i) => (
-        <g key={platform.id}>
+      {TARGETS.map(({ platform, y }, i) => {
+        const badge = platformBadge(platform.id, platforms);
+        const line = LINE[badge];
+        return (
+        <g key={platform.id} data-badge={badge}>
           <path
             d={pathTo(y)}
             fill="none"
-            stroke={platform.live ? 'url(#cta-flow)' : 'rgba(148,163,184,0.18)'}
-            strokeWidth={platform.live ? 2 : 1.5}
-            strokeDasharray={platform.live ? undefined : '4 6'}
+            stroke={line.stroke}
+            strokeWidth={line.width}
+            strokeDasharray={line.dash}
           />
-          <circle r={platform.live ? 4 : 2.5} fill={platform.live ? '#6ee7b7' : '#64748b'} filter={platform.live ? 'url(#cta-glow)' : undefined}>
-            <animateMotion dur={platform.live ? '2.4s' : '3.6s'} begin={`${i * 0.5}s`} repeatCount="indefinite" path={pathTo(y)} />
+          <circle r={line.r} fill={line.dot} filter={badge === 'soon' ? undefined : 'url(#cta-glow)'}>
+            <animateMotion dur={line.dur} begin={`${i * 0.5}s`} repeatCount="indefinite" path={pathTo(y)} />
           </circle>
-          {platform.live && (
+          {badge === 'live' && (
             <circle r="2" fill="#ecfdf5">
               <animateMotion dur="2.4s" begin={`${i * 0.5}s`} repeatCount="indefinite" path={pathTo(y)} />
             </circle>
           )}
         </g>
-      ))}
+        );
+      })}
     </svg>
 
     {/* Folder */}
@@ -67,7 +85,9 @@ const FlowVisual: React.FC = () => (
     </motion.div>
 
     {/* Platforms */}
-    {TARGETS.map(({ platform: p, x, y }, i) => (
+    {TARGETS.map(({ platform: p, x, y }, i) => {
+      const badge = platformBadge(p.id, platforms);
+      return (
       <motion.div
         key={p.id}
         className="absolute -translate-x-1/2 -translate-y-1/2"
@@ -79,19 +99,32 @@ const FlowVisual: React.FC = () => (
       >
         <div className="flex items-center gap-2">
           <span
-            className={cn('grid h-11 w-11 place-items-center rounded-xl border text-white sm:h-12 sm:w-12', p.live ? 'border-white/20' : 'border-white/10 text-slate-400')}
-            style={p.live ? { backgroundColor: p.color, boxShadow: `0 0 30px -4px ${p.color}` } : { backgroundColor: '#161d1a' }}
+            className={cn('grid h-11 w-11 place-items-center rounded-xl border text-white sm:h-12 sm:w-12', badge === 'soon' ? 'border-white/10 text-slate-400' : 'border-white/20')}
+            style={
+              badge === 'live'
+                ? { backgroundColor: p.color, boxShadow: `0 0 30px -4px ${p.color}` }
+                : badge === 'test'
+                  ? { backgroundColor: p.color, boxShadow: '0 0 24px -6px #fbbf24' }
+                  : { backgroundColor: '#161d1a' }
+            }
           >
             <p.Icon className="h-5 w-5" />
           </span>
-          <span className={cn('hidden rounded-full px-2 py-0.5 text-[10px] font-semibold sm:inline', p.live ? 'bg-emerald-400 text-[#04110B]' : 'bg-white/10 text-slate-400')}>
-            {p.live ? 'Live' : 'Soon'}
+          <span
+            className={cn(
+              'hidden rounded-full px-2 py-0.5 text-[10px] font-semibold sm:inline',
+              badge === 'live' ? 'bg-emerald-400 text-[#04110B]' : badge === 'test' ? 'bg-amber-400/90 text-[#1a1203]' : 'bg-white/10 text-slate-400'
+            )}
+          >
+            {BADGE_LABEL[badge]}
           </span>
         </div>
       </motion.div>
-    ))}
+      );
+    })}
   </div>
-);
+  );
+};
 
 export const CtaSection: React.FC = () => (
   <section className="relative py-16 lg:py-20" aria-labelledby="cta-title">

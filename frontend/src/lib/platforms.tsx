@@ -5,8 +5,6 @@ export type PlatformId = 'linkedin' | 'instagram' | 'facebook' | 'x';
 export interface Platform {
   id: PlatformId;
   name: string;
-  // LinkedIn is live; Instagram is simulated only in the backend (D49); Facebook is planned.
-  live: boolean;
   color: string;
   Icon: React.FC<{ className?: string }>;
 }
@@ -39,10 +37,10 @@ const XIcon: React.FC<{ className?: string }> = ({ className }) => (
 );
 
 export const PLATFORMS: Platform[] = [
-  { id: 'linkedin', name: 'LinkedIn', live: true, color: '#0A66C2', Icon: LinkedInIcon },
-  { id: 'instagram', name: 'Instagram', live: false, color: '#E1306C', Icon: InstagramIcon },
-  { id: 'facebook', name: 'Facebook', live: false, color: '#1877F2', Icon: FacebookIcon },
-  { id: 'x', name: 'X', live: false, color: '#E7E9EA', Icon: XIcon }
+  { id: 'linkedin', name: 'LinkedIn', color: '#0A66C2', Icon: LinkedInIcon },
+  { id: 'instagram', name: 'Instagram', color: '#E1306C', Icon: InstagramIcon },
+  { id: 'facebook', name: 'Facebook', color: '#1877F2', Icon: FacebookIcon },
+  { id: 'x', name: 'X', color: '#E7E9EA', Icon: XIcon }
 ];
 
 // The Home badge of a platform, from what the poster offers (GET /api/platforms): registered and able to publish

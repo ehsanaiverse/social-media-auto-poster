@@ -5,7 +5,7 @@ import { useApi } from '../context/ApiContext';
 import { captionError as captionProblem, captionLength, imageErrors, postNameError } from '../lib/postRules';
 import { apiService } from '../services/apiService';
 import { newChoice, scheduleFields, scheduleProblem, type ScheduleChoice } from '../lib/schedules';
-import { PLATFORMS, platformById } from '../lib/platforms';
+import { PLATFORMS, platformBadge, platformById } from '../lib/platforms';
 import { cn } from '../utils/cn';
 import { ScheduleFields } from './ScheduleFields';
 
@@ -169,7 +169,7 @@ export const IntakeStudio: React.FC = () => {
                             <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
                           </span>
                         ) : offered ? (
-                          !offered.real_available && <span className="ml-auto text-[10px] uppercase tracking-wide">Test only</span>
+                          platformBadge(p.id, platforms) === 'test' && <span className="ml-auto text-[10px] uppercase tracking-wide">Test only</span>
                         ) : (
                           <span className="ml-auto text-[10px] uppercase tracking-wide">Soon</span>
                         )}

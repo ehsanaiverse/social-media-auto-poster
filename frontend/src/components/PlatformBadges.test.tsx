@@ -48,3 +48,32 @@ describe('Home chips', () => {
     expect(within(chip('Instagram')).getByText('· Soon')).toBeInTheDocument();
   });
 });
+
+describe('"Drop it in the folder" lines and tiles', () => {
+  const badges = () => [...document.querySelectorAll('svg g[data-badge]')].map((g) => g.getAttribute('data-badge'));
+
+  it('follow the poster: Live solid green, Test amber, Soon dashed', async () => {
+    const { CtaSection } = await import('./CtaSection');
+    api.getPlatforms.mockResolvedValue([LINKEDIN_FALLBACK, { ...INSTAGRAM, real_available: false, confirmation_phrase: null }]);
+    renderWithApi(<CtaSection />);
+    await vi.waitFor(() => expect(badges()).toEqual(['live', 'test', 'soon', 'soon']));
+    const [linkedin, instagram, facebook] = [...document.querySelectorAll('svg g[data-badge] path')];
+    expect(linkedin.getAttribute('stroke-dasharray')).toBeNull();
+    expect(instagram.getAttribute('stroke')).toBe('url(#cta-flow-test)');
+    expect(facebook.getAttribute('stroke-dasharray')).toBe('4 6');
+    expect(screen.getByText('Test')).toBeInTheDocument();
+  });
+
+  it('show Instagram Live when it is, and Soon when the API fails', async () => {
+    const { CtaSection } = await import('./CtaSection');
+    api.getPlatforms.mockResolvedValue([LINKEDIN_FALLBACK, INSTAGRAM]);
+    const first = renderWithApi(<CtaSection />);
+    await vi.waitFor(() => expect(badges()).toEqual(['live', 'live', 'soon', 'soon']));
+    first.unmount();
+
+    api.getPlatforms.mockRejectedValue({ status: 500, message: 'down' });
+    renderWithApi(<CtaSection />);
+    await vi.waitFor(() => expect(api.getPlatforms).toHaveBeenCalledTimes(2));
+    expect(badges()).toEqual(['live', 'soon', 'soon', 'soon']);
+  });
+});
