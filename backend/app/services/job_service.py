@@ -23,7 +23,7 @@ from social_media_auto_poster.operations.logs import logging_to
 from social_media_auto_poster.operations.resolve import resolve_job
 from social_media_auto_poster.operations.run import RunReport, run_once
 from social_media_auto_poster.operations.scan import CandidateView, find_duplicate, scan_preview
-from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode, ScheduleStatus
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, ScheduleStatus
 from social_media_auto_poster.services.reconcile import Recovery
 from social_media_auto_poster.services.scheduling import ScheduleError
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db_read_only
@@ -38,7 +38,7 @@ class JobDatabaseError(Exception):
 
 
 class FolderMissingError(Exception):
-    """The LinkedIn incoming folder does not exist."""
+    """The platform's incoming folder does not exist."""
 
 
 class JobLookupError(Exception):
@@ -72,13 +72,14 @@ class JobService:
     def settings(self) -> Settings:
         return self._settings
 
-    def scan(self, *, real: bool) -> dict:
+    def scan(self, *, real: bool, platform: Platform = PLATFORM) -> dict:
         """Read-only preview of the incoming folder (``scan`` / ``scan --real``). Never moves or creates anything."""
-        folder = self._settings.incoming_dir(PLATFORM)
+        folder = self._settings.incoming_dir(platform)
         mode = PublishMode.REAL if real else PublishMode.SIMULATED
         try:
             preview = scan_preview(
-                self._settings, folder=folder, mode=mode, interval_s=self._interval_s, check_archive=True
+                self._settings, folder=folder, mode=mode, interval_s=self._interval_s, check_archive=True,
+                platform=platform,
             )
         except FileNotFoundError:
             raise FolderMissingError(f"the incoming folder does not exist: {folder}") from None
@@ -94,7 +95,7 @@ class JobService:
             )
         result = preview.scan
         return {
-            "platform": PLATFORM.value,
+            "platform": platform.value,
             "candidates": [_candidate_to_dict(view, self._settings) for view in preview.candidates],
             "pending": [path.name for path in result.pending],
             "ambiguous": [[path.name for path in group] for group in result.ambiguous],
@@ -103,10 +104,12 @@ class JobService:
             "missing_schedules": [self._schedule_json(v.schedule, v.content) for v in preview.missing_schedules],
         }
 
-    def add_post(self, *, name: str, image: bytes, image_extension: str, caption: bytes) -> dict:
+    def add_post(
+        self, *, name: str, image: bytes, image_extension: str, caption: bytes, platform: Platform = PLATFORM
+    ) -> dict:
         """Write a new post into incoming/. Raises IntakeError (see ingestion/intake.py)."""
         candidate = add_post_to_incoming(
-            self._settings, name=name, image=image, image_extension=image_extension, caption=caption, platform=PLATFORM
+            self._settings, name=name, image=image, image_extension=image_extension, caption=caption, platform=platform
         )
         return {
             "name": candidate.stem,
@@ -114,12 +117,13 @@ class JobService:
             "duplicate_of": self._duplicate_job_id(candidate),
         }
 
-    def run(self, *, real: bool, publish_simulated: bool) -> RunReport:
+    def run(self, *, real: bool, publish_simulated: bool, platform: Platform = PLATFORM) -> RunReport:
         """One run, the same as ``run`` / ``run --real``. Raises RunLockHeldError if another run is in progress."""
         mode = PublishMode.REAL if real else PublishMode.SIMULATED
         with logging_to(verbose=False, log_file=self._settings.log_file, console=False):
             return run_once(
-                self._settings, mode, publish_simulated=publish_simulated, interval_s=self._interval_s
+                self._settings, mode, publish_simulated=publish_simulated, interval_s=self._interval_s,
+                platform=platform,
             )
 
     def list_jobs(self, *, last: int, status: JobStatus | None) -> list[dict]:
@@ -167,11 +171,11 @@ class JobService:
             "schedules": [self._schedule_json(view.schedule, view.content) for view in result.schedules],
         }
 
-    def schedule(self, *, name: str, publish_at: str, real: bool) -> dict:
+    def schedule(self, *, name: str, publish_at: str, real: bool, platform: Platform = PLATFORM) -> dict:
         """Schedule a post. Raises ScheduleError (nothing written) or RunLockHeldError."""
         with self._schedule_errors(), logging_to(verbose=False, log_file=self._settings.log_file, console=False):
             result = schedules_ops.schedule_post(
-                self._settings, name, publish_at, real=real, interval_s=self._interval_s
+                self._settings, name, publish_at, real=real, interval_s=self._interval_s, platform=platform
             )
         return {"schedule": self._schedule_json(result.schedule, "ok"), "warnings": self._texts(result.warnings)}
 
@@ -188,7 +192,7 @@ class JobService:
                 )
             with logging_to(verbose=False, log_file=self._settings.log_file, console=False):
                 cancelled = schedules_ops.unschedule_post(
-                    self._settings, record.stem, expected_schedule_id=record.schedule_id
+                    self._settings, record.stem, expected_schedule_id=record.schedule_id, platform=record.platform
                 )
         return {"schedule": self._schedule_json(cancelled, None)}
 
@@ -213,6 +217,7 @@ class JobService:
                     at=publish_at,
                     interval_s=self._interval_s,
                     expected_schedule_id=record.schedule_id,
+                    platform=record.platform,
                 )
         return {
             "schedule": self._schedule_json(result.new, "ok"),

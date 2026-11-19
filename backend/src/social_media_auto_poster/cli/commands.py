@@ -37,6 +37,7 @@ from social_media_auto_poster.operations.schedules import (
     unschedule_post,
 )
 from social_media_auto_poster.platforms.linkedin.check import run_check
+from social_media_auto_poster.platforms.rules import display_name
 from social_media_auto_poster.platforms.linkedin.credentials import CredentialsError, load_linkedin_credentials
 from social_media_auto_poster.services.run_lock import RunLockHeldError
 from social_media_auto_poster.services.scheduling import ScheduleError
@@ -60,7 +61,7 @@ def _scan(args: argparse.Namespace) -> int:
 
         if args.dir is None and data_dir_outside_base(settings):
             print(outside_warning(settings), file=sys.stderr)
-        print(f"Scanning LinkedIn incoming: {folder}" + ("   (duplicate check: real mode)" if args.real else ""))
+        print(f"Scanning {display_name(PLATFORM)} incoming: {folder}" + ("   (duplicate check: real mode)" if args.real else ""))
         result = preview.scan
         if not (result.candidates or result.pending or result.ambiguous):
             print("\nNothing found.")
@@ -169,8 +170,8 @@ def _schedule(args: argparse.Namespace) -> int:
         return EXIT_LOCKED
 
     record = result.schedule
-    kind = ("REAL: to be published to LinkedIn" if record.mode is PublishMode.REAL
-            else "simulated: nothing will be sent to LinkedIn")
+    kind = (f"REAL: to be published to {display_name(PLATFORM)}" if record.mode is PublishMode.REAL
+            else f"simulated: nothing will be sent to {display_name(PLATFORM)}")
     print(f"Scheduled '{record.stem}' for {result.local_time} ({record.publish_at:%Y-%m-%d %H:%M} UTC), {kind}.")
     print(f"Schedule ID: {record.schedule_id[:8]}")
     print("Keep both files unchanged in incoming/ until then; a changed file makes the schedule INVALID.")
@@ -231,8 +232,8 @@ def _reconfirm(args: argparse.Namespace) -> int:
         return EXIT_LOCKED
 
     new, old = result.new, result.old
-    kind = ("REAL: to be published to LinkedIn" if new.mode is PublishMode.REAL
-            else "simulated: nothing will be sent to LinkedIn")
+    kind = (f"REAL: to be published to {display_name(PLATFORM)}" if new.mode is PublishMode.REAL
+            else f"simulated: nothing will be sent to {display_name(PLATFORM)}")
     old_now = "now CANCELLED" if old.status is ScheduleStatus.SCHEDULED else f"which stays {old.status}"
     print(f"Re-confirmed '{new.stem}' for {result.local_time} ({new.publish_at:%Y-%m-%d %H:%M} UTC), {kind}.")
     print(f"Schedule ID: {new.schedule_id[:8]} (replaces {old.schedule_id[:8]}, {old_now}).")
@@ -257,10 +258,10 @@ def _run(args: argparse.Namespace) -> int:
     try:
         with logging_to(verbose=args.verbose, log_file=settings.log_file):
             # flush: when output is piped, stdout is buffered and stderr warnings would overtake it.
-            banner = "   (REAL MODE: posts are published to LinkedIn)" if mode is PublishMode.REAL else ""
+            banner = f"   (REAL MODE: posts are published to {display_name(PLATFORM)})" if mode is PublishMode.REAL else ""
             if args.scheduled:
                 banner += "   (scheduled run: only scheduled posts that are due)"
-            print(f"Processing LinkedIn incoming: {settings.incoming_dir(PLATFORM)}{banner}", flush=True)
+            print(f"Processing {display_name(PLATFORM)} incoming: {settings.incoming_dir(PLATFORM)}{banner}", flush=True)
             report = run_once(settings, mode, publish_simulated=args.publish_simulated, interval_s=args.interval,
                               scheduled=args.scheduled)
     except RunLockHeldError:

@@ -15,7 +15,8 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from social_media_auto_poster.models import JobStatus, PostCandidate
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate
+from social_media_auto_poster.platforms.rules import display_name
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ def write_error_report(
     status: JobStatus,
     errors: list[str],
     now: datetime | None = None,
+    platform: Platform = Platform.LINKEDIN,
 ) -> Path:
     """Write a plain-text explanation next to a post moved to ``failed/``. Overwrites an earlier one."""
     lines = [
@@ -116,7 +118,7 @@ def write_error_report(
         lines += [
             "",
             "The publish outcome is unknown: the post may or may not be live.",
-            "Check LinkedIn before re-posting. Moving these files back to incoming/",
+            f"Check {display_name(platform)} before re-posting. Moving these files back to incoming/",
             "without checking may publish the post twice.",
         ]
     report = folder / ERROR_REPORT_NAME

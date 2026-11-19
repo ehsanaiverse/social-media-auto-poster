@@ -134,7 +134,8 @@ def _recover_real(record: JobRecord, repository: JobRepository, settings: Settin
             notes.append(f"files moved to {folder.name}")
             try:
                 write_error_report(
-                    folder, job_id=record.job_id, stem=record.stem, status=JobStatus.NEEDS_REVIEW, errors=errors
+                    folder, job_id=record.job_id, stem=record.stem, status=JobStatus.NEEDS_REVIEW, errors=errors,
+                    platform=record.platform,
                 )
             except OSError as error:
                 logger.error("Could not write error report: job_id=%s folder=%s error=%s", record.job_id, folder, error)

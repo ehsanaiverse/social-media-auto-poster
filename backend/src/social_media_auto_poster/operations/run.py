@@ -55,6 +55,7 @@ from social_media_auto_poster.operations.logs import _run_scope
 from social_media_auto_poster.operations.platforms import adapter_for
 from social_media_auto_poster.operations.scan import _active_schedules
 from social_media_auto_poster.platforms.base import Publisher
+from social_media_auto_poster.platforms.rules import display_name
 from social_media_auto_poster.platforms.simulator import Simulator
 from social_media_auto_poster.services.real_mode import SimulatedOnly, archive_without_history, posts_only_simulated
 from social_media_auto_poster.services.reconcile import Recovery, reconcile_interrupted_jobs
@@ -184,7 +185,7 @@ def _run_locked(
         if missing:
             logger.error("Real run refused: data folders missing: %s", ", ".join(str(path) for path in missing))
             text = "\n".join([
-                f"\nREFUSED: the data folder {settings.data_dir} does not have its LinkedIn folders:",
+                f"\nREFUSED: the data folder {settings.data_dir} does not have its {display_name(platform)} folders:",
                 *(f"  {path}" for path in missing),
                 f"Real runs never create them. Check {DATA_DIR_VAR} in backend\\.env; for a new setup, run once "
                 "without --real to create them. Nothing was published.",
@@ -245,7 +246,7 @@ def _run_locked(
         )
         if selection is not None:
             return _process_scheduled(
-                context, schedules, selection, now, tuple(resumed_lines), recoveries, earlier_problems, counts
+                context, schedules, selection, now, tuple(resumed_lines), recoveries, earlier_problems, counts, platform
             )
         return _process(
             context, schedules, publish_simulated, tuple(resumed_lines), recoveries, earlier_problems, counts, platform,
@@ -268,6 +269,7 @@ def _process_scheduled(
     recoveries: list[Recovery],
     earlier_problems: bool,
     counts: Counter[str],
+    platform: Platform = PLATFORM,
 ) -> RunReport:
     """A scheduled run (D46): mark the missed schedules, then carry out at most one due schedule.
 
@@ -321,7 +323,7 @@ def _process_scheduled(
         recoveries=tuple(recoveries),
         jobs=tuple(lines),
         scan=ScanResult(candidates=(), pending=(), ambiguous=()),
-        footer=_footer(context.mode, tuple(lines)),
+        footer=_footer(context.mode, tuple(lines), platform),
         scheduled_run=True,
         due=tuple(due),
         missed=tuple(missed),
@@ -417,7 +419,7 @@ def _process(
             return RunReport(
                 mode=context.mode,
                 exit_code=EXIT_SETUP_ERROR,
-                refusal=RunRefusal("simulated_only", _simulated_refusal_text(simulated_only)),
+                refusal=RunRefusal("simulated_only", _simulated_refusal_text(simulated_only, platform)),
                 resumed=resumed,
                 recoveries=tuple(recoveries),
                 jobs=(),
@@ -438,7 +440,7 @@ def _process(
         recoveries=tuple(recoveries),
         jobs=lines,
         scan=result,
-        footer=_footer(context.mode, lines),
+        footer=_footer(context.mode, lines, platform),
         scheduled=scheduled,
     )
 
@@ -472,28 +474,29 @@ def _hold_scheduled(
     return tuple(held), tuple(rest)
 
 
-def _simulated_refusal_text(simulated_only: list[SimulatedOnly]) -> str:
+def _simulated_refusal_text(simulated_only: list[SimulatedOnly], platform: Platform = PLATFORM) -> str:
     width = max(len(item.candidate.stem) for item in simulated_only)
     lines = [f"\nREFUSED ({len(simulated_only)}) - these posts were only simulated; a real run would publish them now"]
     for item in simulated_only:
         job = item.simulated_job
         lines.append(f"  {item.candidate.stem:<{width}}   simulated as job {job.job_id[:8]} ({job.created_at:%Y-%m-%d})")
     lines.append(
-        "\nNothing was published. Remove the posts you do not want on LinkedIn from incoming/, "
+        f"\nNothing was published. Remove the posts you do not want on {display_name(platform)} from incoming/, "
         "or run again with --real --publish-simulated to publish them."
     )
     return "\n".join(lines)
 
 
-def _footer(mode: PublishMode, lines: tuple[JobLine, ...]) -> str:
-    """The run's closing line: what this run sent to LinkedIn, in plain words."""
+def _footer(mode: PublishMode, lines: tuple[JobLine, ...], platform: Platform = PLATFORM) -> str:
+    """The run's closing line: what this run sent to the platform, in plain words."""
+    name = display_name(platform)
     if mode is PublishMode.SIMULATED:
-        return "\nSimulation mode: nothing was sent to LinkedIn in this run."
+        return f"\nSimulation mode: nothing was sent to {name} in this run."
     published = sum(line.outcome == "published" for line in lines)
-    footer = f"\nReal mode: {published} post(s) published to LinkedIn in this run."
+    footer = f"\nReal mode: {published} post(s) published to {name} in this run."
     needs_review = sum(line.outcome == "needs_review" for line in lines)
     if needs_review:
-        footer += f" {needs_review} need review: check LinkedIn, then use the resolve command."
+        footer += f" {needs_review} need review: check {name}, then use the resolve command."
     return footer
 
 

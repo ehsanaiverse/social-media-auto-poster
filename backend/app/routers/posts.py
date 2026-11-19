@@ -1,11 +1,11 @@
-"""``POST /api/posts``: add a post (image + caption) to the LinkedIn incoming folder."""
+"""``POST /api/posts``: add a post (image + caption) to a platform's incoming folder (LinkedIn by default)."""
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from social_media_auto_poster.ingestion.intake import MAX_IMAGE_BYTES, IntakeError
 
-from ..dependencies import get_job_service, require_local_marker
+from ..dependencies import get_job_service, parse_platform, require_local_marker
 from ..services import JobService
 
 router = APIRouter(prefix="/api/posts", tags=["posts"])
@@ -25,9 +25,11 @@ async def create_post(
     name: str = Form(...),
     caption: str = Form(""),
     image: UploadFile = File(...),
+    platform: str | None = Form(None),
     service: JobService = Depends(get_job_service),
 ) -> dict:
     """Add a post. It is checked like a file copied in by hand; nothing is published."""
+    chosen = parse_platform(platform)  # Before the upload is read or anything is written.
     # Read one byte past the limit: a larger upload is refused without being kept in memory.
     data = await image.read(MAX_IMAGE_BYTES + 1)
     if len(data) > MAX_IMAGE_BYTES:
@@ -39,7 +41,8 @@ async def create_post(
     extension = _extension(image.filename or "")
     try:
         return await run_in_threadpool(
-            service.add_post, name=name, image=data, image_extension=extension, caption=caption_bytes
+            service.add_post, name=name, image=data, image_extension=extension, caption=caption_bytes,
+            platform=chosen,
         )
     except IntakeError as error:
         code = INTAKE_STATUS_CODES.get(error.kind, 400)

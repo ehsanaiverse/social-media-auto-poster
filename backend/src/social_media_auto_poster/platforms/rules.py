@@ -42,3 +42,9 @@ RULES: dict[Platform, PostRules] = {
         real_media_problems=_as_list(linkedin_image_problem),
     ),
 }
+
+
+def display_name(platform: Platform) -> str:
+    """How messages name ``platform``: its rules' display name, or its folder name if it has no rules."""
+    rules = RULES.get(platform)
+    return rules.display_name if rules is not None else platform.value

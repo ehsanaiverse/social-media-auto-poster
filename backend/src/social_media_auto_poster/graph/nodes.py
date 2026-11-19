@@ -237,6 +237,7 @@ def move_to_failed(state: JobState, runtime: Runtime[WorkflowContext]) -> Update
             stem=state["stem"],
             status=JobStatus(state["status"]),
             errors=state["errors"],
+            platform=candidate.platform,
         )
     except OSError as error:
         # The files are already safe in failed/; a missing report must not change the outcome.

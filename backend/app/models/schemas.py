@@ -2,8 +2,11 @@
 
 from pydantic import BaseModel
 
-# The text the API requires before a real run starts. Sent by the frontend's confirmation dialog.
-REAL_CONFIRMATION = "publish to LinkedIn"
+# The text the API requires before a real run or schedule starts (sent by the frontend's confirmation dialog).
+# One constant in the core, so the API and the operations can never disagree about it (D49).
+from social_media_auto_poster.operations.common import REAL_CONFIRMATION
+
+__all__ = ["REAL_CONFIRMATION", "ReconfirmRequest", "ResolveRequest", "RunRequest", "ScheduleRequest"]
 
 
 class RunRequest(BaseModel):
@@ -12,6 +15,7 @@ class RunRequest(BaseModel):
     real: bool = False
     publish_simulated: bool = False
     confirm: str | None = None
+    platform: str | None = None  # Default LinkedIn; a platform without an integration is refused with 400.
 
 
 class ResolveRequest(BaseModel):
@@ -29,6 +33,7 @@ class ScheduleRequest(BaseModel):
     publish_at: str
     real: bool = False
     confirm: str | None = None
+    platform: str | None = None  # Default LinkedIn; a platform without an integration is refused with 400.
 
 
 class ReconfirmRequest(BaseModel):
