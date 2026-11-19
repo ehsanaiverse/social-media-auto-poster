@@ -17,7 +17,7 @@ def _png(width: int, height: int) -> bytes:
 
 
 def test_only_linkedin_has_rules():
-    assert set(RULES) == {Platform.LINKEDIN}
+    assert set(RULES) == {Platform.LINKEDIN, Platform.INSTAGRAM}
     assert RULES[Platform.LINKEDIN].platform is Platform.LINKEDIN
     assert RULES[Platform.LINKEDIN].display_name == "LinkedIn"
 

@@ -1,0 +1,36 @@
+{
+  "_about": "Instagram post-rule cases shared by the backend tests (tests/unit/test_instagram_rules.py) and, from step F, the dashboard's own copy of the rules, so both count the same way. A caption is prefix + repeat.text * repeat.times + suffix. An image is a file in tests/fixtures/images; sof_size, if given, replaces the width and height in its SOF segment; sof_components replaces its number of colour components; truncate_at cuts the file after that many bytes. problem names the kind of refusal: aspect, orientation, cmyk, components, zero_size, unreadable, jpeg_only, or null when valid.",
+  "captions": [
+    {"name": "plain", "prefix": "Launch day!", "code_points": 11, "utf16_units": 11, "hashtags": 0, "mentions": 0, "valid": true},
+    {"name": "2,200 characters", "repeat": {"text": "x", "times": 2200}, "code_points": 2200, "utf16_units": 2200, "hashtags": 0, "mentions": 0, "valid": true},
+    {"name": "2,201 characters", "repeat": {"text": "x", "times": 2201}, "code_points": 2201, "utf16_units": 2201, "hashtags": 0, "mentions": 0, "valid": false},
+    {"name": "1,100 emoji (2,200 UTF-16 units)", "repeat": {"text": "😀", "times": 1100}, "code_points": 1100, "utf16_units": 2200, "hashtags": 0, "mentions": 0, "valid": true},
+    {"name": "1,101 emoji (2,202 UTF-16 units)", "repeat": {"text": "😀", "times": 1101}, "code_points": 1101, "utf16_units": 2202, "hashtags": 0, "mentions": 0, "valid": false},
+    {"name": "30 hashtags", "repeat": {"text": "#tag ", "times": 30}, "code_points": 150, "utf16_units": 150, "hashtags": 30, "mentions": 0, "valid": true},
+    {"name": "31 hashtags", "repeat": {"text": "#tag ", "times": 31}, "code_points": 155, "utf16_units": 155, "hashtags": 31, "mentions": 0, "valid": false},
+    {"name": "C# is not a hashtag, C#1 is", "prefix": "C# and C#1", "code_points": 10, "utf16_units": 10, "hashtags": 1, "mentions": 0, "valid": true},
+    {"name": "20 mentions", "repeat": {"text": "@user ", "times": 20}, "code_points": 120, "utf16_units": 120, "hashtags": 0, "mentions": 20, "valid": true},
+    {"name": "21 mentions", "repeat": {"text": "@user ", "times": 21}, "code_points": 126, "utf16_units": 126, "hashtags": 0, "mentions": 21, "valid": false},
+    {"name": "an e-mail address counts as a mention", "prefix": "Write to me@example.com", "code_points": 23, "utf16_units": 23, "hashtags": 0, "mentions": 1, "valid": true}
+  ],
+  "images": [
+    {"name": "7 x 5 baseline", "fixture": "baseline-7x5.jpg", "valid": true, "problem": null},
+    {"name": "9 x 4 is wider than 1.91:1", "fixture": "exif-9x4.jpg", "valid": false, "problem": "aspect"},
+    {"name": "grey 5 x 3", "fixture": "grey-5x3.jpg", "valid": true, "problem": null},
+    {"name": "CMYK", "fixture": "cmyk-6x4.jpg", "valid": false, "problem": "cmyk"},
+    {"name": "PNG", "fixture": "image-6x3.png", "valid": false, "problem": "jpeg_only"},
+    {"name": "orientation 6, 4 x 5 stored (5 x 4 shown): both readings fit", "fixture": "orientation6-portrait-4x5.jpg", "valid": true, "problem": null},
+    {"name": "orientation 6, 10 x 5 stored (5 x 10 shown): neither fits", "fixture": "orientation6-landscape-10x5.jpg", "valid": false, "problem": "aspect"},
+    {"name": "orientation 6, 9 x 5 stored (5 x 9 shown): the readings disagree", "fixture": "orientation6-landscape-10x5.jpg", "sof_size": [9, 5], "valid": false, "problem": "orientation"},
+    {"name": "exactly 4:5", "fixture": "baseline-7x5.jpg", "sof_size": [400, 500], "valid": true, "problem": null},
+    {"name": "one pixel taller than 4:5", "fixture": "baseline-7x5.jpg", "sof_size": [399, 500], "valid": false, "problem": "aspect"},
+    {"name": "exactly 1.91:1", "fixture": "baseline-7x5.jpg", "sof_size": [191, 100], "valid": true, "problem": null},
+    {"name": "one pixel wider than 1.91:1", "fixture": "baseline-7x5.jpg", "sof_size": [192, 100], "valid": false, "problem": "aspect"},
+    {"name": "exactly 1.91:1, large", "fixture": "baseline-7x5.jpg", "sof_size": [1910, 1000], "valid": true, "problem": null},
+    {"name": "one pixel wider than 1.91:1, large", "fixture": "baseline-7x5.jpg", "sof_size": [1911, 1000], "valid": false, "problem": "aspect"},
+    {"name": "2 colour components", "fixture": "baseline-7x5.jpg", "sof_components": 2, "valid": false, "problem": "components"},
+    {"name": "0 colour components", "fixture": "baseline-7x5.jpg", "sof_components": 0, "valid": false, "problem": "components"},
+    {"name": "zero width", "fixture": "baseline-7x5.jpg", "sof_size": [0, 5], "valid": false, "problem": "zero_size"},
+    {"name": "cut before its size", "fixture": "baseline-7x5.jpg", "truncate_at": 20, "valid": false, "problem": "unreadable"}
+  ]
+}

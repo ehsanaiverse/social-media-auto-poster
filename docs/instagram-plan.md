@@ -368,7 +368,15 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
   - Double-post: none (no flow change), but `_publisher_for` is the gate for real mode. The tests `test_a_plain_run_never_asks_for_the_real_publisher` and `test_env_can_never_switch_*` must stay green untouched.
   - Patch seams: a patch could silently stop reaching the code; the guard catches it.
   - Labelling: footer texts are now generated; the existing tests pin them.
-- [ ] Step B: Instagram rules (validation in every mode; Instagram not runnable yet)
+- [x] Step B: Instagram rules (validation in every mode; Instagram not runnable yet)
+
+- **Done (2026-11-19).**
+  - `platforms/image_header.py: jpeg_info` reads the EXIF orientation, the MPF flag and the colour components; `image_size` is unchanged.
+  - `platforms/instagram/rules.py` holds the caption and picture rules, with their source IDs.
+  - `PostRules` gains `media_problems` and `media_read_limit`: validation reads the whole image (up to 8,000,001 bytes) only for a platform that defines them, so LinkedIn still reads 8 bytes.
+  - `UnsupportedPlatform` moved to `platforms/rules.py` (re-exported by `operations/platforms.py`), and `check_schedulable` uses `rules_for`.
+  - Instagram has rules but **no adapter**, so it is still unreachable.
+  - One existing assertion changed, with the developer's approval: `test_platform_rules.py::test_only_linkedin_has_rules` now expects exactly `{LinkedIn, Instagram}`.
 
 - **Files:** `platforms/instagram/__init__.py`, `platforms/instagram/rules.py` (new), `platforms/image_header.py` (EXIF orientation, MPF, components), `platforms/rules.py` (register Instagram), `tests/fixtures/post_rules_cases.json` (new).
 - **Also here (moved from A1):** `PostRules.media_problems` (the all-modes image check; validation reads the whole image only for platforms that define it, so LinkedIn keeps reading 8 bytes) and `rules_for(platform)`, which raises `UnsupportedPlatform` for a platform without rules, where a caller must not silently skip the platform's checks.

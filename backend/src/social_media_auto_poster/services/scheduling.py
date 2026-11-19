@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from social_media_auto_poster.ingestion.validation import validate_candidate
 from social_media_auto_poster.models import PostCandidate, PublishMode, ScheduleStatus
-from social_media_auto_poster.platforms.rules import RULES
+from social_media_auto_poster.platforms.rules import rules_for
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.storage.jobs import JobRepository
 from social_media_auto_poster.storage.schedules import ScheduleRecord, ScheduleRepository
@@ -112,12 +112,12 @@ def check_schedulable(
     ``ignore_schedule_id``: the schedule being re-confirmed). Raises ``ScheduleError``; the caller has
     already checked that both files are stable.
     """
+    rules = rules_for(candidate.platform)  # A platform's checks are never skipped when scheduling.
     errors = validate_candidate(candidate).errors
     if errors:
         raise ScheduleError("invalid", f"'{candidate.stem}' is not valid: {'; '.join(errors)}.")
     try:
-        rules = RULES.get(candidate.platform)
-        if mode is PublishMode.REAL and rules is not None:
+        if mode is PublishMode.REAL:
             problems = rules.real_media_problems(candidate.media_path.read_bytes())
             if problems:
                 raise ScheduleError(

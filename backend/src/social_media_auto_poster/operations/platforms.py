@@ -16,6 +16,9 @@ from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import Platform
 from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.platforms.base import Publisher
+from social_media_auto_poster.platforms.rules import UnsupportedPlatform
+
+__all__ = ["ADAPTERS", "PlatformAdapter", "UnsupportedPlatform", "adapter_for"]
 
 
 class PlatformAdapter(Protocol):
@@ -28,10 +31,6 @@ class PlatformAdapter(Protocol):
     def schedule_warnings(self, settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
         """Token problems a real schedule for ``publish_at`` will meet; reads backend/.env only, no network."""
         ...
-
-
-class UnsupportedPlatform(LookupError):
-    """The platform has folders but no integration (no adapter)."""
 
 
 ADAPTERS: dict[Platform, PlatformAdapter] = {Platform.LINKEDIN: linkedin_ops.ADAPTER}

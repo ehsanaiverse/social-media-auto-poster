@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from social_media_auto_poster.models import Platform, PostCandidate, ValidationResult
-from social_media_auto_poster.platforms.rules import RULES
+from social_media_auto_poster.platforms.rules import RULES, PostRules
 
 JPEG_SIGNATURE = b"\xff\xd8\xff"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -25,10 +25,16 @@ def validate_candidate(candidate: PostCandidate) -> ValidationResult:
     """Validate the media file and the caption file of ``candidate``.
 
     Only the first few bytes of the image are read (a file-signature check,
-    not a full decode); the caption is read up to ``MAX_CAPTION_BYTES``.
+    not a full decode), unless the platform has its own picture rules: then the
+    file is read up to its limit and checked by them (header only, never decoded).
+    The caption is read up to ``MAX_CAPTION_BYTES``.
     """
+    media = _media_errors(candidate.media_path)
+    rules = RULES.get(candidate.platform)
+    if not media and rules is not None and rules.media_problems is not None:
+        media = _platform_media_errors(candidate.media_path, rules)
     errors = [
-        *_media_errors(candidate.media_path),
+        *media,
         *_caption_errors(candidate.caption_path, _caption_rule(candidate.platform)),
     ]
     return ValidationResult(is_valid=not errors, errors=tuple(errors))
@@ -67,6 +73,18 @@ def _media_errors(path: Path) -> list[str]:
     if actual != expected:
         return [f"file is {actual} but named {path.suffix}"]
     return []
+
+
+def _platform_media_errors(path: Path, rules: PostRules) -> list[str]:
+    """The platform's own picture rules, on the file read up to one byte past its limit."""
+    try:
+        with path.open("rb") as f:
+            data = f.read(rules.media_read_limit + 1)
+    except FileNotFoundError:
+        return ["media file not found"]
+    except OSError as error:
+        return [f"media file could not be read: {error.strerror or error}"]
+    return rules.media_problems(data)
 
 
 def _detect_image_type(head: bytes) -> str | None:
