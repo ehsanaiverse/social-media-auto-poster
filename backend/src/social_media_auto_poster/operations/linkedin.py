@@ -13,7 +13,7 @@ from datetime import date, datetime
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.operations import clock
 from social_media_auto_poster.models import Platform
-from social_media_auto_poster.operations.common import LOGGER_NAME, RealPublishingUnavailable
+from social_media_auto_poster.operations.common import REAL_CONFIRMATION, LOGGER_NAME, RealPublishingUnavailable
 from social_media_auto_poster.platforms.base import Publisher
 from social_media_auto_poster.platforms.linkedin.check import run_check
 from social_media_auto_poster.platforms.linkedin.client import LinkedInClient
@@ -95,6 +95,7 @@ class LinkedInAdapter:
     platform = Platform.LINKEDIN
     real_available = True  # Real LinkedIn publishing exists (M4); --real or the typed phrase still decides.
     records_references = False  # LinkedIn has no pre-publish reference (D36).
+    confirmation_phrase = REAL_CONFIRMATION  # "publish to LinkedIn": real mode in the API, LinkedIn only.
 
     def real_publisher(self, settings: Settings) -> Publisher:
         return _real_publisher(settings)

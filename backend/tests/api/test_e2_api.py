@@ -60,7 +60,7 @@ def test_platforms_lists_the_backend_rules(client):
     assert linkedin["rules"]["extensions"] == [".jpeg", ".jpg", ".png"]
 
     assert (instagram["name"], instagram["real_available"], instagram["confirmation_phrase"]) == \
-        ("Instagram", False, None)
+        ("Instagram", True, "publish to Instagram")
     assert instagram["rules"] == {
         "extensions": [".jpeg", ".jpg"], "max_image_bytes": 8_000_000, "max_caption_bytes": 64 * 1024,
         "caption_max_chars": 2200, "caption_max_hashtags": 30, "caption_max_mentions": 20,
@@ -164,13 +164,13 @@ def test_an_uncertain_api_check_changes_nothing(settings, host, faked, checker_g
     assert_read_only(checker_graph)
 
 
-def test_the_api_check_is_refused_while_real_instagram_is_off(settings, host, client):
-    job_id = needs_review_job(settings, host)  # No fake checker: the real one is refused (D49).
+def test_the_api_check_is_refused_without_instagram_credentials(settings, host, client):
+    job_id = needs_review_job(settings, host)  # No fake checker and no credentials in backend\.env.
 
     response = client.post(f"/api/jobs/{job_id[:8]}/resolve", json={"check": True})
 
     assert response.status_code == 400
-    assert "forbidden until D48 is accepted (D49)" in response.json()["detail"]
+    assert "INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID must be set" in response.json()["detail"]
     assert stored(settings, job_id).status is JobStatus.NEEDS_REVIEW
 
 

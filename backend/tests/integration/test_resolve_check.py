@@ -258,14 +258,13 @@ def test_linkedin_has_no_check_and_nothing_changes(settings, capsys):
     assert stored(settings, "li-review-0001") == before
 
 
-def test_without_the_test_fakes_the_instagram_check_is_refused_by_d49(settings, host, capsys):
+def test_without_credentials_the_instagram_check_is_refused(settings, host, capsys):
     job_id = needs_review_job(settings, host)
     before = stored(settings, job_id)
 
     assert check(job_id) == 1
 
-    assert "real Instagram checking is not available: it is forbidden until D48 is accepted (D49)" in \
-        capsys.readouterr().err
+    assert "INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID must be set in backend\\.env" in capsys.readouterr().err
     assert stored(settings, job_id) == before
 
 

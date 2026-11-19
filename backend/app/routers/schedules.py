@@ -12,7 +12,10 @@ from social_media_auto_poster.services.scheduling import ScheduleError
 
 from ..dependencies import get_job_service, parse_platform, require_json, require_real_available
 from ..models import ReconfirmRequest, ScheduleRequest
-from ..models.schemas import REAL_CONFIRMATION
+from social_media_auto_poster.models import Platform
+from social_media_auto_poster.operations.platforms import confirmation_phrase
+
+from ..models.schemas import REAL_CONFIRMATION  # noqa: F401  (kept for older imports)
 from ..services import JobService, ScheduleLookupError
 
 router = APIRouter(prefix="/api/schedules", tags=["schedules"])
@@ -20,12 +23,13 @@ router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 LOCKED = "Another run is in progress; try again later."
 
 
-def _check_real(real: bool, confirm: str | None) -> None:
-    """A real schedule is the per-post confirmation (D46): it needs the typed phrase, every time."""
-    if real and confirm != REAL_CONFIRMATION:
+def _check_real(real: bool, confirm: str | None, platform: Platform) -> None:
+    """A real schedule is the per-post confirmation (D46): it needs that platform's typed phrase, every time."""
+    phrase = confirmation_phrase(platform)
+    if real and confirm != phrase:
         raise HTTPException(
             status_code=400,
-            detail=f'A real schedule needs "confirm": "{REAL_CONFIRMATION}" in the request. Nothing was scheduled.',
+            detail=f'A real schedule needs "confirm": "{phrase}" in the request. Nothing was scheduled.',
         )
 
 
@@ -64,7 +68,7 @@ def create_schedule(body: ScheduleRequest, service: JobService = Depends(get_job
     """Schedule a post in incoming/ for ``publish_at`` (local time). Simulated unless real + the phrase."""
     platform = parse_platform(body.platform)  # Before the run lock or anything else.
     require_real_available(platform, body.real)
-    _check_real(body.real, body.confirm)
+    _check_real(body.real, body.confirm, platform)
     try:
         return service.schedule(name=body.name, publish_at=body.publish_at, real=body.real, platform=platform)
     except ScheduleError as error:
@@ -91,8 +95,9 @@ def reconfirm_schedule(
     schedule_id: str, body: ReconfirmRequest, service: JobService = Depends(get_job_service)
 ) -> dict:
     """Replace a SCHEDULED or INVALID schedule with one for the files as they are now (same time unless given)."""
-    _check_real(body.real, body.confirm)
     try:
+        if body.real:  # The schedule's own platform decides which phrase is needed.
+            _check_real(body.real, body.confirm, service.schedule_platform(schedule_id))
         return service.reconfirm_schedule(schedule_id, publish_at=body.publish_at, real=body.real)
     except ScheduleLookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from None

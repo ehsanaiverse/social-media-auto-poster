@@ -1,11 +1,16 @@
-"""Instagram's adapter, registered in operations/platforms.py for simulated use only (D49).
+"""Instagram's adapter (D48): real publishing through graph.facebook.com and the S3-compatible media host.
 
-Real Instagram is forbidden until D48 is accepted (D49), so ``real_available`` is False and building the
-real publisher is refused, even when called directly, before any setting or token is read. A second
-guard sits in ``platforms/instagram/client.py``: the client refuses any transport except a test one.
+Real mode is still chosen only by ``--real`` (CLI) or the typed phrase ``publish to Instagram`` (API); nothing
+in ``.env`` or any setting selects it. The System User token (``INSTAGRAM_ACCESS_TOKEN``) never expires and is
+never refreshed; it is checked once, read-only, before a real run changes anything. The token and the media
+host's keys come from ``backend/.env`` (real environment variables win) and never appear in output.
+
+Every network object is built through ``_transport()``, so tests replace that one function with a fake.
 """
 
 import os
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
@@ -13,30 +18,34 @@ from dotenv import dotenv_values
 
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import Platform
-from social_media_auto_poster.operations.common import RealPublishingUnavailable, real_forbidden_text
+from social_media_auto_poster.operations.common import RealPublishingUnavailable
 from social_media_auto_poster.platforms.base import Publisher, RemoteChecker
-from social_media_auto_poster.platforms.media_host import MediaHost
-from social_media_auto_poster.platforms.instagram.client import InstagramClient, RealInstagramForbidden
+from social_media_auto_poster.platforms.instagram.client import InstagramClient
+from social_media_auto_poster.platforms.instagram.publisher import InstagramPublisher, json_or_empty
+from social_media_auto_poster.platforms.instagram.remote import InstagramRemoteChecker
+from social_media_auto_poster.platforms.media_host import MediaHost, MediaHostError
+from social_media_auto_poster.platforms.s3_media_host import S3MediaHost, load_s3_config
 
 TOKEN_VAR = "INSTAGRAM_ACCESS_TOKEN"
 USER_ID_VAR = "INSTAGRAM_USER_ID"
-NOT_AVAILABLE = real_forbidden_text(Platform.INSTAGRAM)
-
-CHECK_NOT_AVAILABLE = "real Instagram checking is not available: it is forbidden until D48 is accepted (D49)"
+CONFIRMATION_PHRASE = "publish to Instagram"
+# A tiny JPEG for the media host round trip of instagram-check. It is stored, fetched and deleted, never posted.
+CHECK_IMAGE = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
 
 
 class InstagramAdapter:
-    """Instagram for the platform registry. Simulated only (D49): it never builds a real publisher."""
+    """Instagram in the platform registry. Each method calls this module's function by name, so tests reach it."""
 
     platform = Platform.INSTAGRAM
-    real_available = False
-    records_references = True  # The container ID, before media_publish (D1).
+    real_available = True  # D48; --real or the typed phrase still decides.
+    records_references = True  # The container ID, before media_publish (D1, D50).
+    confirmation_phrase = CONFIRMATION_PHRASE
 
     def real_publisher(self, settings: Settings) -> Publisher:
         return _real_publisher(settings)
 
     def schedule_warnings(self, settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
-        return ()  # No real Instagram schedule can exist yet (D49).
+        return ()  # The System User token never expires (D48).
 
     def remote_checker(self, settings: Settings) -> RemoteChecker:
         return _remote_checker(settings)
@@ -48,30 +57,136 @@ class InstagramAdapter:
 ADAPTER = InstagramAdapter()
 
 
-def _real_publisher(settings: Settings) -> Publisher:
-    """Refused while ``real_available`` is False, before any setting or token is read."""
-    if not InstagramAdapter.real_available:
-        raise RealPublishingUnavailable(NOT_AVAILABLE)
+def _transport() -> httpx.BaseTransport:
+    """The real network, sent once: no retries. Tests replace this function."""
+    return httpx.HTTPTransport(retries=0)
+
+
+def _credentials(settings: Settings) -> tuple[str, str]:
     values = {**dotenv_values(settings.base_dir / ".env"), **os.environ}  # Real environment variables win.
     token, user_id = (values.get(TOKEN_VAR) or "").strip(), (values.get(USER_ID_VAR) or "").strip()
     if not token or not user_id:
         raise RealPublishingUnavailable(f"{TOKEN_VAR} and {USER_ID_VAR} must be set in backend\\.env")
+    if not user_id.isdigit():
+        raise RealPublishingUnavailable(f"{USER_ID_VAR} must be the Instagram account's numeric ID")
+    return token, user_id
+
+
+def _client(settings: Settings) -> InstagramClient:
+    token, user_id = _credentials(settings)
+    return InstagramClient(token, user_id=user_id, transport=_transport())
+
+
+def _account(client: InstagramClient) -> tuple[str, str]:
+    """(id, username) of the configured account, read-only. Raises RealPublishingUnavailable if refused."""
     try:
-        InstagramClient(token, user_id=user_id, transport=httpx.HTTPTransport(retries=0))
-    except (RealInstagramForbidden, ValueError) as error:
-        raise RealPublishingUnavailable(str(error)) from None
-    raise RealPublishingUnavailable(NOT_AVAILABLE)  # No media host exists yet (future, D48).
-
-
-def _remote_checker(settings: Settings) -> RemoteChecker:
-    """The real container-status checker. Refused while real Instagram is forbidden (D49); tests replace this."""
-    if not InstagramAdapter.real_available:
-        raise RealPublishingUnavailable(CHECK_NOT_AVAILABLE)
-    raise RealPublishingUnavailable(NOT_AVAILABLE)  # No real client can exist yet (test transport only).
+        response = client.account()
+    except httpx.HTTPError as error:
+        raise RealPublishingUnavailable(f"Instagram could not be reached ({type(error).__name__})") from None
+    if response.status_code != 200:
+        raise RealPublishingUnavailable(f"Instagram refused the token or the account ID (HTTP {response.status_code})")
+    data = json_or_empty(response)
+    return str(data.get("id", "")), str(data.get("username", ""))
 
 
 def _media_host(settings: Settings) -> MediaHost:
-    """The real media host. Refused while real Instagram is forbidden (D49); none exists yet (D48)."""
-    if not InstagramAdapter.real_available:
-        raise RealPublishingUnavailable(NOT_AVAILABLE)
-    raise RealPublishingUnavailable("no media host is configured yet (D48); nothing was published")
+    try:
+        return S3MediaHost(load_s3_config(settings.base_dir), transport=_transport())
+    except MediaHostError as error:
+        raise RealPublishingUnavailable(str(error)) from None
+
+
+def _real_publisher(settings: Settings) -> Publisher:
+    """The real publisher, after a read-only token check (as D40 does for LinkedIn)."""
+    client = _client(settings)
+    try:
+        _account(client)
+        host = _media_host(settings)
+    except RealPublishingUnavailable:
+        client.close()
+        raise
+    return InstagramPublisher(client, host)
+
+
+def _remote_checker(settings: Settings) -> RemoteChecker:
+    """The read-only container-status checker for ``resolve --check`` (D3)."""
+    return InstagramRemoteChecker(_client(settings))
+
+
+@dataclass(frozen=True)
+class InstagramCheck:
+    ok: bool
+    lines: tuple[str, ...]
+
+
+def instagram_check(settings: Settings) -> InstagramCheck:
+    """``instagram-check``: the account, the quota and a media host round trip. Read-only on Instagram: never a
+    container, never media_publish. Prints no token, key, signature or URL."""
+    lines: list[str] = []
+    ok = True
+    try:
+        client = _client(settings)
+    except RealPublishingUnavailable as error:
+        return InstagramCheck(False, (f"  PROBLEM  {error}",))
+    try:
+        try:
+            account_id, username = _account(client)
+            lines.append(f"  OK       account {username or '(no username)'} (ID {account_id})")
+        except RealPublishingUnavailable as error:
+            return InstagramCheck(False, (f"  PROBLEM  {error}",))
+        lines.append(_quota_line(client))
+        ok = not lines[-1].startswith("  PROBLEM")
+    finally:
+        client.close()
+    host_line = _media_round_trip(settings)
+    lines.append(host_line)
+    return InstagramCheck(ok and host_line.startswith("  OK"), tuple(lines))
+
+
+def _quota_line(client: InstagramClient) -> str:
+    try:
+        response = client.publishing_limit()
+    except httpx.HTTPError as error:
+        return f"  PROBLEM  the publishing quota could not be read ({type(error).__name__})"
+    entries = json_or_empty(response).get("data") if response.status_code == 200 else None
+    entry = entries[0] if isinstance(entries, list) and entries and isinstance(entries[0], dict) else {}
+    usage, config = entry.get("quota_usage"), entry.get("config")
+    total = config.get("quota_total") if isinstance(config, dict) else None
+    if not isinstance(usage, int) or not isinstance(total, int):
+        return f"  PROBLEM  the publishing quota could not be read (HTTP {response.status_code})"
+    return f"  OK       publishing quota: {usage} of {total} posts used in the last 24 hours"
+
+
+def _media_round_trip(settings: Settings) -> str:
+    """Put a tiny picture, fetch it through its presigned URL as Meta would, then delete it."""
+    try:
+        host = S3MediaHost(load_s3_config(settings.base_dir), transport=_transport())
+    except MediaHostError as error:
+        return f"  PROBLEM  {error}"
+    key = f"ig-tmp/check-{uuid.uuid4().hex}.jpg"
+    result = "  PROBLEM  media host: the round trip did not finish"
+    try:
+        result = _put_and_fetch(host, key)
+    finally:
+        try:
+            host.delete(key)
+        except MediaHostError as error:
+            if result.startswith("  OK"):
+                result = f"  PROBLEM  media host: the test picture could not be deleted ({error})"
+        host.close()
+    return result
+
+
+def _put_and_fetch(host: S3MediaHost, key: str) -> str:
+    try:
+        host.put(key, CHECK_IMAGE, content_type="image/jpeg")
+        try:
+            with httpx.Client(transport=_transport(), timeout=30.0, follow_redirects=False) as anonymous:
+                fetched = anonymous.get(host.url(key))  # No credentials: only the URL's own signature.
+        except httpx.HTTPError as error:
+            return f"  PROBLEM  the picture could not be fetched through its presigned URL ({type(error).__name__})"
+        if fetched.status_code != 200 or fetched.content != CHECK_IMAGE:
+            return f"  PROBLEM  the presigned URL did not return the picture (HTTP {fetched.status_code})"
+        return "  OK       media host: upload, fetch by presigned URL, and delete worked"
+    except MediaHostError as error:
+        return f"  PROBLEM  media host: {error}"

@@ -375,7 +375,7 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
   - `platforms/instagram/client.py`: base URL `graph.facebook.com` (and its host allow-list), with the Graph API version in one constant.
   - Credentials: the System User token with no expiry and no refresh, and `INSTAGRAM_USER_ID` required.
   - The adapter's confirmation phrase becomes `publish to Instagram`; the API and the dashboard take it from `GET /api/platforms`.
-  - Wiring the media host into the real publisher, and `instagram-check`. The host itself is built: `platforms/s3_media_host.py` and `platforms/sigv4.py`, tested against AWS's SigV4 test vectors with `httpx.MockTransport`; nothing uses it yet.
+  - **Done in step R1 (2026-11-19):** the media host is wired into the real publisher, `instagram-check` exists, the client uses `graph.facebook.com`, each adapter has its own phrase, and the D49 guards are lifted. The host itself: `platforms/s3_media_host.py` and `platforms/sigv4.py`, tested against AWS's SigV4 test vectors with `httpx.MockTransport`; nothing uses it yet.
   - The **D49 guards** (`real_available = False`, the test-transport-only client, the refused remote checker and media host) are lifted **only in that step**, with its own tests and a first supervised real post. Until then D49 holds and real Instagram stays refused in code.
 - **Why:**
   - The spike showed the Unified-login token works only on `graph.facebook.com`, and that a Development-mode app's post is public, which removes the draft's biggest open question.
@@ -392,6 +392,7 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
 
 - **Decision:**
   - **Scope.** Instagram may be implemented in **simulated mode only**, following `docs/instagram-plan.md` (steps A–F). This amends the `CLAUDE.md` rule that Instagram had folders only. Facebook still has folders only.
+  - **Superseded by D48 (step R1, 2026-11-19):** the real-Instagram refusals below were lifted when D48 was built; the rest of D49 (scheduled runs across platforms, the validation defaults, step A) still holds.
   - **Still blocked until D48 is accepted:** real Instagram publishing, real media hosting (R2 or S3), and any new dependency. D48 is still a draft (`docs/instagram-api-notes.md`, section 13); it is not recorded here until it is accepted.
   - **Refused in code, and tested.** Any real Instagram run or schedule (`run --real --platform instagram`, `schedule`/`reconfirm --real --platform instagram`, and the API's real run and schedule endpoints with Instagram) is refused before anything changes: CLI exit 1, API 400. Tests prove each refusal and that nothing was written, uploaded or sent.
   - **The Instagram publisher is built against fakes before the spike** (plan step C): the outcome mapping of plan section 7 (no stored container ID → `FAILED`; container `PUBLISHED` → `PUBLISHED`; `FINISHED`, `IN_PROGRESS` or unreadable after a lost publish → `NEEDS_REVIEW`; `media_publish` called at most once and never retried) is tested with a fake Graph API and an in-memory media host. No real run can reach it.

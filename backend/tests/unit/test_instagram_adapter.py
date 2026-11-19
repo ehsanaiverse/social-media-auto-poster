@@ -1,6 +1,4 @@
-"""Instagram's adapter (step C): real Instagram is refused even when called directly, and Instagram stays unregistered."""
-
-import re
+"""Instagram's adapter (D48): real publishing is available, chosen only by --real or Instagram's own phrase."""
 
 import pytest
 
@@ -9,31 +7,30 @@ from social_media_auto_poster.models import Platform
 from social_media_auto_poster.operations import instagram as instagram_ops
 from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.operations.common import RealPublishingUnavailable
-from social_media_auto_poster.operations.platforms import ADAPTERS, adapter_for
-
-D49_REFUSAL = re.escape("forbidden until D48 is accepted (D49)")
+from social_media_auto_poster.operations.platforms import ADAPTERS, adapter_for, confirmation_phrase
 
 
-def test_only_linkedin_may_publish_for_real():
+def test_both_platforms_may_publish_for_real():
     assert linkedin_ops.ADAPTER.real_available is True
-    assert instagram_ops.ADAPTER.real_available is False
+    assert instagram_ops.ADAPTER.real_available is True
 
 
-def test_instagram_is_still_not_registered():
+def test_instagram_is_registered_with_its_own_phrase():
     assert ADAPTERS[Platform.INSTAGRAM] is instagram_ops.ADAPTER
-    assert adapter_for(Platform.INSTAGRAM).real_available is False
+    assert confirmation_phrase(Platform.INSTAGRAM) == "publish to Instagram"
+    assert confirmation_phrase(Platform.LINKEDIN) == "publish to LinkedIn"
+    assert adapter_for(Platform.INSTAGRAM).records_references is True
 
 
-def test_building_a_real_instagram_publisher_is_refused():
-    with pytest.raises(RealPublishingUnavailable, match=D49_REFUSAL):
+def test_without_credentials_no_real_publisher_is_built():
+    with pytest.raises(RealPublishingUnavailable, match="INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID must be set"):
         instagram_ops.ADAPTER.real_publisher(load_settings())
 
 
-def test_the_refusal_comes_before_any_setting_or_token_is_read(monkeypatch, tmp_path):
-    # Even with a token and a user ID available, the refusal is the D49 one, not a credentials problem.
+def test_the_user_id_must_be_numeric_and_the_token_is_never_shown(monkeypatch):
     monkeypatch.setenv(instagram_ops.TOKEN_VAR, "IG-REAL-LOOKING-TOKEN")
-    monkeypatch.setenv(instagram_ops.USER_ID_VAR, "17841400000000001")
-    with pytest.raises(RealPublishingUnavailable, match=D49_REFUSAL) as refused:
+    monkeypatch.setenv(instagram_ops.USER_ID_VAR, "me")
+    with pytest.raises(RealPublishingUnavailable, match="numeric ID") as refused:
         instagram_ops._real_publisher(load_settings())
     assert "IG-REAL-LOOKING-TOKEN" not in str(refused.value)
 

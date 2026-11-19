@@ -28,6 +28,7 @@ from social_media_auto_poster.operations.common import (
     outside_warning,
 )
 from social_media_auto_poster.operations.logs import logging_to
+from social_media_auto_poster.operations import instagram as instagram_ops
 from social_media_auto_poster.operations.platforms import UnsupportedPlatform, adapter_for, real_unavailable_text
 from social_media_auto_poster.operations.resolve import ResolveError, check_job, resolve_job
 from social_media_auto_poster.operations.run import run_once
@@ -351,6 +352,16 @@ def _run(args: argparse.Namespace) -> int:
 def _mode(args: argparse.Namespace) -> PublishMode:
     """Real only when --real was given on this command line (D36)."""
     return PublishMode.REAL if args.real else PublishMode.SIMULATED
+
+
+def _instagram_check(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    print("Instagram check (nothing is ever published)")
+    with logging_to(verbose=False, log_file=None):
+        report = instagram_ops.instagram_check(settings)
+    print("\n".join(report.lines))
+    print("\nReady for run --real --platform instagram." if report.ok else "\nNot ready for real Instagram: fix the problems above.")
+    return EXIT_OK if report.ok else EXIT_SETUP_ERROR
 
 
 def _linkedin_check(args: argparse.Namespace) -> int:

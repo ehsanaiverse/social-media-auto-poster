@@ -265,6 +265,10 @@ class JobService:
             "warnings": self._texts(result.warnings),
         }
 
+    def schedule_platform(self, schedule_id: str) -> Platform:
+        """The platform of a schedule, read-only. Raises ScheduleLookupError for an unknown ID."""
+        return self._find_schedule(schedule_id).platform
+
     def _find_schedule(self, schedule_id: str) -> ScheduleRecord:
         record = schedules_ops.find_schedule(self._settings, schedule_id.strip().lower())
         if record is None:
@@ -366,7 +370,7 @@ def _platform_to_dict(platform: Platform, real_available: bool) -> dict:
         "id": platform.value.casefold(),
         "name": display_name(platform),
         "real_available": real_available,
-        "confirmation_phrase": REAL_CONFIRMATION if real_available else None,
+        "confirmation_phrase": ADAPTERS[platform].confirmation_phrase if real_available else None,
         "rules": rules,
     }
 

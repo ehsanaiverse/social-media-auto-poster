@@ -71,10 +71,10 @@ def _post(tmp_path: Path, platform: Platform, media: bytes, *, suffix=".jpg", ca
 # The registry
 
 
-def test_instagram_has_rules_but_still_no_adapter():
+def test_instagram_has_rules_and_a_real_adapter():
     assert RULES[Platform.INSTAGRAM].display_name == "Instagram"
     assert rules_for(Platform.INSTAGRAM) is RULES[Platform.INSTAGRAM]
-    assert operations_platforms.adapter_for(Platform.INSTAGRAM).real_available is False
+    assert operations_platforms.adapter_for(Platform.INSTAGRAM).real_available is True  # D48
 
 
 def test_rules_for_refuses_a_platform_without_rules():

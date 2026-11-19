@@ -33,7 +33,7 @@ from social_media_auto_poster.storage.schedules import ScheduleRepository
 JPEG = (Path(__file__).resolve().parents[1] / "fixtures" / "images" / "baseline-7x5.jpg").read_bytes()
 SCHEDULED_AT = datetime(2026, 11, 17, 7, 0, tzinfo=UTC)
 DUE = datetime(2026, 12, 1, 4, 0, tzinfo=UTC)  # "2026-12-01 09:00" in Karachi.
-D49 = "real Instagram publishing is not available: it is forbidden until D48 is accepted (D49)"
+D49 = "INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID must be set in backend\\.env"  # D48: without credentials in backend\.env, real Instagram is refused.
 
 
 class FakePublisher:
@@ -172,7 +172,7 @@ def test_a_refused_platform_is_skipped_and_the_others_go_on_with_exit_3(settings
     assert jobs(settings) == [("LinkedIn", "li-post", "real", "PUBLISHED")]
     assert "SKIPPED (1) - platforms refused this run; their schedules are unchanged" in out
     assert D49 in out
-    assert any("Platform skipped by the scheduled run: platform=Instagram reason=real_unavailable" in r.message
+    assert any("Platform skipped by the scheduled run: platform=Instagram reason=token" in r.message
                for r in caplog.records)
 
 
@@ -213,34 +213,32 @@ def test_when_every_platform_with_something_due_is_refused_nothing_changes_and_t
     assert set(states(settings).values()) == {"SCHEDULED"} and jobs(settings) == []
 
 
-# Real Instagram is refused everywhere
+# Real Instagram without credentials (D48)
 
 
-def test_a_real_instagram_run_is_refused_before_anything_changes(settings, linkedin):
+def test_a_real_instagram_run_without_credentials_is_refused(settings, linkedin):
     add_post(settings, Platform.INSTAGRAM, "launch")
 
     report = run_once(settings, PublishMode.REAL, interval_s=0, platform=Platform.INSTAGRAM)
 
-    assert report.exit_code == 1 and report.refusal.kind == "real_unavailable" and D49 in report.refusal.text
-    assert not settings.app_db_path.exists() and linkedin.published == []
+    assert report.exit_code == 1 and report.refusal.kind == "token" and D49 in report.refusal.text
+    # As for LinkedIn, the token check comes after the job database is opened; nothing is published or moved.
+    assert linkedin.published == [] and (settings.incoming_dir(Platform.INSTAGRAM) / "launch.jpg").is_file()
 
 
-def test_a_real_instagram_schedule_is_refused_and_nothing_is_written(settings):
+def test_a_real_instagram_schedule_is_accepted_as_a_real_one(settings):
     add_post(settings, Platform.INSTAGRAM, "launch")
 
-    with pytest.raises(ScheduleError) as refused:
-        schedule(settings, Platform.INSTAGRAM, "launch", real=True)
+    schedule(settings, Platform.INSTAGRAM, "launch", real=True)  # D48: --real is the confirmation (D46).
 
-    assert refused.value.kind == "real_unavailable" and D49 in refused.value.message
-    assert not settings.app_db_path.exists() and not settings.lock_file.exists()
-
-
-def test_a_real_reconfirmation_of_an_instagram_schedule_is_refused(settings):
-    add_post(settings, Platform.INSTAGRAM, "launch")
-    schedule(settings, Platform.INSTAGRAM, "launch")  # Simulated: allowed.
-
-    with pytest.raises(ScheduleError) as refused:
-        reconfirm_post(settings, "launch", real=True, interval_s=0, platform=Platform.INSTAGRAM)
-
-    assert refused.value.kind == "real_unavailable"
     assert states(settings) == {("Instagram", "launch"): "SCHEDULED"}
+
+
+def test_a_real_reconfirmation_of_an_instagram_schedule_replaces_it(settings):
+    add_post(settings, Platform.INSTAGRAM, "launch")
+    schedule(settings, Platform.INSTAGRAM, "launch")  # Simulated first.
+
+    reconfirm_post(settings, "launch", real=True, interval_s=0, platform=Platform.INSTAGRAM)
+
+    assert states(settings) == {("Instagram", "launch"): "SCHEDULED"}
+    assert ScheduleError  # Still imported by this file's other tests.

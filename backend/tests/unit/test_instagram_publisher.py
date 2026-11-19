@@ -15,7 +15,7 @@ from instagram_fake import CONTAINER_ID, MEDIA_ID, TOKEN, USER_ID, FakeGraph, gr
 from media_host_fake import InMemoryMediaHost
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PostContent
 from social_media_auto_poster.platforms.base import PublishOutcomeUnknown
-from social_media_auto_poster.platforms.instagram.client import InstagramClient, RealInstagramForbidden
+from social_media_auto_poster.platforms.instagram.client import GRAPH_HOST, InstagramClient
 from social_media_auto_poster.platforms.instagram.publisher import POLL_ATTEMPTS, POLL_INTERVAL_S, InstagramPublisher
 
 JPEG = (Path(__file__).resolve().parents[1] / "fixtures" / "images" / "baseline-7x5.jpg").read_bytes()
@@ -346,9 +346,9 @@ def test_an_uncertain_outcome_logged_with_its_traceback_keeps_the_token_out(capl
 # The client
 
 
-def test_the_client_refuses_a_real_transport():
-    with pytest.raises(RealInstagramForbidden, match="forbidden until D48 is accepted"):
-        InstagramClient(TOKEN, user_id=USER_ID, transport=httpx.HTTPTransport(retries=0))
+def test_the_client_talks_only_to_graph_facebook_com():
+    assert GRAPH_HOST == "https://graph.facebook.com"  # D48: the System User token works here only.
+    InstagramClient(TOKEN, user_id=USER_ID, transport=httpx.HTTPTransport(retries=0)).close()  # Allowed now.
 
 
 def test_the_client_hides_the_token_and_only_takes_numeric_ids():

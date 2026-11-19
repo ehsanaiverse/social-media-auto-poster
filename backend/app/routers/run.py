@@ -8,7 +8,9 @@ from social_media_auto_poster.services.run_lock import RunLockHeldError
 
 from ..dependencies import get_job_service, parse_platform, require_json, require_real_available
 from ..models import RunRequest
-from ..models.schemas import REAL_CONFIRMATION
+from social_media_auto_poster.operations.platforms import confirmation_phrase
+
+from ..models.schemas import REAL_CONFIRMATION  # noqa: F401  (kept for older imports)
 from ..services import JobService, run_to_dict
 
 logger = logging.getLogger(__name__)
@@ -26,10 +28,11 @@ def run(body: RunRequest, service: JobService = Depends(get_job_service)) -> dic
     require_real_available(platform, body.real)
     if body.publish_simulated and not body.real:
         raise HTTPException(status_code=400, detail="publish_simulated only applies together with real: true.")
-    if body.real and body.confirm != REAL_CONFIRMATION:
+    phrase = confirmation_phrase(platform)  # Only this platform's phrase: another's never enables real mode here.
+    if body.real and body.confirm != phrase:
         raise HTTPException(
             status_code=400,
-            detail=f'A real run needs "confirm": "{REAL_CONFIRMATION}" in the request. Nothing was published.',
+            detail=f'A real run needs "confirm": "{phrase}" in the request. Nothing was published.',
         )
     try:
         report = service.run(real=body.real, publish_simulated=body.publish_simulated, platform=platform)

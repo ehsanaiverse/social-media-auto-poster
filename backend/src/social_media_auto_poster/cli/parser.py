@@ -5,6 +5,7 @@ from pathlib import Path
 
 from social_media_auto_poster.cli.commands import (
     _jobs,
+    _instagram_check,
     _linkedin_check,
     _reconfirm,
     _resolve,
@@ -203,6 +204,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Also upload a generated test image (no post) and read its processing status.",
     )
     check.set_defaults(handler=_linkedin_check)
+
+    ig_check = commands.add_parser(
+        "instagram-check",
+        help="Check the Instagram token, account, quota and media host. Never publishes.",
+        description=(
+            "Read the configured Instagram account (id, username) and its publishing quota, then store a tiny "
+            "test picture on the media host, fetch it through its presigned URL and delete it. Never creates a "
+            "container and never publishes. No token, key or URL is printed."
+        ),
+    )
+    ig_check.set_defaults(handler=_instagram_check)
 
     schedule = commands.add_parser(
         "schedule",

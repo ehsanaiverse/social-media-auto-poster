@@ -15,7 +15,7 @@ from social_media_auto_poster.config import Settings, ensure_data_dirs
 from social_media_auto_poster.models import Platform
 
 JPEG = (Path(__file__).resolve().parents[1] / "fixtures" / "images" / "baseline-7x5.jpg").read_bytes()
-D49 = "real Instagram publishing is not available: it is forbidden until D48 is accepted (D49)"
+D49 = "INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID must be set in backend\\.env"  # D48: real Instagram needs its credentials in backend\.env.
 
 
 @pytest.fixture
@@ -72,17 +72,14 @@ def test_schedule_unschedule_and_schedules_for_instagram(settings, capsys):
 # Real Instagram and Facebook are refused
 
 
-@pytest.mark.parametrize("command", [
-    ("run", "--real"), ("run", "--real", "--scheduled"), ("scan", "--real"),
-    ("schedule", "launch", "--at", "2099-12-01 09:00", "--real"), ("reconfirm", "launch", "--real"),
-])
-def test_real_instagram_is_refused_before_anything_is_written(settings, capsys, command):
+def test_a_real_instagram_run_without_credentials_publishes_nothing(settings, capsys):
     add_post(settings, Platform.INSTAGRAM)
 
-    assert main(*command, "--platform", "instagram", "--interval", "0") == 1
+    assert main("run", "--real", "--platform", "instagram", "--interval", "0") == 1
 
-    assert D49 in capsys.readouterr().err
-    assert nothing_written(settings)
+    captured = capsys.readouterr()
+    assert D49 in captured.out + captured.err
+    assert (settings.incoming_dir(Platform.INSTAGRAM) / "launch.jpg").is_file()
 
 
 @pytest.mark.parametrize("command", [

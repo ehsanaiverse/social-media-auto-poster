@@ -1,37 +1,29 @@
-"""HTTP calls to the Instagram API with Instagram Login. One method per call; no decisions, no retries.
+"""HTTP calls to the Instagram Graph API on graph.facebook.com (D48). One method per call; no decisions, no retries.
 
 Facts and sources: docs/instagram-api-notes.md (source IDs in the comments). The publisher
 (publisher.py) and the remote checker (remote.py) decide what each answer means.
 
 The access token is only ever sent in the ``Authorization: Bearer`` header (the content-publishing
-guide's own examples do this, S12), only to ``graph.instagram.com`` over HTTPS. It is never part of
+guide's own examples do this, S12), only to ``graph.facebook.com`` over HTTPS (the base URL is fixed, redirects are never followed). It is never part of
 a URL, a log line, an exception message, or this object's repr.
 
-**Real network access is forbidden until D48 is accepted (D49).** The client therefore accepts only
-``httpx.MockTransport`` (tests); any other transport is refused before a connection can exist.
+The token is a System User token (D48): it works on graph.facebook.com, never expires and is never refreshed.
+Callers pass a transport without retries (``operations/instagram.py: _transport``); tests pass a fake.
 """
 
 from typing import Any
 
 import httpx
 
-GRAPH_HOST = "https://graph.instagram.com"  # Instagram Login host (S1, S12, S13).
+GRAPH_HOST = "https://graph.facebook.com"  # The System User token works here only (D48 spike).
 # The Graph API version in every path. v27.0 is the latest on 2026-11-19 (S23); keep it in this one constant.
 API_VERSION = "v27.0"
 TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
 REDACTED = "[redacted]"  # Replaces the access token wherever it could appear in a text.
 
 
-class RealInstagramForbidden(RuntimeError):
-    """A real (non-test) transport was given: real Instagram is forbidden until D48 is accepted (D49)."""
-
-
 class InstagramClient:
     def __init__(self, access_token: str, *, user_id: str, transport: httpx.BaseTransport):
-        if not isinstance(transport, httpx.MockTransport):
-            raise RealInstagramForbidden(
-                "real Instagram network access is forbidden until D48 is accepted (D49); only a test transport is allowed"
-            )
         if not user_id.isdigit():
             raise ValueError("the Instagram user ID must be digits only")
         self._token = access_token  # Only for redact(); never shown (see __repr__).
@@ -41,7 +33,7 @@ class InstagramClient:
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=TIMEOUT,
             follow_redirects=False,
-            transport=transport,  # A MockTransport: never retries, never reaches a network.
+            transport=transport,  # Built without retries: a request is sent at most once.
         )
 
     def __repr__(self) -> str:
@@ -53,6 +45,10 @@ class InstagramClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def account(self) -> httpx.Response:
+        """The configured account's ``id`` and ``username`` (read-only). ``me`` is not the account with this token."""
+        return self._client.get(f"/{self._user_id}", params={"fields": "id,username"})
 
     def publishing_limit(self) -> httpx.Response:
         """The account's publishing quota: ``quota_usage`` and ``config`` (``quota_total``, S15)."""

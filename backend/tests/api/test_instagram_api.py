@@ -61,7 +61,7 @@ def test_a_simulated_instagram_schedule_is_accepted(settings, client):
 
 
 @pytest.mark.parametrize("request_kind", ["run", "schedule"])
-def test_real_instagram_is_a_400_before_anything_happens(settings, client, request_kind):
+def test_linkedins_phrase_never_enables_real_instagram(settings, client, request_kind):
     assert _upload(client).status_code == 201
     body = {"platform": "instagram", "real": True, "confirm": common.REAL_CONFIRMATION}
     if request_kind == "run":
@@ -69,11 +69,14 @@ def test_real_instagram_is_a_400_before_anything_happens(settings, client, reque
     else:
         response = client.post("/api/schedules", json={**body, "name": "launch", "publish_at": _tomorrow(settings)})
 
-    assert response.status_code == 400 and response.json()["detail"] == REFUSED
+    noun, done = ("run", "published") if request_kind == "run" else ("schedule", "scheduled")
+    assert response.status_code == 400 and response.json()["detail"] == (
+        f'A real {noun} needs "confirm": "publish to Instagram" in the request. Nothing was {done}.')
+    assert REFUSED  # The D49 text, kept for reference: real Instagram is no longer refused as such (D48).
     assert not settings.app_db_path.exists() and not settings.lock_file.exists()
 
 
-def test_a_real_reconfirmation_of_an_instagram_schedule_is_a_400(settings, client):
+def test_a_real_instagram_reconfirmation_needs_instagrams_phrase(settings, client):
     assert _upload(client).status_code == 201
     created = client.post("/api/schedules", json={"name": "launch", "publish_at": _tomorrow(settings),
                                                   "platform": "instagram"}).json()
@@ -82,7 +85,7 @@ def test_a_real_reconfirmation_of_an_instagram_schedule_is_a_400(settings, clien
     response = client.post(f"/api/schedules/{schedule_id}/reconfirm",
                            json={"real": True, "confirm": common.REAL_CONFIRMATION})
 
-    assert response.status_code == 400 and "forbidden until D48 is accepted (D49)" in response.json()["detail"]
+    assert response.status_code == 400 and '"publish to Instagram"' in response.json()["detail"]
     schedules = client.get("/api/schedules").json()["schedules"]
     assert [(s["schedule_id"], s["mode"], s["status"]) for s in schedules] == [(schedule_id, "simulated", "SCHEDULED")]
 

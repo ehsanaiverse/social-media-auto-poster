@@ -28,6 +28,7 @@ class PlatformAdapter(Protocol):
     platform: Platform
     real_available: bool  # Whether a real publisher may be built at all (Instagram: False until D48, D49).
     records_references: bool  # Its publisher records a reference before publishing (Instagram, D1).
+    confirmation_phrase: str  # Typed in the API to publish for real to this platform, and only to it (D48).
 
     def real_publisher(self, settings: Settings) -> Publisher:
         """The platform's real publisher, after its token check. Raises RealPublishingUnavailable (D40)."""
@@ -58,6 +59,11 @@ def adapter_for(platform: Platform) -> PlatformAdapter:
         return ADAPTERS[platform]
     except KeyError:
         raise UnsupportedPlatform(f"{platform} is not supported: it has folders but no integration") from None
+
+
+def confirmation_phrase(platform: Platform) -> str:
+    """The phrase the API needs for a real run or schedule on ``platform``; one platform's never works on another."""
+    return adapter_for(platform).confirmation_phrase
 
 
 def real_unavailable_text(platform: Platform) -> str | None:

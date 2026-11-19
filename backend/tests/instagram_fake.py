@@ -70,7 +70,7 @@ class FakeGraph:
 
 
 def _operation(request: httpx.Request) -> str:
-    assert request.url.host == "graph.instagram.com", request.url
+    assert request.url.host == "graph.facebook.com", request.url  # D48: the System User token works here only.
     parts = request.url.path.strip("/").split("/")  # ["v27.0", <id>, <edge>?]
     assert parts[0] == "v27.0", request.url.path
     if request.method == "GET" and parts[1:] == [USER_ID, "content_publishing_limit"]:
