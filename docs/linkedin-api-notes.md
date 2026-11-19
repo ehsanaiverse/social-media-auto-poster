@@ -6,10 +6,10 @@ Scope: posting **one image with a caption** to the **developer's own personal pr
 
 ## Access: LinkedIn products and scopes
 
-| Need | LinkedIn product | Scope | Access |
-| --- | --- | --- | --- |
-| Create posts as the member | Share on LinkedIn | `w_member_social` | Added from the app's Products tab in the Developer Portal; no approval step described |
-| Find the member's ID (author URN) | Sign In with LinkedIn using OpenID Connect | `openid profile` | Same: requested from the Products tab |
+| Need                              | LinkedIn product                           | Scope               | Access                                                                                |
+| --------------------------------- | ------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------- |
+| Create posts as the member        | Share on LinkedIn                          | `w_member_social` | Added from the app's Products tab in the Developer Portal; no approval step described |
+| Find the member's ID (author URN) | Sign In with LinkedIn using OpenID Connect | `openid profile`  | Same: requested from the Products tab                                                 |
 
 - `w_member_social` is **write-only**: "tokens with only `w_member_social` permissions would be unable to perform a GET call for rest/images" on the versioned API (Images API page). The same page adds that `w_member_social` "is sufficient to make legacy GET calls to rest/images". Whether image status can be read is verified by `linkedin-check` before the first real post (D36).
 - Listing a member's own posts needs `r_member_social`, which is "**restricted** and is available to **approved users only**" (Posts API page). So the app **cannot check** whether an uncertain publish went live: such jobs stay `NEEDS_REVIEW` until the developer checks LinkedIn and runs `resolve`.

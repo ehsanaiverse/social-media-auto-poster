@@ -486,11 +486,6 @@ Split into E1 (CLI) and E2 (API: `GET /api/platforms`, `POST /api/posts/check`, 
   - After `resolve --check` → PUBLISHED, the old `failed/` folder is removed if it holds only this job's marker and error report; otherwise it is left and the output says so.
   - The lock exit code was already 4 everywhere.
   - `instagram-check` is not added: future work, once real Instagram exists.
-- [x] **E2 done (2026-11-19).**
-  - `GET /api/platforms`: `id`, `name`, `real_available`, `confirmation_phrase` (null while real is off), and `rules` built from the backend's own constants.
-  - `POST /api/posts/check` (form: `caption`, `image`, optional `name`, `platform`): `ingestion/validation.py: validate_content` runs the same checks as a file in `incoming/`, on the bytes in memory, and writes nothing. A caption that cannot be encoded (a lone surrogate) → 400 "The caption is not valid text."
-  - `POST /api/jobs/{id}/resolve` with `{"check": true}`: the same `check_job` as the CLI, read-only. Its response includes `changed` (false when still uncertain). Real Instagram checking is refused → 400 (D49). Combined with another answer → 400.
-  - Every existing request is unchanged. The dashboard still uses its own copy of the rules; switching it to `/api/platforms` is step F.
 
 - **Files:** `cli/parser.py` (`--platform`, `resolve --check`, help texts), `cli/commands.py`, `cli/output.py` (platform column only when needed), `app/routers/{scan,posts,run,schedules,jobs}.py`, `app/routers/platforms.py` (new), `app/services/job_service.py`, README (commands, multi-platform notes).
 - **Tests:**
@@ -505,13 +500,6 @@ Split into E1 (CLI) and E2 (API: `GET /api/platforms`, `POST /api/posts/check`, 
 - **Files:** `frontend/src/lib/platforms.tsx` (live/test flags from the API), `lib/postRules.ts` (per-platform rules, JPEG header reader, counting), `services/apiService.ts`, `types/api.ts`, `components/IntakeStudio.tsx` (platform checkboxes, per-platform checklist), `ScanQueueStation.tsx` (queue per platform), `ScheduleModal.tsx`/`ScheduleFields.tsx` (platform; Live disabled for Instagram), `RunnerConsole.tsx` (per platform), `JobDetailsModal.tsx`/`ResolveModal.tsx` (platform texts; "Check now" for Instagram), `LinkedInSentinel.tsx` (Instagram card "test only").
 - **Tests:** Vitest for each component change; `postRules.test.ts` reads the shared `post_rules_cases.json`; Instagram never offers Live; no "ready" count mixes platforms incorrectly; `npm test`, `typecheck`, `build`; `npm audit` reported. A manual browser walkthrough by the developer before the commit (as in M5 commit 8).
 - **Risks:** labelling ("Test" vs "Live" per platform; Instagram always Test); a ready count that includes another platform's posts.
-
-- [x] **F done (2026-11-19).** One platform choice, shared by New post ("Post to") and the pickers in Queue, Scheduled and History, shown only when `GET /api/platforms` offers more than one platform.
-  - Rules and the confirmation phrase come from `GET /api/platforms`; `lib/postRules.ts` keeps only LinkedIn's values as a fallback until the API answers.
-  - While a post is written, `POST /api/posts/check` gives the backend's verdict; its errors block adding the post.
-  - Instagram is test only: no Live schedule, and Publish runs a test with no phrase.
-  - The API gained `?platform=` on `GET /api/jobs` and `GET /api/schedules` (without it, every platform, as before). LinkedIn requests are sent exactly as before.
-  - Not done: the per-platform card in Accounts, and one post sent to several platforms at once (question 7).
 
 ### Future (blocked on the spike and D48 acceptance)
 
