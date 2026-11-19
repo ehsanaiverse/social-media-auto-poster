@@ -45,5 +45,16 @@ export const PLATFORMS: Platform[] = [
   { id: 'x', name: 'X', live: false, color: '#E7E9EA', Icon: XIcon }
 ];
 
+// The Home badge of a platform, from what the poster offers (GET /api/platforms): registered and able to publish
+// for real → Live; registered but simulated only → Test; not registered → Soon. Until the API answers (or if it
+// fails), the page has LinkedIn alone, so this gives the static values: LinkedIn Live, the others Soon.
+export type PlatformBadge = 'live' | 'test' | 'soon';
+export const BADGE_LABEL: Record<PlatformBadge, string> = { live: 'Live', test: 'Test', soon: 'Soon' };
+
+export function platformBadge(id: PlatformId, offered: { id: string; real_available: boolean }[]): PlatformBadge {
+  const found = offered.find((p) => p.id === id);
+  return found ? (found.real_available ? 'live' : 'test') : 'soon';
+}
+
 export const platformById = (id?: string | null): Platform =>
   PLATFORMS.find((p) => p.id === id?.toLowerCase()) ?? PLATFORMS[0];

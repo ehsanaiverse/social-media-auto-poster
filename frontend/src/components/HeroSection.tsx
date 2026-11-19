@@ -2,7 +2,7 @@ import React, { Suspense, lazy } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Clock, Inbox, Play, type LucideIcon } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
-import { PLATFORMS } from '../lib/platforms';
+import { BADGE_LABEL, PLATFORMS, platformBadge } from '../lib/platforms';
 import { scrollToSection } from '../lib/sections';
 import { countOf, isReady } from '../types/api';
 import { cn } from '../utils/cn';
@@ -21,11 +21,15 @@ interface Metric {
 }
 
 // The platform logos circle the globe; each badge counter-rotates so it stays upright.
-const PlatformOrbit: React.FC = () => (
+const PlatformOrbit: React.FC = () => {
+  const { platforms } = useApi();
+  return (
   <div className="orbit-spin pointer-events-none absolute inset-[6%]" aria-hidden="true">
     <div className="absolute inset-0 rounded-full border border-dashed border-white/[0.07]" />
     {PLATFORMS.map((p, i) => {
       const angle = (i / PLATFORMS.length) * Math.PI * 2 - Math.PI / 2;
+      const badge = platformBadge(p.id, platforms);
+      const live = badge === 'live';
       return (
         <div
           key={p.id}
@@ -36,18 +40,18 @@ const PlatformOrbit: React.FC = () => (
             <div
               className={cn(
                 'relative grid h-14 w-14 place-items-center rounded-2xl border backdrop-blur-md sm:h-16 sm:w-16',
-                p.live ? 'border-white/20 bg-white/[0.08]' : 'border-white/10 bg-black/40'
+                live ? 'border-white/20 bg-white/[0.08]' : badge === 'test' ? 'border-white/15 bg-white/[0.05]' : 'border-white/10 bg-black/40'
               )}
-              style={p.live ? { boxShadow: `0 0 40px -6px ${p.color}` } : undefined}
+              style={live ? { boxShadow: `0 0 40px -6px ${p.color}` } : undefined}
             >
-              <p.Icon className={cn('h-7 w-7', p.live ? 'text-white' : 'text-slate-400')} />
+              <p.Icon className={cn('h-7 w-7', live ? 'text-white' : badge === 'test' ? 'text-slate-200' : 'text-slate-400')} />
               <span
                 className={cn(
                   'absolute -bottom-2.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold',
-                  p.live ? 'bg-emerald-400 text-[#04110B]' : 'bg-white/10 text-slate-300'
+                  live ? 'bg-emerald-400 text-[#04110B]' : badge === 'test' ? 'bg-amber-400/90 text-[#1a1203]' : 'bg-white/10 text-slate-300'
                 )}
               >
-                {p.live ? 'Live' : 'Soon'}
+                {BADGE_LABEL[badge]}
               </span>
             </div>
           </div>
@@ -55,10 +59,11 @@ const PlatformOrbit: React.FC = () => (
       );
     })}
   </div>
-);
+  );
+};
 
 export const HeroSection: React.FC = () => {
-  const { scanData, jobs, isRunning, schedules } = useApi();
+  const { scanData, jobs, isRunning, schedules, platforms } = useApi();
 
   const candidates = scanData?.candidates ?? [];
   // Scheduled posts are not "ready": publishing from this page skips them (D46).
@@ -124,21 +129,30 @@ export const HeroSection: React.FC = () => {
 
             {/* Platforms */}
             <motion.ul variants={fadeUp} className="mt-7 flex flex-wrap justify-center gap-2 lg:justify-start" aria-label="Platforms">
-              {PLATFORMS.map((p) => (
+              {PLATFORMS.map((p) => {
+                const badge = platformBadge(p.id, platforms);
+                return (
                 <li
                   key={p.id}
                   className={cn(
                     'flex items-center gap-2 rounded-full border py-1.5 pl-2 pr-3 text-sm',
-                    p.live ? 'border-emerald-500/30 bg-emerald-500/[0.08] text-slate-100' : 'border-white/[0.08] bg-white/[0.03] text-slate-400'
+                    badge === 'live'
+                      ? 'border-emerald-500/30 bg-emerald-500/[0.08] text-slate-100'
+                      : badge === 'test'
+                        ? 'border-amber-500/30 bg-amber-500/[0.06] text-slate-200'
+                        : 'border-white/[0.08] bg-white/[0.03] text-slate-400'
                   )}
                 >
                   <span className="grid h-6 w-6 place-items-center rounded-full bg-white/[0.08]">
                     <p.Icon className="h-3.5 w-3.5" />
                   </span>
                   {p.name}
-                  <span className={cn('text-[11px]', p.live ? 'text-emerald-300' : 'text-slate-500')}>{p.live ? '· Live' : '· Soon'}</span>
+                  <span className={cn('text-[11px]', badge === 'live' ? 'text-emerald-300' : badge === 'test' ? 'text-amber-300' : 'text-slate-500')}>
+                    · {BADGE_LABEL[badge]}
+                  </span>
                 </li>
-              ))}
+                );
+              })}
             </motion.ul>
 
             <motion.div variants={fadeUp} className="mt-9 flex flex-wrap justify-center gap-3 lg:justify-start">
