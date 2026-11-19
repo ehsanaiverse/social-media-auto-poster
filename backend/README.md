@@ -16,6 +16,8 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
+Or, from `requirements.txt` (the same direct dependencies): `python -m pip install -r requirements.txt` then `python -m pip install -e . --no-deps`.
+
 Install in editable mode (`-e`): the application finds its runtime folders next to this file.
 
 ## Runtime folders
