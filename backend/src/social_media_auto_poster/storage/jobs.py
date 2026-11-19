@@ -216,9 +216,15 @@ class JobRepository:
         ).fetchone()
         return self._to_record(row) if row else None
 
-    def has_jobs(self, *, mode: PublishMode) -> bool:
-        """Whether any job (in any status) was ever recorded in ``mode``."""
-        row = self._conn.execute("SELECT 1 FROM jobs WHERE mode = ? LIMIT 1", (mode.value,)).fetchone()
+    def has_jobs(self, *, mode: PublishMode, platform: Platform = Platform.LINKEDIN) -> bool:
+        """Whether any job (in any status) was ever recorded for ``platform`` in ``mode``.
+
+        Per platform, so one platform's real history never stands in for another's (D38, D49). Production
+        code always passes ``platform``; the LinkedIn default only keeps an older test that omits it working.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM jobs WHERE platform = ? AND mode = ? LIMIT 1", (platform.value, mode.value)
+        ).fetchone()
         return row is not None
 
     def list_by_status(self, status: JobStatus) -> list[JobRecord]:

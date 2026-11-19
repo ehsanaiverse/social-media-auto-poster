@@ -52,12 +52,12 @@ def posts_only_simulated(candidates: tuple[PostCandidate, ...], repository: JobR
 
 
 def archive_without_history(settings: Settings, repository: JobRepository | None, platform: Platform) -> list[Path]:
-    """Post folders in archive/ when the job database has no real jobs (or does not exist yet).
+    """Post folders in ``platform``'s archive/ when the job database has no real jobs for it (or does not exist yet).
 
     Only a confirmed real publish is archived, so any folder there means real
     posts were made that this database does not know about.
     """
-    if repository is not None and repository.has_jobs(mode=PublishMode.REAL):
+    if repository is not None and repository.has_jobs(mode=PublishMode.REAL, platform=platform):
         return []
     archive = settings.archive_dir(platform)
     if not archive.is_dir():
