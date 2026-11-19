@@ -5,7 +5,6 @@ stored or put in an error text. ``fail_on`` names the operations that raise ``Me
 """
 
 import secrets
-import uuid
 
 from social_media_auto_poster.platforms.media_host import MediaHostError
 
@@ -18,12 +17,10 @@ class InMemoryMediaHost:
         self.fail_on = set(fail_on)
         self.signature = secrets.token_hex(16)
 
-    def put(self, data: bytes, *, content_type: str) -> str:
+    def put(self, key: str, data: bytes, *, content_type: str) -> None:
         self._call("put")
-        key = f"ig-tmp/{uuid.uuid4().hex}.jpg"
         self.objects[key] = data
         self.content_types[key] = content_type
-        return key
 
     def url(self, key: str) -> str:
         self._call("url")

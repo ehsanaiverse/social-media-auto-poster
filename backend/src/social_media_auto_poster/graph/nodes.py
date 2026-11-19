@@ -203,7 +203,8 @@ def publish(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
     publisher = runtime.context.publisher
     try:
         if getattr(publisher, "records_references", False):  # Instagram: the container ID, before media_publish.
-            result = publisher.publish(content, record=_reference_recorder(state, runtime.context))
+            result = publisher.publish(content, record=_reference_recorder(state, runtime.context),
+                                       record_media=_media_key_recorder(state, runtime.context))
         else:
             result = publisher.publish(content)
     except Exception as error:  # Deliberately broad: any surprise means "outcome unknown".
@@ -401,6 +402,15 @@ def _reference_recorder(state: JobState, context: WorkflowContext):
         logger.info("Reference recorded before publishing: %s remote_ref=%s", _fields(state), reference)
 
     return record
+
+
+def _media_key_recorder(state: JobState, context: WorkflowContext):
+    """Writes (or clears) the job's media host key, committed, before the picture is uploaded (D50)."""
+
+    def record_media(key: str | None) -> None:
+        context.repository.record_media_host_key(state["job_id"], key)
+
+    return record_media
 
 
 def _update_after_publish(state: JobState, context: WorkflowContext, **fields: Any) -> None:

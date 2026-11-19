@@ -218,6 +218,19 @@ class JobRepository:
             if cursor.rowcount != 1:
                 raise ReferenceNotRecordedError(f"job {job_id} is not PUBLISHING without a reference")
 
+    def record_media_host_key(self, job_id: str, key: str | None) -> None:
+        """Store (or clear, with None) the media host key of a PUBLISHING job's picture, committed (D50).
+
+        Raises ``ReferenceNotRecordedError`` and writes nothing if the job is not PUBLISHING.
+        """
+        with self._conn:
+            cursor = self._conn.execute(
+                "UPDATE jobs SET media_host_key = ?, updated_at = ? WHERE job_id = ? AND status = ?",
+                (key, self._timestamp(), job_id, JobStatus.PUBLISHING.value),
+            )
+            if cursor.rowcount != 1:
+                raise ReferenceNotRecordedError(f"job {job_id} is not PUBLISHING")
+
     def get(self, job_id: str) -> JobRecord | None:
         row = self._conn.execute(f"{self._select} WHERE job_id = ?", (job_id,)).fetchone()
         return self._to_record(row) if row else None

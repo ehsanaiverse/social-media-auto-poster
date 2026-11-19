@@ -4,7 +4,8 @@ Order (docs/instagram-plan.md section 7, docs/instagram-api-notes.md section 9):
 
   0. Instagram's caption and picture rules again, on the exact bytes (they were validated already).
   a. the publishing quota (S15): reached, or not readable -> FAILED; nothing was sent.
-  b. the exact hashed bytes go to the media host -> any failure is FAILED.
+  b. the picture's media host key is recorded (``record_media``), then the exact hashed bytes are
+     uploaded -> a failure of either is FAILED; nothing is uploaded before its key is recorded.
   c. the container (S13): any failure, including a lost answer -> FAILED. Without its ID we never
      publish it, and an unpublished container expires after 24 hours (S13).
   d. the container ID is recorded (``record``) BEFORE media_publish -> a failure is FAILED, and
@@ -19,7 +20,8 @@ Order (docs/instagram-plan.md section 7, docs/instagram-api-notes.md section 9):
        anything else (timeout or dropped connection after sending, 5xx, other 4xx, 200 without an
        ID, an unreadable answer)             -> NEEDS_REVIEW; never retried
   g. the picture is deleted from the media host after PUBLISHED or FAILED, and kept after
-     NEEDS_REVIEW. A failed delete is logged and never changes the outcome.
+     NEEDS_REVIEW (its key stays recorded). After a successful delete the recorded key is cleared.
+     A failed delete or clear is logged and never changes the outcome.
 
 Texts keep the HTTP status and Instagram's numeric ``code``/``error_subcode`` only, never its
 message (it can echo the image URL or input), and pass through ``redact`` as a last safety net.
@@ -33,10 +35,10 @@ from collections.abc import Callable
 import httpx
 
 from social_media_auto_poster.models import PostContent, PublishResult
-from social_media_auto_poster.platforms.base import PublishOutcomeUnknown, ReferenceRecorder
+from social_media_auto_poster.platforms.base import MediaKeyRecorder, PublishOutcomeUnknown, ReferenceRecorder
 from social_media_auto_poster.platforms.instagram.client import InstagramClient
 from social_media_auto_poster.platforms.instagram.rules import caption_problems, media_problems
-from social_media_auto_poster.platforms.media_host import MediaHost
+from social_media_auto_poster.platforms.media_host import MediaHost, new_media_key
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +83,9 @@ class InstagramPublisher:
     def close(self) -> None:
         self._client.close()
 
-    def publish(self, post: PostContent, /, *, record: ReferenceRecorder) -> PublishResult:
+    def publish(
+        self, post: PostContent, /, *, record: ReferenceRecorder, record_media: MediaKeyRecorder
+    ) -> PublishResult:
         problems = [*caption_problems(post.caption), *media_problems(post.media)]
         if problems:
             return _failed(f"{'; '.join(problems)}; nothing was sent")
@@ -89,9 +93,15 @@ class InstagramPublisher:
             self._check_quota()
         except _NotPublished as error:
             return _failed(f"{error}; nothing was sent")
+        key = new_media_key()
         try:
-            key = self._host.put(post.media, content_type="image/jpeg")  # The exact hashed bytes (D33).
+            record_media(key)  # Committed before the upload, so a stored picture can always be found (D50).
+        except Exception as error:  # Deliberately broad: never upload what could not be tracked.
+            return _failed(f"the picture's storage key could not be recorded ({type(error).__name__}); nothing was sent")
+        try:
+            self._host.put(key, post.media, content_type="image/jpeg")  # The exact hashed bytes (D33).
         except Exception as error:  # Deliberately broad: nothing can be published without the picture.
+            self._delete(key, record_media)  # Anything partly stored goes too.
             return _failed(f"the picture could not be stored for Instagram ({type(error).__name__}); nothing was sent")
 
         try:
@@ -102,7 +112,7 @@ class InstagramPublisher:
                 raise _NotPublished(f"the container ID could not be recorded ({type(error).__name__})") from error
             self._wait_until_finished(container_id)
         except _NotPublished as error:
-            self._delete(key)
+            self._delete(key, record_media)
             return _failed(f"{error}; nothing was published")
 
         try:
@@ -111,7 +121,7 @@ class InstagramPublisher:
             logger.warning("Instagram publish outcome unknown; the picture is kept for the review: container_id=%s",
                            container_id)
             raise
-        self._delete(key)
+        self._delete(key, record_media)
         return result
 
     # Steps before media_publish: any failure means no post exists.
@@ -207,12 +217,17 @@ class InstagramPublisher:
 
     # Helpers.
 
-    def _delete(self, key: str) -> None:
+    def _delete(self, key: str, record_media: MediaKeyRecorder) -> None:
         try:
             self._host.delete(key)
         except Exception as error:  # Deliberately broad: the outcome is already decided.
             logger.warning("Could not delete the picture from the media host; left for cleanup: key=%s error=%s",
                            key, type(error).__name__)
+            return  # The key stays recorded, so the picture can still be found.
+        try:
+            record_media(None)
+        except Exception as error:  # Deliberately broad: the picture is gone; a stale key is harmless.
+            logger.warning("Could not clear the deleted picture's key: key=%s error=%s", key, type(error).__name__)
 
     def _call(self, request: Callable[[], httpx.Response], doing: str) -> httpx.Response:
         try:

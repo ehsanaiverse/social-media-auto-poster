@@ -30,6 +30,7 @@ class Run:
         self.graph.answers.update(answers)
         self.host = InMemoryMediaHost(fail_on=host_fails)
         self.recorded: list[str] = []
+        self.media_keys: list[str | None] = []
         self.sleeps: list[float] = []
         self._recorder_fails = recorder_fails
         self.post = PostContent(
@@ -49,7 +50,7 @@ class Run:
 
     def go(self):
         try:
-            self.result = self.publisher.publish(self.post, record=self.record)
+            self.result = self.publisher.publish(self.post, record=self.record, record_media=self.media_keys.append)
         except PublishOutcomeUnknown as error:
             self.error = error
         return self

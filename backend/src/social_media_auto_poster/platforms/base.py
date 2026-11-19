@@ -40,6 +40,16 @@ class ReferenceRecorder(Protocol):
     def __call__(self, reference: str, /) -> None: ...
 
 
+class MediaKeyRecorder(Protocol):
+    """Stores the media host key of a job's picture before it is uploaded, or clears it (None) once deleted.
+
+    It must have committed when it returns, and raise if it could not. Storing the key first means a picture
+    left on the media host by a crash or a NEEDS_REVIEW outcome can always be found and cleaned up.
+    """
+
+    def __call__(self, key: str | None, /) -> None: ...
+
+
 @dataclass(frozen=True)
 class RemoteOutcome:
     """What a read-only check of the platform says about a job whose publish outcome was not known."""

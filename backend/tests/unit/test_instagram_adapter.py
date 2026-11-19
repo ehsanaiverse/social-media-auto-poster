@@ -9,7 +9,7 @@ from social_media_auto_poster.models import Platform
 from social_media_auto_poster.operations import instagram as instagram_ops
 from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.operations.common import RealPublishingUnavailable
-from social_media_auto_poster.operations.platforms import ADAPTERS, UnsupportedPlatform, adapter_for
+from social_media_auto_poster.operations.platforms import ADAPTERS, adapter_for
 
 D49_REFUSAL = re.escape("forbidden until D48 is accepted (D49)")
 

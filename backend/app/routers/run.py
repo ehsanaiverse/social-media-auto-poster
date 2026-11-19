@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/run", tags=["run"])
 
 # Refusals that stop a real run before anything is published. The message names the safeguard.
-REFUSED_KINDS = {"data_folders", "archive_history", "token", "simulated_only"}
+REFUSED_KINDS = {"data_folders", "archive_history", "token", "simulated_only", "reference_mismatch"}
 
 
 # A plain def: FastAPI runs it in a worker thread, so a run never blocks the server.

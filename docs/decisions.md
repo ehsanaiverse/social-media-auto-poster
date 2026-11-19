@@ -369,3 +369,19 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
     - a scheduled run treats real Instagram as a refused platform and skips it.
   - The open questions left in `docs/instagram-plan.md` section 9 (3, 5, 7–10) are answered when their step is built.
   - Step A must still leave every existing test green unchanged. The `has_jobs` change keeps LinkedIn's behaviour identical while no other platform has real jobs, which is the case until D48.
+
+## D50. Crash recovery for platforms that record a reference before publishing (2026-11-19, step D1 and its follow-up)
+
+- **Decision:**
+  - **The rule.** A real job of a platform that records references (`records_references`, Instagram), found after a crash with no reference, becomes FAILED (may be posted again), because publishing is only ever called after the reference is committed; with a reference it becomes NEEDS_REVIEW. LinkedIn unchanged.
+  - **One source of truth for the flag.** Crash recovery reads `records_references` from the adapter, while the `publish` node decides from the publisher whether to pass the recorder. A real run therefore refuses to start (`reference_mismatch`, exit 1, nothing sent; 412 in the API) when the real publisher's flag and its adapter's flag disagree, in either direction.
+  - **The picture is tracked too.** The publisher commits the media host key (`jobs.media_host_key`) through `record_media` before uploading the picture, and clears it after a successful delete. A NEEDS_REVIEW outcome or a failed delete keeps the key, so any picture left on the media host can be found from its job row. A key that cannot be recorded is a definite FAILED, and nothing is uploaded.
+- **Why:**
+  - A job without a recorded reference provably never reached `media_publish`. Treating it as NEEDS_REVIEW would block content that was never posted, and leave the user to settle something that has a definite answer.
+  - With a reference, the post may exist, so the usual "never retry an uncertain publish" rule applies.
+  - The rule is only safe if every publisher of such a platform really records before publishing. The mismatch refusal makes a drift between the two flags impossible to run with.
+  - Untracked pictures would stay reachable through their URLs, and no cleanup could find them.
+- **Consequences:**
+  - This relaxes CLAUDE.md's "real → NEEDS_REVIEW, never retried" for one case, and CLAUDE.md says so.
+  - The step C publisher's `publish` takes `record_media` as well as `record`, and `MediaHost.put` takes the key chosen by `new_media_key()`.
+  - Cleaning up pictures left behind (a sweep of the job rows that still have a `media_host_key`) is still future work, together with the real media host (D48).

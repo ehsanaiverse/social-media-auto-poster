@@ -410,6 +410,17 @@ def _publisher_for(
         logger.error("Real run refused: %s", error)
         return RunRefusal("token", f"Error: {error}; nothing was published.")
     close = getattr(publisher, "close", None)
+    # Crash recovery trusts the adapter's flag (D50): a publisher that publishes without recording a reference
+    # while its adapter says it records one could be posted twice after a crash. Never run with a mismatch.
+    if bool(getattr(publisher, "records_references", False)) != bool(adapter_for(platform).records_references):
+        if close is not None:
+            close()
+        logger.error("Real run refused: the %s publisher and its adapter disagree about recording a reference",
+                     platform)
+        return RunRefusal("reference_mismatch", (
+            f"Error: the {display_name(platform)} publisher and its platform settings disagree about recording a "
+            "reference before publishing, so a crash could not be recovered safely; nothing was published."
+        ))
     if close is not None:
         stack.callback(close)
     return publisher

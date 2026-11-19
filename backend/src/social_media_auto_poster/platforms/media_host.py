@@ -8,6 +8,7 @@ A URL from ``url`` is a bearer secret: anyone holding it can fetch the picture u
 never logged, stored, put in an error text or returned by the API.
 """
 
+import uuid
 from typing import Protocol
 
 
@@ -16,8 +17,8 @@ class MediaHostError(Exception):
 
 
 class MediaHost(Protocol):
-    def put(self, data: bytes, *, content_type: str) -> str:
-        """Store ``data`` under a new, random key (never the post's name) and return the key."""
+    def put(self, key: str, data: bytes, *, content_type: str) -> None:
+        """Store ``data`` under ``key`` (from ``new_media_key``; recorded before this call, D50)."""
         ...
 
     def url(self, key: str) -> str:
@@ -31,3 +32,8 @@ class MediaHost(Protocol):
     def leftovers(self) -> tuple[str, ...]:
         """Keys still stored: pictures kept for a NEEDS_REVIEW job, or left by a failed delete."""
         ...
+
+
+def new_media_key(prefix: str = "ig-tmp/") -> str:
+    """A new, random object key: never the post's name or caption, so it reveals nothing."""
+    return f"{prefix}{uuid.uuid4().hex}.jpg"
