@@ -427,6 +427,17 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
 
 ### Step D: schema v3 and wiring (simulated Instagram runs end to end)
 
+Split into D1 (schema v3, migration, the recorder writing the container ID), D2 (register the Instagram adapter, simulated only; `run --scheduled` across platforms, refused platforms skipped, exit code 3 when one was), D3 (`resolve --check` with the remote checker).
+
+- [x] **D1 done (2026-11-19).**
+  - Migration 3 adds `jobs.remote_ref` and `jobs.media_host_key`, backed up first as `app.db.bak-v2`.
+  - `JobRepository.record_remote_ref` commits the reference in its own transaction, and only for a `PUBLISHING` job without one.
+  - The `publish` node passes the recorder to a publisher that `records_references`.
+  - Reconciliation takes `reference_platforms` (adapters with `records_references`; none until D2): a real job without a reference → `FAILED`, with one → `NEEDS_REVIEW`.
+  - A job whose next step is `publish` is still never resumed.
+  - `media_host_key` is in the schema but not written yet (picture cleanup comes later).
+  - Four assertions in `tests/unit/test_database.py` were changed with the developer's approval: three schema-version checks `2 → 3`, and the `all_jobs` helper now selects the 14 original columns.
+
 - **Files:** `storage/database.py` (migration 3), `storage/jobs.py` (`remote_ref`, `media_host_key`), `graph/nodes.py` (`publish` passes `record=` to recording publishers), `services/reconcile.py` (the Instagram rows of section 7; LinkedIn path unchanged), `operations/resolve.py` (`check`), `operations/run.py` (remote checker for real runs of that platform; `due(platform=None)` for scheduled runs), `operations/scan.py`, `operations/schedules.py`.
 - **Tests:**
   - migration v2 → v3 with `app.db.bak-v2`; reading a v2 database read-only;

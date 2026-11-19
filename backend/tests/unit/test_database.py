@@ -35,7 +35,7 @@ def test_creates_schema_and_parent_folder(tmp_path):
     conn = open_app_db(path)
 
     assert path.exists()
-    assert user_version(conn) == SCHEMA_VERSION == 2
+    assert user_version(conn) == SCHEMA_VERSION == 3
     names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
     assert {"jobs", "jobs_one_live_job_per_content", "jobs_by_status", "jobs_by_created"} <= names
     assert {"schedules", "schedules_one_active_per_post", "schedules_due"} <= names
@@ -48,7 +48,7 @@ def test_reopening_does_not_migrate_again(tmp_path):
 
     conn = open_app_db(path)
 
-    assert user_version(conn) == 2
+    assert user_version(conn) == 3
     conn.close()
 
 
@@ -166,7 +166,9 @@ def make_v1_database(path) -> list[str]:
 def all_jobs(path) -> list[tuple]:
     conn = sqlite3.connect(path)
     try:
-        return conn.execute("SELECT * FROM jobs ORDER BY job_id").fetchall()
+        from social_media_auto_poster.storage.jobs import COLUMNS
+
+        return conn.execute(f"SELECT {', '.join(COLUMNS)} FROM jobs ORDER BY job_id").fetchall()
     finally:
         conn.close()
 
@@ -188,7 +190,7 @@ def test_v1_database_migrates_to_v2_and_keeps_every_job_row(tmp_path):
 
     conn = open_app_db(path)
 
-    assert user_version(conn) == 2
+    assert user_version(conn) == 3
     assert conn.execute("SELECT count(*) FROM schedules").fetchone()[0] == 0
     conn.close()
     assert all_jobs(path) == before

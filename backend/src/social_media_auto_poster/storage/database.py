@@ -90,6 +90,12 @@ MIGRATIONS: tuple[str, ...] = (
 
     CREATE INDEX schedules_due ON schedules (status, publish_at);
     """,
+    # 3: a platform's pre-publish reference (Instagram: the container ID, recorded before media_publish) and the
+    # media host object to clean up (step D1, D49). Both nullable: LinkedIn jobs never have them.
+    """
+    ALTER TABLE jobs ADD COLUMN remote_ref TEXT;
+    ALTER TABLE jobs ADD COLUMN media_host_key TEXT;
+    """,
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)

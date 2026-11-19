@@ -21,7 +21,8 @@ COLUMNS = (
     "job_id", "platform", "mode", "stem", "media_name", "caption_name", "media_sha256", "caption_sha256",
     "status", "platform_post_id", "destination", "errors", "created_at", "updated_at",
 )
-_SELECT = f"SELECT {', '.join(COLUMNS)} FROM jobs"
+# Added by migration 3. A database opened read-only at an older version has no such columns; they read as NULL.
+REFERENCE_COLUMNS = ("remote_ref", "media_host_key")
 
 
 class DuplicateJobError(Exception):
@@ -30,6 +31,10 @@ class DuplicateJobError(Exception):
 
 class JobNotFoundError(Exception):
     """No job with the given ID."""
+
+
+class ReferenceNotRecordedError(Exception):
+    """The job is not PUBLISHING, or already has a reference: nothing was written."""
 
 
 class ScheduleNotSettledError(Exception):
@@ -52,6 +57,8 @@ class JobRecord:
     errors: tuple[str, ...]
     created_at: datetime
     updated_at: datetime
+    remote_ref: str | None = None  # The platform's pre-publish reference (Instagram: container ID).
+    media_host_key: str | None = None  # The media host object to clean up, if any.
 
 
 class _Unset:
@@ -65,6 +72,9 @@ class JobRepository:
     def __init__(self, conn: sqlite3.Connection, *, now: Callable[[], datetime] | None = None):
         self._conn = conn
         self._now = now or (lambda: datetime.now(UTC))
+        present = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+        references = [name if name in present else "NULL" for name in REFERENCE_COLUMNS]
+        self._select = f"SELECT {', '.join((*COLUMNS, *references))} FROM jobs"
 
     def create(
         self,
@@ -192,8 +202,24 @@ class JobRepository:
             raise JobNotFoundError(f"No NEEDS_REVIEW job with ID {job_id}")
         return self._require(job_id)
 
+    def record_remote_ref(self, job_id: str, reference: str) -> None:
+        """Store the platform's pre-publish reference in its own committed transaction (D1).
+
+        Called before the publish call (Instagram: before media_publish), so a job with no reference
+        was never published. Only a PUBLISHING job without a reference is changed; anything else raises
+        ``ReferenceNotRecordedError`` and writes nothing. Database errors propagate.
+        """
+        with self._conn:
+            cursor = self._conn.execute(
+                "UPDATE jobs SET remote_ref = ?, updated_at = ? "
+                "WHERE job_id = ? AND status = ? AND remote_ref IS NULL",
+                (reference, self._timestamp(), job_id, JobStatus.PUBLISHING.value),
+            )
+            if cursor.rowcount != 1:
+                raise ReferenceNotRecordedError(f"job {job_id} is not PUBLISHING without a reference")
+
     def get(self, job_id: str) -> JobRecord | None:
-        row = self._conn.execute(f"{_SELECT} WHERE job_id = ?", (job_id,)).fetchone()
+        row = self._conn.execute(f"{self._select} WHERE job_id = ?", (job_id,)).fetchone()
         return self._to_record(row) if row else None
 
     def find_blocking_duplicate(
@@ -208,7 +234,7 @@ class JobRepository:
         placeholders = ", ".join("?" for _ in BLOCKING_STATUSES)
         row = self._conn.execute(
             f"""
-            {_SELECT}
+            {self._select}
             WHERE platform = ? AND mode = ? AND media_sha256 = ? AND caption_sha256 = ?
               AND status IN ({placeholders})
             """,
@@ -229,21 +255,21 @@ class JobRepository:
 
     def list_by_status(self, status: JobStatus) -> list[JobRecord]:
         """All jobs with ``status``, oldest first."""
-        rows = self._conn.execute(f"{_SELECT} WHERE status = ? ORDER BY created_at, rowid", (status.value,)).fetchall()
+        rows = self._conn.execute(f"{self._select} WHERE status = ? ORDER BY created_at, rowid", (status.value,)).fetchall()
         return [self._to_record(row) for row in rows]
 
     def list_recent(self, limit: int = 20, *, status: JobStatus | None = None) -> list[JobRecord]:
         """The most recently created jobs (optionally only one status), newest first."""
         where, params = ("WHERE status = ?", (status.value,)) if status else ("", ())
         rows = self._conn.execute(
-            f"{_SELECT} {where} ORDER BY created_at DESC, rowid DESC LIMIT ?", (*params, limit)
+            f"{self._select} {where} ORDER BY created_at DESC, rowid DESC LIMIT ?", (*params, limit)
         ).fetchall()
         return [self._to_record(row) for row in rows]
 
     def find_by_id_prefix(self, prefix: str) -> list[JobRecord]:
         """Jobs whose ID starts with ``prefix`` (compared exactly, no wildcards), newest first."""
         rows = self._conn.execute(
-            f"{_SELECT} WHERE substr(job_id, 1, ?) = ? ORDER BY created_at DESC, rowid DESC",
+            f"{self._select} WHERE substr(job_id, 1, ?) = ? ORDER BY created_at DESC, rowid DESC",
             (len(prefix), prefix),
         ).fetchall()
         return [self._to_record(row) for row in rows]
@@ -261,7 +287,7 @@ class JobRepository:
     def _to_record(row: tuple) -> JobRecord:
         (
             job_id, platform, mode, stem, media_name, caption_name, media_sha256, caption_sha256,
-            status, platform_post_id, destination, errors, created_at, updated_at,
+            status, platform_post_id, destination, errors, created_at, updated_at, remote_ref, media_host_key,
         ) = row
         return JobRecord(
             job_id=job_id,
@@ -278,6 +304,8 @@ class JobRepository:
             errors=tuple(json.loads(errors)),
             created_at=_parse_timestamp(created_at),
             updated_at=_parse_timestamp(updated_at),
+            remote_ref=remote_ref,
+            media_host_key=media_host_key,
         )
 
 

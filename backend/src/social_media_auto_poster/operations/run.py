@@ -52,7 +52,7 @@ from social_media_auto_poster.operations.common import (
     outside_warning,
 )
 from social_media_auto_poster.operations.logs import _run_scope
-from social_media_auto_poster.operations.platforms import adapter_for
+from social_media_auto_poster.operations.platforms import ADAPTERS, adapter_for
 from social_media_auto_poster.operations.scan import _active_schedules
 from social_media_auto_poster.platforms.base import Publisher
 from social_media_auto_poster.platforms.rules import display_name
@@ -224,7 +224,8 @@ def _run_locked(
             # Resume first: it settles what checkpoints can prove; reconciliation handles the rest.
             resumed = resume_interrupted_jobs(checkpointer, repository, settings, schedules=schedules)
             recoveries = resumed.recoveries + reconcile_interrupted_jobs(
-                repository, settings, skip=resumed.skip_reconcile
+                repository, settings, skip=resumed.skip_reconcile,
+                reference_platforms=frozenset(p for p, a in ADAPTERS.items() if a.records_references),
             )
         except sqlite3.Error:
             # Never process on top of an unknown state.

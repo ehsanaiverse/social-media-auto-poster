@@ -29,6 +29,7 @@ class InstagramAdapter:
 
     platform = Platform.INSTAGRAM
     real_available = False
+    records_references = True  # The container ID, before media_publish (D1).
 
     def real_publisher(self, settings: Settings) -> Publisher:
         return _real_publisher(settings)

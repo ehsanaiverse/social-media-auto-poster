@@ -200,8 +200,12 @@ def publish(state: JobState, runtime: Runtime[WorkflowContext]) -> Update:
         logger.warning("Not published, nothing was sent: %s reason=%s", _fields(state), error)
         return {"status": JobStatus.FAILED.value, "errors": [*state["errors"], f"not published: {error}"]}
 
+    publisher = runtime.context.publisher
     try:
-        result = runtime.context.publisher.publish(content)
+        if getattr(publisher, "records_references", False):  # Instagram: the container ID, before media_publish.
+            result = publisher.publish(content, record=_reference_recorder(state, runtime.context))
+        else:
+            result = publisher.publish(content)
     except Exception as error:  # Deliberately broad: any surprise means "outcome unknown".
         logger.exception("Publish outcome unknown; marking NEEDS_REVIEW, not retrying: %s", _fields(state))
         message = f"publish outcome unknown ({type(error).__name__}: {error}); not retried"
@@ -387,6 +391,16 @@ def _write_outcome(state: JobState, context: WorkflowContext) -> None:
         destination=state["destination"],
         errors=tuple(state["errors"]),
     )
+
+
+def _reference_recorder(state: JobState, context: WorkflowContext):
+    """Writes the publisher's reference to this job's row, committed, before the publish call (D1)."""
+
+    def record(reference: str) -> None:
+        context.repository.record_remote_ref(state["job_id"], reference)
+        logger.info("Reference recorded before publishing: %s remote_ref=%s", _fields(state), reference)
+
+    return record
 
 
 def _update_after_publish(state: JobState, context: WorkflowContext, **fields: Any) -> None:

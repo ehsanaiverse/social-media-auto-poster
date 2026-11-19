@@ -94,6 +94,7 @@ class LinkedInAdapter:
 
     platform = Platform.LINKEDIN
     real_available = True  # Real LinkedIn publishing exists (M4); --real or the typed phrase still decides.
+    records_references = False  # LinkedIn has no pre-publish reference (D36).
 
     def real_publisher(self, settings: Settings) -> Publisher:
         return _real_publisher(settings)

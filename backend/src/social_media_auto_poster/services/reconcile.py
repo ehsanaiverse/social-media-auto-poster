@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from social_media_auto_poster.config import Settings
-from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode
+from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode
 from social_media_auto_poster.services.archive import ArchiveError, archive_post, post_folder_name, write_error_report
 from social_media_auto_poster.services.hashing import sha256_file
 from social_media_auto_poster.storage.jobs import JobRecord, JobRepository
@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 SIMULATED_INTERRUPTED = "simulated publish was interrupted by a crash; nothing was sent"
 REAL_INTERRUPTED = "publish was interrupted by a crash; the outcome is unknown - check the platform before re-posting"
 BEFORE_PUBLISH_INTERRUPTED = "interrupted by a crash before publishing; nothing was sent"
+NO_REFERENCE_INTERRUPTED = (
+    "interrupted by a crash before the platform's reference was recorded; the publish call is only made after "
+    "it is recorded, so nothing was published"
+)
 
 
 @dataclass(frozen=True)
@@ -53,15 +57,26 @@ class Recovery:
 
 
 def reconcile_interrupted_jobs(
-    repository: JobRepository, settings: Settings, *, skip: frozenset[str] = frozenset()
+    repository: JobRepository,
+    settings: Settings,
+    *,
+    skip: frozenset[str] = frozenset(),
+    reference_platforms: frozenset[Platform] = frozenset(),
 ) -> list[Recovery]:
-    """Resolve every PUBLISHING job except those in ``skip``. Database errors propagate; file errors are recorded."""
+    """Resolve every PUBLISHING job except those in ``skip``. Database errors propagate; file errors are recorded.
+
+    ``reference_platforms`` are the platforms whose publisher records a reference before the publish call
+    (Instagram, D1). A real job of such a platform with no reference was never published: FAILED. One with a
+    reference may have been: NEEDS_REVIEW, as for every other real job. Nothing is ever published here.
+    """
     recoveries = []
     for record in repository.list_by_status(JobStatus.PUBLISHING):
         if record.job_id in skip:
             continue
         if record.mode is PublishMode.SIMULATED:
             recovery = _recover_simulated(record, repository, settings)
+        elif record.platform in reference_platforms and not record.remote_ref:
+            recovery = _mark_failed(record, repository, settings, NO_REFERENCE_INTERRUPTED)
         else:
             recovery = _recover_real(record, repository, settings)
         logger.warning(
@@ -111,6 +126,8 @@ def _mark_failed(record: JobRecord, repository: JobRepository, settings: Setting
 def _recover_real(record: JobRecord, repository: JobRepository, settings: Settings) -> Recovery:
     # Status first: from here on the row blocks a re-publish whatever happens to the files.
     errors = [*record.errors, REAL_INTERRUPTED]
+    if record.remote_ref:  # Recorded before the publish call: the platform can be asked about it (D3).
+        errors.append(f"the platform's reference was recorded before publishing: {record.remote_ref}")
     repository.update(record.job_id, status=JobStatus.NEEDS_REVIEW, errors=tuple(errors))
 
     candidate = _candidate(record, settings)
