@@ -1,6 +1,7 @@
 """Platform-neutral contract implemented by platform-specific publishers."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from social_media_auto_poster.models import JobStatus, PostContent, PublishResult
@@ -65,3 +66,9 @@ class RemoteOutcome:
             raise ValueError("only a PUBLISHED outcome can carry a post ID")
         if not self.reason.strip():
             raise ValueError("a remote outcome needs a reason")
+
+
+class RemoteChecker(Protocol):
+    """Asks the platform, read-only, what became of a job whose publish outcome is unknown. Never publishes."""
+
+    def check(self, reference: str | None, *, job_created_at: datetime) -> RemoteOutcome: ...

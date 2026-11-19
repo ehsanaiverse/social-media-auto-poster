@@ -16,7 +16,8 @@ from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import Platform
 from social_media_auto_poster.operations import instagram as instagram_ops
 from social_media_auto_poster.operations import linkedin as linkedin_ops
-from social_media_auto_poster.platforms.base import Publisher
+from social_media_auto_poster.platforms.base import Publisher, RemoteChecker
+from social_media_auto_poster.platforms.media_host import MediaHost
 from social_media_auto_poster.platforms.rules import UnsupportedPlatform, display_name
 
 __all__ = ["ADAPTERS", "PlatformAdapter", "UnsupportedPlatform", "adapter_for", "real_unavailable_text"]
@@ -33,6 +34,14 @@ class PlatformAdapter(Protocol):
 
     def schedule_warnings(self, settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
         """Token problems a real schedule for ``publish_at`` will meet; reads backend/.env only, no network."""
+        ...
+
+    def remote_checker(self, settings: Settings) -> RemoteChecker | None:
+        """The read-only checker for ``resolve --check``, or None if the platform offers no safe check."""
+        ...
+
+    def media_host(self, settings: Settings) -> MediaHost | None:
+        """Where the platform's publisher stores pictures (Instagram), or None."""
         ...
 
 

@@ -429,6 +429,13 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
 
 Split into D1 (schema v3, migration, the recorder writing the container ID), D2 (register the Instagram adapter, simulated only; `run --scheduled` across platforms, refused platforms skipped, exit code 3 when one was), D3 (`resolve --check` with the remote checker).
 
+- [x] **D3 done (2026-11-19).**
+  - `resolve <job> --check` (`operations/resolve.py: check_job`): read-only, under the run lock, for real NEEDS_REVIEW jobs of a platform whose adapter has a `remote_checker`.
+  - PUBLISHED → PUBLISHED + archive (no post ID, with a note, if the post cannot be identified); FAILED → FAILED in `failed/` with the report rewritten; uncertain → unchanged, exit 3.
+  - The stored picture is deleted and its key cleared on PUBLISHED or FAILED; a failed delete keeps the key.
+  - LinkedIn: refused (no checker). Real Instagram: refused (D49, `_remote_checker`/`_media_host`).
+  - The API's `{"check": true}` is left for step E (section 5.3).
+  - When PUBLISHED moves the files out of `failed/`, the old folder with its error report and marker stays.
 - [x] **D2 done (2026-11-19).**
   - Instagram is registered (`real_available = False`), so simulated Instagram works through `run_once`, `scan_preview`, the schedule operations and the API (`platform`). Facebook is still refused.
   - `real_unavailable_text` refuses real Instagram in `_run_locked` (before anything changes), `_publisher_for`, `schedule_post`/`reconfirm_post` (before the lock) and the API (400).

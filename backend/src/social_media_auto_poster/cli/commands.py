@@ -18,6 +18,7 @@ from social_media_auto_poster.config import DATA_DIR_VAR, data_dir_outside_base,
 from social_media_auto_poster.models import JobStatus, PublishMode, ScheduleStatus
 from social_media_auto_poster.operations import clock, linkedin as linkedin_ops
 from social_media_auto_poster.operations.common import (
+    EXIT_JOB_PROBLEMS,
     EXIT_LOCKED,
     EXIT_OK,
     EXIT_SETUP_ERROR,
@@ -27,7 +28,7 @@ from social_media_auto_poster.operations.common import (
     outside_warning,
 )
 from social_media_auto_poster.operations.logs import logging_to
-from social_media_auto_poster.operations.resolve import ResolveError, resolve_job
+from social_media_auto_poster.operations.resolve import ResolveError, check_job, resolve_job
 from social_media_auto_poster.operations.run import run_once
 from social_media_auto_poster.operations.scan import scan_preview
 from social_media_auto_poster.operations.schedules import (
@@ -137,6 +138,8 @@ def _show_job(repository: JobRepository, prefix: str) -> int:
 
 def _resolve(args: argparse.Namespace) -> int:
     settings = load_settings()
+    if args.check:
+        return _resolve_check(args.job_id, settings)
     published = args.published
     try:
         with logging_to(verbose=False, log_file=settings.log_file):
@@ -154,6 +157,34 @@ def _resolve(args: argparse.Namespace) -> int:
     print(f"Resolved {name} as {result.status}.")
     print(f"Note recorded: {result.note}")
     _print_resolve_next_steps(result.job, result.status, settings)
+    return EXIT_OK
+
+
+def _resolve_check(job_id: str, settings) -> int:
+    try:
+        with logging_to(verbose=False, log_file=settings.log_file):
+            result = check_job(settings, job_id)
+    except ResolveError as error:
+        print(f"Error: {error.message}", file=sys.stderr)
+        for line in error.details:
+            print(line, file=sys.stderr)
+        return EXIT_SETUP_ERROR
+    except RunLockHeldError:
+        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        return EXIT_LOCKED
+
+    name = f"job {result.job.job_id[:8]} ({result.job.stem})"
+    print(f"{display_name(result.job.platform)} says: {result.reason}")
+    if result.status is JobStatus.NEEDS_REVIEW:
+        print(f"{name} stays NEEDS_REVIEW; nothing was changed. Check again later, or use --published/--failed.")
+        return EXIT_JOB_PROBLEMS
+    post = f" (post ID {result.post_id})" if result.post_id else (" (no post ID: the post could not be identified)"
+                                                              if result.status is JobStatus.PUBLISHED else "")
+    print(f"Resolved {name} as {result.status}{post}.")
+    for note in result.notes:
+        print(f"  {note}")
+    if result.status is JobStatus.FAILED:
+        print("It was never published, so its content can be posted again: move the files back to incoming/.")
     return EXIT_OK
 
 

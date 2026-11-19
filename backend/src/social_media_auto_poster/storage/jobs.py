@@ -231,6 +231,12 @@ class JobRepository:
             if cursor.rowcount != 1:
                 raise ReferenceNotRecordedError(f"job {job_id} is not PUBLISHING")
 
+    def clear_media_host_key(self, job_id: str) -> None:
+        """Forget the media host key once the picture is deleted (any status), committed."""
+        with self._conn:
+            self._conn.execute("UPDATE jobs SET media_host_key = NULL, updated_at = ? WHERE job_id = ?",
+                               (self._timestamp(), job_id))
+
     def get(self, job_id: str) -> JobRecord | None:
         row = self._conn.execute(f"{self._select} WHERE job_id = ?", (job_id,)).fetchone()
         return self._to_record(row) if row else None

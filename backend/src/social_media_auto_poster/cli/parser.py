@@ -39,8 +39,10 @@ RESOLVE_EPILOG = """\
 exit codes:
   0  resolved
   1  refused: no such job, ambiguous ID prefix, not NEEDS_REVIEW, empty post ID,
-     a simulated job marked --published, or no job database
+     a simulated job marked --published, or no job database; with --check also a
+     platform that offers no way to check (LinkedIn)
   2  invalid command or option (e.g. an ID prefix shorter than 6 characters)
+  3  --check: the platform's answer is still uncertain; nothing was changed
   4  a run is in progress
 """
 
@@ -137,7 +139,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Manually resolve a NEEDS_REVIEW job after checking the platform.",
         description=(
             "Settle a NEEDS_REVIEW job once you have checked the platform. --published keeps its content "
-            "blocked from re-posting; --failed lets it be retried. Files are never moved."
+            "blocked from re-posting; --failed lets it be retried; files are never moved by these two. "
+            "--check asks the platform instead (read-only; Instagram) and moves the files as the answer says."
         ),
         epilog=RESOLVE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -146,6 +149,8 @@ def _build_parser() -> argparse.ArgumentParser:
     outcome = resolve.add_mutually_exclusive_group(required=True)
     outcome.add_argument("--published", metavar="POST_ID", help="It was published; record the platform's post ID.")
     outcome.add_argument("--failed", action="store_true", help="It was not published; allow a retry.")
+    outcome.add_argument("--check", action="store_true",
+                         help="Ask the platform (read-only; never publishes). Not available for LinkedIn.")
     resolve.set_defaults(handler=_resolve)
 
     run = commands.add_parser(

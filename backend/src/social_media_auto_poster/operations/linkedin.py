@@ -102,6 +102,12 @@ class LinkedInAdapter:
     def schedule_warnings(self, settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
         return _token_warnings(settings, publish_at, now)
 
+    def remote_checker(self, settings: Settings) -> None:
+        return None  # Reading a member's posts needs r_member_social, restricted to approved partners (D36).
+
+    def media_host(self, settings: Settings) -> None:
+        return None  # LinkedIn takes the picture's bytes directly (Images API).
+
 
 ADAPTER = LinkedInAdapter()
 

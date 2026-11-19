@@ -1,14 +1,19 @@
-"""Settle a NEEDS_REVIEW job after checking the platform (``resolve`` and the API's resolve)."""
+"""Settle a NEEDS_REVIEW job: by hand after checking the platform (``resolve``), or by asking it (``--check``)."""
 
 import logging
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 from social_media_auto_poster.config import Settings
-from social_media_auto_poster.models import JobStatus, PublishMode
+from social_media_auto_poster.models import JobStatus, PostCandidate, PublishMode
 from social_media_auto_poster.operations import clock
-from social_media_auto_poster.operations.common import LOGGER_NAME
+from social_media_auto_poster.operations.common import LOGGER_NAME, RealPublishingUnavailable
 from social_media_auto_poster.operations.logs import _run_scope
+from social_media_auto_poster.operations.platforms import adapter_for
+from social_media_auto_poster.platforms.rules import display_name
+from social_media_auto_poster.services.archive import ArchiveError, archive_post, post_folder_name, write_error_report
 from social_media_auto_poster.services.run_lock import single_run_lock
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db
 from social_media_auto_poster.storage.jobs import JobNotFoundError, JobRecord, JobRepository
@@ -98,3 +103,135 @@ def _resolve_in_database(repository: JobRepository, prefix: str, published_post_
         job.job_id, job.platform, job.mode, job.stem, status, post_id,
     )
     return ResolveResult(job=job, status=status, post_id=post_id, note=note)
+
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    """What ``resolve --check`` found and did. ``status`` is NEEDS_REVIEW when nothing was changed."""
+
+    job: JobRecord
+    status: JobStatus
+    post_id: str | None
+    reason: str  # The platform's answer, in plain words (never a token).
+    notes: tuple[str, ...]  # What happened to the files and the stored picture.
+    destination: str | None = None
+
+
+def check_job(settings: Settings, job_prefix: str) -> CheckResult:
+    """Settle a NEEDS_REVIEW job by asking its platform, read-only (D3). Never publishes anything.
+
+    PUBLISHED: the job is PUBLISHED and its files are archived. FAILED (never published): the job is FAILED and its
+    files stay in failed/ with an updated error report. Either way the stored picture is deleted and its key cleared.
+    Still uncertain: nothing changes. Takes the run lock. Raises ResolveError for a refusal (nothing changed),
+    including a platform with no safe way to check (LinkedIn), and RunLockHeldError.
+    """
+    with single_run_lock(settings.lock_file), _run_scope():
+        if not settings.app_db_path.is_file():
+            raise ResolveError("no_database", f"no job database at {settings.app_db_path}; nothing to check.")
+        try:
+            conn = open_app_db(settings.app_db_path)
+        except (SchemaTooNewError, sqlite3.Error) as error:
+            raise ResolveError("no_database", f"could not open the job database: {error}") from None
+        try:
+            return _check_in_database(settings, JobRepository(conn), job_prefix)
+        finally:
+            conn.close()
+
+
+def _check_in_database(settings: Settings, repository: JobRepository, prefix: str) -> CheckResult:
+    job = _one_needs_review_job(repository, prefix)
+    name = f"job {job.job_id[:8]} ({job.stem})"
+    platform = display_name(job.platform)
+    if job.mode is PublishMode.SIMULATED:
+        raise ResolveError("simulated_check", f"{name} is a simulated job; nothing was sent, so there is nothing to "
+                                              "check. Resolve it with --failed. Nothing was changed.")
+    adapter = adapter_for(job.platform)
+    try:
+        checker = adapter.remote_checker(settings)
+    except RealPublishingUnavailable as error:
+        raise ResolveError("check_unavailable", f"{error}. Nothing was changed.") from None
+    if checker is None:
+        raise ResolveError(
+            "no_check",
+            f"{platform} offers no way to check whether {name} was published. Look at {platform} yourself, then "
+            "use --published <post ID> or --failed. Nothing was changed.",
+        )
+
+    outcome = checker.check(job.remote_ref, job_created_at=job.created_at)
+    if outcome.status is JobStatus.NEEDS_REVIEW:
+        logger.info("Job checked, still unknown: job_id=%s platform=%s mode=%s stem=%s",
+                    job.job_id, job.platform, job.mode, job.stem)
+        return CheckResult(job, JobStatus.NEEDS_REVIEW, None, outcome.reason, ())
+
+    stamp = f"{clock.utc_now():%Y-%m-%dT%H:%M:%SZ}"
+    note = f"resolved by checking {platform} as {outcome.status} at {stamp}: {outcome.reason}"
+    if outcome.status is JobStatus.PUBLISHED and outcome.post_id is None:
+        note += "; no post ID was recorded because the post could not be identified"
+    try:  # Status first: from here on the row says what the platform said, whatever happens to the files.
+        repository.resolve_needs_review(job.job_id, status=outcome.status, note=note, platform_post_id=outcome.post_id)
+    except JobNotFoundError:
+        raise ResolveError("no_longer_needs_review", f"{name} is no longer NEEDS_REVIEW. Nothing was changed.") from None
+    logger.info("Job resolved by checking the platform: job_id=%s platform=%s mode=%s stem=%s status=%s post_id=%s",
+                job.job_id, job.platform, job.mode, job.stem, outcome.status, outcome.post_id)
+    updated = repository.get(job.job_id)
+    destination, notes = _settle_files(settings, repository, updated, outcome.status)
+    notes += _forget_picture(settings, repository, updated, adapter)
+    return CheckResult(job, outcome.status, outcome.post_id, outcome.reason, notes, destination)
+
+
+def _one_needs_review_job(repository: JobRepository, prefix: str) -> JobRecord:
+    matches = repository.find_by_id_prefix(prefix)
+    if not matches:
+        raise ResolveError("not_found", f"no job ID starts with '{prefix}'. Nothing was changed.")
+    if len(matches) > 1:
+        details = tuple(f"  {r.job_id}  {r.stem}  {r.status}" for r in matches)
+        raise ResolveError("ambiguous", f"'{prefix}' matches {len(matches)} jobs; use a longer prefix:", details)
+    [job] = matches
+    if job.status is not JobStatus.NEEDS_REVIEW:
+        raise ResolveError("not_needs_review", f"job {job.job_id[:8]} ({job.stem}) is {job.status}; only "
+                                               "NEEDS_REVIEW jobs can be resolved. Nothing was changed.")
+    return job
+
+
+def _settle_files(
+    settings: Settings, repository: JobRepository, job: JobRecord, status: JobStatus
+) -> tuple[str | None, tuple[str, ...]]:
+    """PUBLISHED: archive the files (as after a confirmed publish). FAILED: keep them in failed/, report updated."""
+    folder = Path(job.destination) if job.destination else settings.incoming_dir(job.platform)
+    candidate = PostCandidate(job.platform, job.stem, folder / job.media_name, folder / job.caption_name)
+    if not (candidate.media_path.is_file() and candidate.caption_path.is_file()):
+        return job.destination, (f"its files were not found in {folder}; nothing was moved",)
+    in_failed = job.destination is not None and folder.parent == settings.failed_dir(job.platform)
+    if status is JobStatus.FAILED and in_failed:
+        target = folder
+    else:
+        dest_dir = settings.archive_dir(job.platform) if status is JobStatus.PUBLISHED else settings.failed_dir(job.platform)
+        try:
+            target = archive_post(candidate, dest_dir, job_id=job.job_id,
+                                  folder_name=post_folder_name(job.stem, datetime.now(UTC)))
+        except (OSError, ArchiveError) as error:
+            repository.update(job.job_id, errors=(*job.errors, f"could not move the files: {error}"))
+            return job.destination, (f"could not move the files: {error}",)
+        repository.update(job.job_id, destination=str(target))
+    if status is JobStatus.FAILED:
+        try:
+            write_error_report(target, job_id=job.job_id, stem=job.stem, status=status, errors=list(job.errors),
+                               platform=job.platform)
+        except OSError as error:
+            logger.error("Could not write error report: job_id=%s folder=%s error=%s", job.job_id, target, error)
+    return str(target), (f"files are in {target}",)
+
+
+def _forget_picture(settings: Settings, repository: JobRepository, job: JobRecord, adapter) -> tuple[str, ...]:
+    """Delete the picture the publisher stored for this job, then clear its key. A failure keeps the key."""
+    if not job.media_host_key:
+        return ()
+    try:
+        adapter.media_host(settings).delete(job.media_host_key)
+    except Exception as error:  # Deliberately broad: the outcome is already recorded; the key stays for cleanup.
+        logger.warning("Could not delete the stored picture; its key is kept: job_id=%s key=%s error=%s",
+                       job.job_id, job.media_host_key, type(error).__name__)
+        return (f"the stored picture could not be deleted ({type(error).__name__}); its key is kept for cleanup",)
+    repository.clear_media_host_key(job.job_id)
+    return ("the stored picture was deleted",)

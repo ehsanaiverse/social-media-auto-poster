@@ -14,7 +14,8 @@ from dotenv import dotenv_values
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import Platform
 from social_media_auto_poster.operations.common import RealPublishingUnavailable
-from social_media_auto_poster.platforms.base import Publisher
+from social_media_auto_poster.platforms.base import Publisher, RemoteChecker
+from social_media_auto_poster.platforms.media_host import MediaHost
 from social_media_auto_poster.platforms.instagram.client import InstagramClient, RealInstagramForbidden
 
 TOKEN_VAR = "INSTAGRAM_ACCESS_TOKEN"
@@ -22,6 +23,8 @@ USER_ID_VAR = "INSTAGRAM_USER_ID"
 NOT_AVAILABLE = (
     "real Instagram publishing is not available: it is forbidden until D48 is accepted (D49); nothing was published"
 )
+
+CHECK_NOT_AVAILABLE = "real Instagram checking is not available: it is forbidden until D48 is accepted (D49)"
 
 
 class InstagramAdapter:
@@ -36,6 +39,12 @@ class InstagramAdapter:
 
     def schedule_warnings(self, settings: Settings, publish_at: datetime, now: datetime) -> tuple[str, ...]:
         return ()  # No real Instagram schedule can exist yet (D49).
+
+    def remote_checker(self, settings: Settings) -> RemoteChecker:
+        return _remote_checker(settings)
+
+    def media_host(self, settings: Settings) -> MediaHost:
+        return _media_host(settings)
 
 
 ADAPTER = InstagramAdapter()
@@ -54,3 +63,17 @@ def _real_publisher(settings: Settings) -> Publisher:
     except (RealInstagramForbidden, ValueError) as error:
         raise RealPublishingUnavailable(str(error)) from None
     raise RealPublishingUnavailable(NOT_AVAILABLE)  # No media host exists yet (future, D48).
+
+
+def _remote_checker(settings: Settings) -> RemoteChecker:
+    """The real container-status checker. Refused while real Instagram is forbidden (D49); tests replace this."""
+    if not InstagramAdapter.real_available:
+        raise RealPublishingUnavailable(CHECK_NOT_AVAILABLE)
+    raise RealPublishingUnavailable(NOT_AVAILABLE)  # No real client can exist yet (test transport only).
+
+
+def _media_host(settings: Settings) -> MediaHost:
+    """The real media host. Refused while real Instagram is forbidden (D49); none exists yet (D48)."""
+    if not InstagramAdapter.real_available:
+        raise RealPublishingUnavailable(NOT_AVAILABLE)
+    raise RealPublishingUnavailable("no media host is configured yet (D48); nothing was published")
