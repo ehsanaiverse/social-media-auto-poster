@@ -336,6 +336,57 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
 - **Why:** One 2,000-line file mixed the work, the command line and the printing. The API had to import the run path, scans and schedules from a CLI module. Splitting it makes each part small enough to read, and keeps one implementation shared by the CLI and the API.
 - **Consequences:** New code imports from `operations/` or `cli/`, not from `main`. A test that patches code must patch the module whose code looks the name up; the guard enforces it. The old private names (`_run_locked`, `_publisher_for`, and so on) are unchanged, only their module changed.
 
+## D48. Instagram publishing: System User token on graph.facebook.com, presigned R2 URL, container-status recovery (ACCEPTED, 2026-11-19, after the spike)
+
+- **Spike (2026-11-19, done by hand, outside the app):**
+  - The token from the App Dashboard's "API setup with Unified login" is a **System User token** (`EAA…`) that **never expires**. It works on `graph.facebook.com`, **not** on `graph.instagram.com`.
+  - Its scopes were reduced to `instagram_basic` and `instagram_content_publish` (no ads scopes).
+  - `content_publishing_limit`, creating a container, and `media_publish` all worked.
+  - The post is **publicly visible** although the app is in Development mode.
+  - `GET /{ig-user-id}/media` returns `caption` and `timestamp` (format `+0000`). The `caption` field is missing when the caption is empty.
+  - With this token, `me` is **not** the Instagram account, so the Instagram user ID must be configured.
+- **Decision:**
+  - **API and account.** Publish one JPEG with its caption to the developer's own professional account through the Graph API at **`graph.facebook.com`**, with the System User token. This replaces the draft's Instagram Login on `graph.instagram.com`.
+  - **Token.** `INSTAGRAM_ACCESS_TOKEN` and `INSTAGRAM_USER_ID` live in `backend/.env` only. The token has **no expiry and no refresh**: there is no created date and no 60-day warning. Before anything changes, a real run checks the token once with a read-only call on the configured user ID, as D40 does for LinkedIn; a missing or rejected token refuses the run and nothing is sent. Real mode stays `--real` only.
+  - **Media host: Cloudflare R2.**
+    - The bucket is private. Objects go under a random key `ig-tmp/<uuid4>.jpg`, holding exactly the hashed bytes.
+    - Meta receives a **presigned GET URL valid 1 hour**. The object is deleted once the container is final or the job ends, with a 1-day lifecycle rule as the backstop.
+    - Upload, delete and presign are signed with **hand-written SigV4 using `httpx`** (no new dependency), tested against **AWS's published SigV4 test vectors**.
+    - The R2 keys (account ID, access key ID, secret) live in `backend/.env` only. They are never logged, stored in the job database, graph state or checkpoints, written to error reports, or returned by the API.
+  - **Validation:** as D49, in every mode.
+  - **Publish order:**
+    1. local checks;
+    2. the token check on the configured user ID;
+    3. `content_publishing_limit`;
+    4. upload to R2 (the object key committed first, D50);
+    5. create the container, and poll its status until `FINISHED`;
+    6. commit the container ID to the job row;
+    7. send `media_publish` **once**, never retried.
+  - **Recovery:** as in D50 and `resolve --check` (D3). A media ID is looked up with `GET /{ig-user-id}/media?fields=id,caption,timestamp`, which reads `+0000` timestamps and treats a missing `caption` as empty.
+  - **Confirmation phrase per platform:** `publish to Instagram`, checked against the request's platform. One platform's phrase never enables real mode on another.
+- **Still unverified, checked on the first supervised real run:**
+  - whether Meta accepts a presigned R2 URL;
+  - the container status after `media_publish` (expected `PUBLISHED`);
+  - the error a second `media_publish` on the same container returns (the code never sends one).
+
+  Until each is confirmed, the code treats it as uncertain: an unexpected answer is `FAILED` before `media_publish` and `NEEDS_REVIEW` after it.
+- **Code that must change (the real-Instagram step, not done yet):**
+  - `platforms/instagram/client.py`: base URL `graph.facebook.com` (and its host allow-list), with the Graph API version in one constant.
+  - Credentials: the System User token with no expiry and no refresh, and `INSTAGRAM_USER_ID` required.
+  - The adapter's confirmation phrase becomes `publish to Instagram`; the API and the dashboard take it from `GET /api/platforms`.
+  - `R2MediaHost` (SigV4 with test vectors), and `instagram-check`.
+  - The **D49 guards** (`real_available = False`, the test-transport-only client, the refused remote checker and media host) are lifted **only in that step**, with its own tests and a first supervised real post. Until then D49 holds and real Instagram stays refused in code.
+- **Why:**
+  - The spike showed the Unified-login token works only on `graph.facebook.com`, and that a Development-mode app's post is public, which removes the draft's biggest open question.
+  - A token that never expires avoids D40's 60-day renewal routine. It is a long-lived secret, so it stays in `.env` only and is revoked in Meta's Business Settings if it leaks.
+  - R2 offers S3-compatible presigned URLs on a private bucket.
+  - Hand-written SigV4 avoids a large dependency, and the published test vectors make it verifiable without the network.
+- **Consequences:**
+  - New `.env` settings: `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_USER_ID` and the R2 keys (placeholders in `.env.example`).
+  - A Cloudflare account and a bucket with a lifecycle rule, outside Meta.
+  - Error texts keep codes only, never messages, because they can echo a URL.
+  - `docs/instagram-api-notes.md` sections 3 and 4 describe the Instagram Login path; where they disagree with this decision, this decision wins.
+
 ## D49. Simulated Instagram allowed before D48 (2026-11-19)
 
 - **Decision:**

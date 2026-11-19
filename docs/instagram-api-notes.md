@@ -299,29 +299,20 @@ Presigned URLs must be tested with `--upload-test` before relying on them.
    The Instagram app ID and secret are **not** needed for a dashboard token: they are only used for the login-code exchange, and a refresh does not use them (S18, S19).
 10. **Calendar reminder:** renew or refresh the token before 60 days. A refresh is possible from 24 hours after it was issued (S4).
 
-## 13. DRAFT D48 — Instagram integration
+## 13. D48 — accepted (2026-11-19)
 
-> **PROPOSED / NOT ACCEPTED.** Draft for discussion; it changes nothing until the developer accepts it and it is copied into `docs/decisions.md`.
+D48 is **accepted** and recorded in `docs/decisions.md` (D48), with the spike results. What the spike changed from the draft that was here:
 
-## D48. Instagram publishing: Instagram Login, presigned bucket URL, container-status recovery (PROPOSED, 2026-11-19, M5)
-
-- **Decision (proposed):**
-  - **Scope and API.** Add Instagram as the second platform (amending `CLAUDE.md` "LinkedIn is the only platform in scope"). Publish one JPEG with its caption to the developer's own professional account through **Instagram API with Instagram Login** (`graph.instagram.com`, permissions `instagram_business_basic` and `instagram_business_content_publish`), as a Business-type Meta app in Development mode with Standard Access and no App Review.
-  - **Token.** The token is generated in the App Dashboard and stored in `backend/.env` as `INSTAGRAM_ACCESS_TOKEN` with `INSTAGRAM_TOKEN_CREATED`. The app warns 7 days before the 60-day expiry and refuses after it, as in D40. Refresh stays manual for now. Real mode only with `--real`.
-  - **Image hosting.** The image is uploaded, exactly the hashed bytes, to a private bucket under a random key `ig-tmp/<uuid4>.jpg`, and Meta receives a presigned GET URL that lives about 1 hour. The object is deleted once the container is final or the job ends. A 1-day lifecycle rule is the backstop. The provider (R2 or S3) and the signing method (hand-written SigV4 with `httpx`, or a new dependency) are **decided separately**.
-  - **Validation in every mode.** JPEG only (no conversion, so the hashed bytes are the uploaded bytes), at most 8,000,000 bytes, aspect ratio 4:5 to 1.91:1 read from the JPEG header with the standard library, and a caption of at most 2,200 code points and 2,200 UTF-16 units (as built, D49), 30 hashtags and 20 mentions.
-  - **Publish order.** Local checks, then `GET /me`, then `content_publishing_limit`, then the bucket upload (object key committed first), then the container, then the status poll until `FINISHED`. The **container ID is committed** to the job row, then `media_publish` is sent **once** and never retried. Outcomes follow `docs/instagram-api-notes.md` section 9.
-  - **Recovery.** A real Instagram job interrupted while `PUBLISHING` is settled with a read-only container status check: no stored container ID → `FAILED`; `PUBLISHED` → `PUBLISHED` (media ID found by listing recent media, or `NEEDS_REVIEW` if not exactly one); `ERROR`/`EXPIRED` → `FAILED`; otherwise `NEEDS_REVIEW`, which a later check can settle once the container is `PUBLISHED` or `EXPIRED`.
-  - **Several platforms.** One job and one schedule per platform, with independent outcomes.
-  - **Real-mode confirmation.** The real-mode confirmation phrase is per platform and is checked against the request's platform; one platform's phrase never enables real mode on another (tested). Today there is one phrase, `publish to LinkedIn`, in `operations/common.py` (D49, step A); the Instagram phrase is added only with real Instagram.
-- **Why:** Instagram Login needs neither a Facebook Page nor a business portfolio, and its 60-day dashboard token matches the LinkedIn routine. Meta accepts images only by URL, and resumable upload is for video only, so a short-lived, unguessable URL to a private object is the least exposure possible. Converting PNG would break the exact-bytes rule and need Pillow (D37). Instagram documents a container status, so, unlike LinkedIn, an uncertain publish can be checked safely instead of always waiting for a human. Committing the container ID before publishing makes "no ID → never published" provable. A scheduled task could exceed the 50-posts-per-day quota, so the quota is checked first.
-- **Consequences:**
-  - New: `.env` settings, one or two job columns (migration 3 with a backup), a bucket account outside Meta, an Instagram `linkedin-check`-style command (`instagram-check`, with an upload test that creates a container but never publishes it).
-  - Reconciliation and resume gain a network call, for Instagram only.
-  - Error texts keep codes only, never messages (they can echo the URL).
-  - Before acceptance, the open questions in section 11 must be answered, especially public visibility of posts from a Development-mode app, and whether presigned URLs are accepted. Both are tested with the first supervised real post.
-
----
+- **API and token.** The token from "API setup with Unified login" is a System User token (`EAA…`, never expires) that works on **`graph.facebook.com`**, not `graph.instagram.com`. Its scopes are `instagram_basic` and `instagram_content_publish`. There is no 60-day expiry and no refresh, so sections 3 and 12 (token dates, renewal) do not apply to this token.
+- **Identity.** `me` is not the Instagram account with this token. The Instagram user ID is configured (`INSTAGRAM_USER_ID`) instead of read from `/me` (section 2, sections 4–9).
+- **Confirmed:** the publishing limit, container creation and `media_publish`; the post is publicly visible from a Development-mode app (section 11). `GET /{ig-user-id}/media` returns `caption` and `timestamp` (`+0000`); `caption` is missing when the caption is empty (section 9).
+- **Media host (section 8):** Cloudflare R2, private bucket, presigned GET URLs valid 1 hour. Requests are signed with hand-written SigV4 over `httpx` (no new dependency), tested against AWS's SigV4 test vectors. The R2 keys live only in `backend/.env` and are never logged.
+- **Still unverified,** to check on the first real run:
+  - Meta accepts a presigned URL;
+  - the container status after `media_publish`;
+  - the error a second `media_publish` returns.
+- **Confirmation phrase:** per platform, `publish to Instagram`.
+- **Still refused in code:** the D49 guards stay until the real-Instagram step lifts them.
 
 ## Sources (all read 2026-11-19)
 
