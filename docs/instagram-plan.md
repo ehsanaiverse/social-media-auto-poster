@@ -393,6 +393,18 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
 
 ### Step C: Instagram adapter and publisher against fakes (no network, not reachable by real runs)
 
+- [x] **Done (2026-11-19).**
+  - `platforms/instagram/{client,publisher,remote}.py`, `platforms/media_host.py`, plus `ReferenceRecorder`, `RemoteOutcome` and `PublishOutcomeUnknown` in `platforms/base.py`.
+  - `operations/instagram.py`: `InstagramAdapter` with `real_available = False`, **not registered**. Its real publisher is refused with the D49 message before anything is read.
+  - The client refuses any transport that is not a test `MockTransport`.
+  - Tested with `tests/instagram_fake.py` and `tests/media_host_fake.py`.
+  - **Decided while building** (developer's instructions for step C):
+    - the picture is **kept** after NEEDS_REVIEW and deleted after PUBLISHED or FAILED;
+    - an uncertain `media_publish` is NEEDS_REVIEW without a status check in the publisher; the remote checker settles it later;
+    - a documented refusal gets one read-only status check;
+    - the token goes only in the `Authorization` header (S12's examples).
+  - **Left for step D:** `remote_checker` on the adapter, wiring the recorder to the job row (schema v3), and `resolve --check`.
+
 - **Files:**
   - `platforms/media_host.py` (`MediaHost`, `new_media_key`);
   - `platforms/base.py` (`RecordingPublisher`, `ReferenceRecorder`, `RemoteOutcome`, `RemoteChecker`);

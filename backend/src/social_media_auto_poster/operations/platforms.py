@@ -23,6 +23,7 @@ __all__ = ["ADAPTERS", "PlatformAdapter", "UnsupportedPlatform", "adapter_for"]
 
 class PlatformAdapter(Protocol):
     platform: Platform
+    real_available: bool  # Whether a real publisher may be built at all (Instagram: False until D48, D49).
 
     def real_publisher(self, settings: Settings) -> Publisher:
         """The platform's real publisher, after its token check. Raises RealPublishingUnavailable (D40)."""
