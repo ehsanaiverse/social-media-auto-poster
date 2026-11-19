@@ -13,16 +13,14 @@ from dotenv import dotenv_values
 
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import Platform
-from social_media_auto_poster.operations.common import RealPublishingUnavailable
+from social_media_auto_poster.operations.common import RealPublishingUnavailable, real_forbidden_text
 from social_media_auto_poster.platforms.base import Publisher, RemoteChecker
 from social_media_auto_poster.platforms.media_host import MediaHost
 from social_media_auto_poster.platforms.instagram.client import InstagramClient, RealInstagramForbidden
 
 TOKEN_VAR = "INSTAGRAM_ACCESS_TOKEN"
 USER_ID_VAR = "INSTAGRAM_USER_ID"
-NOT_AVAILABLE = (
-    "real Instagram publishing is not available: it is forbidden until D48 is accepted (D49); nothing was published"
-)
+NOT_AVAILABLE = real_forbidden_text(Platform.INSTAGRAM)
 
 CHECK_NOT_AVAILABLE = "real Instagram checking is not available: it is forbidden until D48 is accepted (D49)"
 

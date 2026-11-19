@@ -73,16 +73,7 @@ def resolve_job(
 def _resolve_in_database(
     repository: JobRepository, prefix: str, published_post_id: str | None, platform=None
 ) -> ResolveResult:
-    matches = repository.find_by_id_prefix(prefix)
-    if not matches:
-        raise ResolveError("not_found", f"no job ID starts with '{prefix}'. Nothing was changed.")
-    if len(matches) > 1:
-        details = tuple(f"  {r.job_id}  {r.stem}  {r.status}" for r in matches)
-        raise ResolveError(
-            "ambiguous", f"'{prefix}' matches {len(matches)} jobs; use a longer prefix:", details
-        )
-
-    [job] = matches
+    job = _one_job(repository, prefix)
     name = f"job {job.job_id[:8]} ({job.stem})"
     _require_platform(job, platform)
     if job.status is not JobStatus.NEEDS_REVIEW:
@@ -199,7 +190,8 @@ def _require_platform(job: JobRecord, platform) -> None:
                                              f"{platform}. Nothing was changed.")
 
 
-def _one_needs_review_job(repository: JobRepository, prefix: str, platform=None) -> JobRecord:
+def _one_job(repository: JobRepository, prefix: str) -> JobRecord:
+    """The one job whose ID starts with ``prefix``; refused when none or several match."""
     matches = repository.find_by_id_prefix(prefix)
     if not matches:
         raise ResolveError("not_found", f"no job ID starts with '{prefix}'. Nothing was changed.")
@@ -207,6 +199,11 @@ def _one_needs_review_job(repository: JobRepository, prefix: str, platform=None)
         details = tuple(f"  {r.job_id}  {r.stem}  {r.status}" for r in matches)
         raise ResolveError("ambiguous", f"'{prefix}' matches {len(matches)} jobs; use a longer prefix:", details)
     [job] = matches
+    return job
+
+
+def _one_needs_review_job(repository: JobRepository, prefix: str, platform=None) -> JobRecord:
+    job = _one_job(repository, prefix)
     _require_platform(job, platform)
     if job.status is not JobStatus.NEEDS_REVIEW:
         raise ResolveError("not_needs_review", f"job {job.job_id[:8]} ({job.stem}) is {job.status}; only "

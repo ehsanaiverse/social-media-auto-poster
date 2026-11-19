@@ -27,6 +27,7 @@ from collections.abc import Callable
 import httpx
 
 from social_media_auto_poster.models import PostContent, PublishResult
+from social_media_auto_poster.platforms.base import PublishOutcomeUnknown
 from social_media_auto_poster.platforms.linkedin.caption import caption_problem, escape_caption
 from social_media_auto_poster.platforms.linkedin.client import REDACTED, LinkedInClient
 from social_media_auto_poster.platforms.linkedin.image_size import image_problem
@@ -41,10 +42,6 @@ REFUSED_STATUSES = frozenset({400, 401, 403, 404, 422, 429})
 MAX_ERROR_CODE_LENGTH = 64
 IMAGE_POLL_ATTEMPTS = 15
 IMAGE_POLL_INTERVAL_S = 2.0
-
-
-class PublishOutcomeUnknown(Exception):
-    """The post may or may not exist on LinkedIn. Recorded as NEEDS_REVIEW; never retried."""
 
 
 class _NotPosted(Exception):

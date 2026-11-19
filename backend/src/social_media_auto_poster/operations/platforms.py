@@ -14,11 +14,12 @@ from typing import Protocol
 
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import Platform
+from social_media_auto_poster.operations.common import real_forbidden_text
 from social_media_auto_poster.operations import instagram as instagram_ops
 from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.platforms.base import Publisher, RemoteChecker
 from social_media_auto_poster.platforms.media_host import MediaHost
-from social_media_auto_poster.platforms.rules import UnsupportedPlatform, display_name
+from social_media_auto_poster.platforms.rules import UnsupportedPlatform
 
 __all__ = ["ADAPTERS", "PlatformAdapter", "UnsupportedPlatform", "adapter_for", "real_unavailable_text"]
 
@@ -63,5 +64,4 @@ def real_unavailable_text(platform: Platform) -> str | None:
     """Why real publishing to ``platform`` is refused, or None if its adapter allows it (LinkedIn)."""
     if adapter_for(platform).real_available:
         return None
-    return (f"real {display_name(platform)} publishing is not available: it is forbidden until D48 is accepted "
-            "(D49); nothing was published")
+    return real_forbidden_text(platform)

@@ -47,6 +47,9 @@ from social_media_auto_poster.storage.database import SchemaTooNewError, open_ap
 from social_media_auto_poster.storage.jobs import JobRepository
 
 
+LOCKED_TEXT = "Another run is in progress; try again when it has finished."
+
+
 def _platform_refused(platform, *, real: bool = False) -> bool:
     """Print why ``--platform`` cannot be used here (exit 1), before any lock, log or database. None: fine."""
     if platform is None:
@@ -176,7 +179,7 @@ def _resolve(args: argparse.Namespace) -> int:
             print(line, file=sys.stderr)
         return EXIT_SETUP_ERROR
     except RunLockHeldError:
-        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        print(LOCKED_TEXT, file=sys.stderr)
         return EXIT_LOCKED
 
     name = f"job {result.job.job_id[:8]} ({result.job.stem})"
@@ -196,7 +199,7 @@ def _resolve_check(job_id: str, settings, platform=None) -> int:
             print(line, file=sys.stderr)
         return EXIT_SETUP_ERROR
     except RunLockHeldError:
-        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        print(LOCKED_TEXT, file=sys.stderr)
         return EXIT_LOCKED
 
     name = f"job {result.job.job_id[:8]} ({result.job.stem})"
@@ -226,7 +229,7 @@ def _schedule(args: argparse.Namespace) -> int:
         print(f"Error: {error.message}", file=sys.stderr)
         return EXIT_SETUP_ERROR
     except RunLockHeldError:
-        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        print(LOCKED_TEXT, file=sys.stderr)
         return EXIT_LOCKED
 
     record = result.schedule
@@ -253,7 +256,7 @@ def _unschedule(args: argparse.Namespace) -> int:
         print(f"Error: {error.message}", file=sys.stderr)
         return EXIT_SETUP_ERROR
     except RunLockHeldError:
-        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        print(LOCKED_TEXT, file=sys.stderr)
         return EXIT_LOCKED
     when = _local_time(cancelled.publish_at, settings.timezone)
     print(f"Cancelled the schedule of '{cancelled.stem}' (was {when}, {cancelled.mode}).")
@@ -296,7 +299,7 @@ def _reconfirm(args: argparse.Namespace) -> int:
         print(f"Error: {error.message}", file=sys.stderr)
         return EXIT_SETUP_ERROR
     except RunLockHeldError:
-        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        print(LOCKED_TEXT, file=sys.stderr)
         return EXIT_LOCKED
 
     new, old = result.new, result.old
@@ -336,7 +339,7 @@ def _run(args: argparse.Namespace) -> int:
             report = run_once(settings, mode, publish_simulated=args.publish_simulated, interval_s=args.interval,
                               scheduled=args.scheduled, platform=args.platform)
     except RunLockHeldError:
-        print("Another run is in progress; try again when it has finished.", file=sys.stderr)
+        print(LOCKED_TEXT, file=sys.stderr)
         return EXIT_LOCKED
     except OSError as error:
         print(f"Error: could not set up the run: {error}", file=sys.stderr)

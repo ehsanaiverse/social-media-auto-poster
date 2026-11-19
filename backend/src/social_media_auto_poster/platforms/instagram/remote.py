@@ -18,6 +18,7 @@ import httpx
 from social_media_auto_poster.models import JobStatus
 from social_media_auto_poster.platforms.base import RemoteOutcome
 from social_media_auto_poster.platforms.instagram.client import InstagramClient
+from social_media_auto_poster.platforms.instagram.publisher import json_or_empty
 
 CONTAINER_LIFETIME = timedelta(hours=24)  # S13: "Containers expire after 24 hours".
 MATCH_MARGIN = timedelta(minutes=5)  # Clock differences between this PC and Instagram.
@@ -64,7 +65,7 @@ class InstagramRemoteChecker:
             return None
         if response.status_code != 200:
             return None
-        status = _json_or_empty(response).get("status_code")
+        status = json_or_empty(response).get("status_code")
         return status if status in ("PUBLISHED", "ERROR", "EXPIRED", "FINISHED", "IN_PROGRESS") else None
 
     def _find_media(self, job_created_at: datetime) -> str | None:
@@ -76,7 +77,7 @@ class InstagramRemoteChecker:
             return None
         if response.status_code != 200:
             return None
-        items = _json_or_empty(response).get("data")
+        items = json_or_empty(response).get("data")
         if not isinstance(items, list):
             return None
         found = [item.get("id") for item in items
@@ -93,11 +94,3 @@ def _after(timestamp: object, since: datetime) -> bool:
     except ValueError:
         return False
     return moment.tzinfo is not None and moment >= since
-
-
-def _json_or_empty(response: httpx.Response) -> dict:
-    try:
-        data = response.json()
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}

@@ -17,8 +17,6 @@ USER_ID = "17841400000000001"
 CONTAINER_ID = "17889455560051444"
 MEDIA_ID = "17920238422030506"
 
-OPERATIONS = ("limit", "create", "status", "publish", "media")
-
 
 def json_response(status: int, body: object) -> httpx.Response:
     return httpx.Response(status, json=body)

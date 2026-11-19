@@ -202,16 +202,9 @@ def _run_locked(
         return _refused(mode, RunRefusal("real_unavailable", f"Error: {refused}."))
     if mode is PublishMode.REAL:
         # A real run never creates the data folder: a missing one usually means a wrong AUTOPOSTER_DATA_DIR.
-        missing = missing_platform_dirs(settings, platform)
-        if missing:
-            logger.error("Real run refused: data folders missing: %s", ", ".join(str(path) for path in missing))
-            text = "\n".join([
-                f"\nREFUSED: the data folder {settings.data_dir} does not have its {display_name(platform)} folders:",
-                *(f"  {path}" for path in missing),
-                f"Real runs never create them. Check {DATA_DIR_VAR} in backend\\.env; for a new setup, run once "
-                "without --real to create them. Nothing was published.",
-            ])
-            return _refused(mode, RunRefusal("data_folders", text))
+        refusal = _missing_data_folders(settings, platform)
+        if refusal:
+            return _refused(mode, refusal)
     ensure_data_dirs(settings)
     with ExitStack() as stack:
         try:
@@ -465,16 +458,24 @@ def _platform_setup(
 ) -> Publisher | RunRefusal:
     """One platform's setup for a scheduled run: its data folders (real runs), then ``_publisher_for``."""
     if mode is PublishMode.REAL:
-        missing = missing_platform_dirs(settings, platform)
-        if missing:
-            logger.error("Real run refused: data folders missing: %s", ", ".join(str(path) for path in missing))
-            return RunRefusal("data_folders", "\n".join([
-                f"\nREFUSED: the data folder {settings.data_dir} does not have its {display_name(platform)} folders:",
-                *(f"  {path}" for path in missing),
-                f"Real runs never create them. Check {DATA_DIR_VAR} in backend\\.env; for a new setup, run once "
-                "without --real to create them. Nothing was published.",
-            ]))
+        refusal = _missing_data_folders(settings, platform)
+        if refusal:
+            return refusal
     return _publisher_for(mode, settings, repository, stack, platform)
+
+
+def _missing_data_folders(settings: Settings, platform: Platform) -> RunRefusal | None:
+    """A real run never creates the data folders: a missing one usually means a wrong AUTOPOSTER_DATA_DIR."""
+    missing = missing_platform_dirs(settings, platform)
+    if not missing:
+        return None
+    logger.error("Real run refused: data folders missing: %s", ", ".join(str(path) for path in missing))
+    return RunRefusal("data_folders", "\n".join([
+        f"\nREFUSED: the data folder {settings.data_dir} does not have its {display_name(platform)} folders:",
+        *(f"  {path}" for path in missing),
+        f"Real runs never create them. Check {DATA_DIR_VAR} in backend\\.env; for a new setup, run once "
+        "without --real to create them. Nothing was published.",
+    ]))
 
 
 def _resumed_lines(resumed: ResumeResult) -> list[JobLine]:

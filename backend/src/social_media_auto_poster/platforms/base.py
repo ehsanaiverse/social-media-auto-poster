@@ -26,7 +26,6 @@ class PublishOutcomeUnknown(Exception):
     """The post may or may not exist on the platform. The workflow records NEEDS_REVIEW and never retries it.
 
     Raised by publishers whose message is already safe to store (no token, no caption, no signed URL).
-    LinkedIn keeps its own class of the same name (platforms/linkedin/publisher.py).
     """
 
 

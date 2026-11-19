@@ -6,11 +6,18 @@ from zoneinfo import ZoneInfo
 
 from social_media_auto_poster.config import DATA_DIR_VAR, Settings
 from social_media_auto_poster.models import Platform
+from social_media_auto_poster.platforms.rules import display_name
 from social_media_auto_poster.storage.jobs import JobRecord
 
 # Every module of the operations and the CLI logs under this name, so log lines read exactly as they did
 # when all of this lived in main.py ("... run_id=... social_media_auto_poster.main Run finished: ...").
 LOGGER_NAME = "social_media_auto_poster.main"
+
+def real_forbidden_text(platform: Platform) -> str:
+    """The D49 refusal for a platform whose real publishing is not enabled (used by real_unavailable_text)."""
+    return (f"real {display_name(platform)} publishing is not available: it is forbidden until D48 is accepted "
+            "(D49); nothing was published")
+
 
 PLATFORM = Platform.LINKEDIN  # The default platform of every operation (the only one with an adapter).
 DEFAULT_INTERVAL_S = 1.0

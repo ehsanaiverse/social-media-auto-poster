@@ -182,9 +182,9 @@ class InstagramPublisher:
         status = response.status_code
         codes = _error_codes(response)
         if status == 200:
-            media_id = _json_or_empty(response).get("id")
+            media_id = json_or_empty(response).get("id")
             if isinstance(media_id, str) and media_id.strip():
-                issue = _json_or_empty(response).get("config_issue")
+                issue = json_or_empty(response).get("config_issue")
                 if isinstance(issue, str) and issue.isupper() and len(issue) <= 64:
                     logger.warning("Instagram published the post with an issue: media_id=%s config_issue=%s",
                                    media_id, issue)  # S14: e.g. CAPTION_NOT_ATTACHED; the post exists.
@@ -212,7 +212,7 @@ class InstagramPublisher:
             response = self._client.container_status(container_id)
         except httpx.HTTPError:
             return None
-        status = _json_or_empty(response).get("status_code") if response.status_code == 200 else None
+        status = json_or_empty(response).get("status_code") if response.status_code == 200 else None
         return status if isinstance(status, str) else None
 
     # Helpers.
@@ -240,7 +240,7 @@ class InstagramPublisher:
             raise _NotPublished(self._client.redact(
                 f"{doing}: Instagram answered {response.status_code}{_codes_text(_error_codes(response))}"
             ))
-        data = _json_or_empty(response)
+        data = json_or_empty(response)
         if not data:
             raise _NotPublished(f"{doing}: Instagram's answer was not readable")
         return data
@@ -255,7 +255,7 @@ def _is_refusal(codes: tuple[int, int | None] | None) -> bool:
 
 def _error_codes(response: httpx.Response) -> tuple[int, int | None] | None:
     """Instagram's numeric ``code`` and ``error_subcode`` (S20, S21), never its message, which can echo input."""
-    error = _json_or_empty(response).get("error")
+    error = json_or_empty(response).get("error")
     if not isinstance(error, dict) or not _is_int(error.get("code")):
         return None
     subcode = error.get("error_subcode")
@@ -269,7 +269,8 @@ def _codes_text(codes: tuple[int, int | None] | None) -> str:
     return f", code {code}" + (f"/{subcode}" if subcode is not None else "")
 
 
-def _json_or_empty(response: httpx.Response) -> dict:
+def json_or_empty(response: httpx.Response) -> dict:
+    """The response's JSON object, or {} when it is not JSON or not an object."""
     try:
         data = response.json()
     except ValueError:
