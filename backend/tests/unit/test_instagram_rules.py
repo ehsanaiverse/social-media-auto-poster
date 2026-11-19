@@ -74,8 +74,7 @@ def _post(tmp_path: Path, platform: Platform, media: bytes, *, suffix=".jpg", ca
 def test_instagram_has_rules_but_still_no_adapter():
     assert RULES[Platform.INSTAGRAM].display_name == "Instagram"
     assert rules_for(Platform.INSTAGRAM) is RULES[Platform.INSTAGRAM]
-    with pytest.raises(UnsupportedPlatform, match="Instagram is not supported"):
-        operations_platforms.adapter_for(Platform.INSTAGRAM)
+    assert operations_platforms.adapter_for(Platform.INSTAGRAM).real_available is False
 
 
 def test_rules_for_refuses_a_platform_without_rules():

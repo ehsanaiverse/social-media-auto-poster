@@ -12,12 +12,12 @@ from social_media_auto_poster.operations.platforms import ADAPTERS, UnsupportedP
 
 
 def test_only_linkedin_is_registered():
-    assert set(ADAPTERS) == {Platform.LINKEDIN}
+    assert set(ADAPTERS) == {Platform.LINKEDIN, Platform.INSTAGRAM}
     assert adapter_for(Platform.LINKEDIN) is linkedin_ops.ADAPTER
     assert adapter_for(Platform.LINKEDIN).platform is Platform.LINKEDIN
 
 
-@pytest.mark.parametrize("platform", [Platform.INSTAGRAM, Platform.FACEBOOK])
+@pytest.mark.parametrize("platform", [Platform.FACEBOOK])
 def test_platforms_without_an_integration_have_no_adapter(platform):
     with pytest.raises(UnsupportedPlatform, match=f"{platform} is not supported"):
         adapter_for(platform)

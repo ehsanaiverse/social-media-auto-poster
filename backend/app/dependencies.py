@@ -6,7 +6,12 @@ from fastapi import HTTPException, Request
 
 from social_media_auto_poster.models import Platform
 from social_media_auto_poster.operations.common import PLATFORM
-from social_media_auto_poster.operations.platforms import ADAPTERS, UnsupportedPlatform, adapter_for
+from social_media_auto_poster.operations.platforms import (
+    ADAPTERS,
+    UnsupportedPlatform,
+    adapter_for,
+    real_unavailable_text,
+)
 
 from .services import JobService
 
@@ -49,3 +54,10 @@ def parse_platform(value: str | None) -> Platform:
             status_code=400, detail=f"{platform} is not supported yet. Supported: {supported}. Nothing was done."
         ) from None
     return platform
+
+
+def require_real_available(platform: Platform, real: bool) -> None:
+    """A real request for a platform that may not publish for real (Instagram, D49) is a 400, before anything happens."""
+    refused = real_unavailable_text(platform) if real else None
+    if refused is not None:
+        raise HTTPException(status_code=400, detail=f"{refused[0].upper()}{refused[1:]}.")

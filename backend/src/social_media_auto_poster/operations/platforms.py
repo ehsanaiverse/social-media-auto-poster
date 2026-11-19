@@ -14,11 +14,12 @@ from typing import Protocol
 
 from social_media_auto_poster.config import Settings
 from social_media_auto_poster.models import Platform
+from social_media_auto_poster.operations import instagram as instagram_ops
 from social_media_auto_poster.operations import linkedin as linkedin_ops
 from social_media_auto_poster.platforms.base import Publisher
-from social_media_auto_poster.platforms.rules import UnsupportedPlatform
+from social_media_auto_poster.platforms.rules import UnsupportedPlatform, display_name
 
-__all__ = ["ADAPTERS", "PlatformAdapter", "UnsupportedPlatform", "adapter_for"]
+__all__ = ["ADAPTERS", "PlatformAdapter", "UnsupportedPlatform", "adapter_for", "real_unavailable_text"]
 
 
 class PlatformAdapter(Protocol):
@@ -35,7 +36,11 @@ class PlatformAdapter(Protocol):
         ...
 
 
-ADAPTERS: dict[Platform, PlatformAdapter] = {Platform.LINKEDIN: linkedin_ops.ADAPTER}
+# Instagram is registered for simulated use only (D49, step D2): its adapter's real_available is False.
+ADAPTERS: dict[Platform, PlatformAdapter] = {
+    Platform.LINKEDIN: linkedin_ops.ADAPTER,
+    Platform.INSTAGRAM: instagram_ops.ADAPTER,
+}
 
 
 def adapter_for(platform: Platform) -> PlatformAdapter:
@@ -43,3 +48,11 @@ def adapter_for(platform: Platform) -> PlatformAdapter:
         return ADAPTERS[platform]
     except KeyError:
         raise UnsupportedPlatform(f"{platform} is not supported: it has folders but no integration") from None
+
+
+def real_unavailable_text(platform: Platform) -> str | None:
+    """Why real publishing to ``platform`` is refused, or None if its adapter allows it (LinkedIn)."""
+    if adapter_for(platform).real_available:
+        return None
+    return (f"real {display_name(platform)} publishing is not available: it is forbidden until D48 is accepted "
+            "(D49); nothing was published")

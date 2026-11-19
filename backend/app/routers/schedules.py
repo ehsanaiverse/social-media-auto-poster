@@ -10,7 +10,7 @@ from social_media_auto_poster.models import ScheduleStatus
 from social_media_auto_poster.services.run_lock import RunLockHeldError
 from social_media_auto_poster.services.scheduling import ScheduleError
 
-from ..dependencies import get_job_service, parse_platform, require_json
+from ..dependencies import get_job_service, parse_platform, require_json, require_real_available
 from ..models import ReconfirmRequest, ScheduleRequest
 from ..models.schemas import REAL_CONFIRMATION
 from ..services import JobService, ScheduleLookupError
@@ -58,6 +58,7 @@ def list_schedules(
 def create_schedule(body: ScheduleRequest, service: JobService = Depends(get_job_service)) -> dict:
     """Schedule a post in incoming/ for ``publish_at`` (local time). Simulated unless real + the phrase."""
     platform = parse_platform(body.platform)  # Before the run lock or anything else.
+    require_real_available(platform, body.real)
     _check_real(body.real, body.confirm)
     try:
         return service.schedule(name=body.name, publish_at=body.publish_at, real=body.real, platform=platform)

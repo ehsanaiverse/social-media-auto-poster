@@ -429,6 +429,14 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
 
 Split into D1 (schema v3, migration, the recorder writing the container ID), D2 (register the Instagram adapter, simulated only; `run --scheduled` across platforms, refused platforms skipped, exit code 3 when one was), D3 (`resolve --check` with the remote checker).
 
+- [x] **D2 done (2026-11-19).**
+  - Instagram is registered (`real_available = False`), so simulated Instagram works through `run_once`, `scan_preview`, the schedule operations and the API (`platform`). Facebook is still refused.
+  - `real_unavailable_text` refuses real Instagram in `_run_locked` (before anything changes), `_publisher_for`, `schedule_post`/`reconfirm_post` (before the lock) and the API (400).
+  - `run_once(scheduled=True)` without a platform covers every registered platform: the oldest due schedule of any platform, at most one per run. Per-platform setup (data folders, archive history, real availability, token) is checked oldest first; a refused platform is skipped, with its schedules unchanged, logged as `Platform skipped by the scheduled run: platform=… reason=…` and shown as `SKIPPED`.
+  - Exit codes as recorded in D49: 3 if a platform was skipped, 1 if every platform with something to publish was refused (unchanged D46 behaviour), 0 otherwise.
+  - The "Run started" line of a scheduled run now reads `platform=LinkedIn,Instagram`; the only LinkedIn-visible change, because scheduled runs are no longer LinkedIn-only.
+  - Tests edited with the developer's approval: the Instagram cases of the A2/A3a/A3b refusal tests, four Instagram-registration assertions, and the two Facebook/unknown-name message strings.
+
 - [x] **D1 done (2026-11-19).**
   - Migration 3 adds `jobs.remote_ref` and `jobs.media_host_key`, backed up first as `app.db.bak-v2`.
   - `JobRepository.record_remote_ref` commits the reference in its own transaction, and only for a `PUBLISHING` job without one.

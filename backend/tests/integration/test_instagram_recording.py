@@ -180,4 +180,4 @@ def test_a_real_job_of_a_platform_without_references_still_needs_review(settings
 def test_the_run_passes_only_registered_platforms_that_record_references(monkeypatch):
     from social_media_auto_poster.operations import platforms
 
-    assert frozenset(p for p, a in platforms.ADAPTERS.items() if a.records_references) == frozenset()  # Until D2.
+    assert frozenset(p for p, a in platforms.ADAPTERS.items() if a.records_references) == INSTAGRAM_ONLY  # From D2.

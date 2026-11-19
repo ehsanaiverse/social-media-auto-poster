@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from social_media_auto_poster.services.run_lock import RunLockHeldError
 
-from ..dependencies import get_job_service, parse_platform, require_json
+from ..dependencies import get_job_service, parse_platform, require_json, require_real_available
 from ..models import RunRequest
 from ..models.schemas import REAL_CONFIRMATION
 from ..services import JobService, run_to_dict
@@ -23,6 +23,7 @@ REFUSED_KINDS = {"data_folders", "archive_history", "token", "simulated_only"}
 @router.post("", dependencies=[Depends(require_json)])
 def run(body: RunRequest, service: JobService = Depends(get_job_service)) -> dict:
     platform = parse_platform(body.platform)  # Before the run lock or anything else.
+    require_real_available(platform, body.real)
     if body.publish_simulated and not body.real:
         raise HTTPException(status_code=400, detail="publish_simulated only applies together with real: true.")
     if body.real and body.confirm != REAL_CONFIRMATION:

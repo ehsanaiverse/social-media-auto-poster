@@ -20,9 +20,8 @@ def test_only_linkedin_may_publish_for_real():
 
 
 def test_instagram_is_still_not_registered():
-    assert Platform.INSTAGRAM not in ADAPTERS
-    with pytest.raises(UnsupportedPlatform):
-        adapter_for(Platform.INSTAGRAM)
+    assert ADAPTERS[Platform.INSTAGRAM] is instagram_ops.ADAPTER
+    assert adapter_for(Platform.INSTAGRAM).real_available is False
 
 
 def test_building_a_real_instagram_publisher_is_refused():

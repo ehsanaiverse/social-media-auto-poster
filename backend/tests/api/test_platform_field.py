@@ -22,10 +22,8 @@ JPEG = (IMAGES / "baseline-7x5.jpg").read_bytes()
 LOCAL = {"X-AutoPoster": "1"}
 
 REFUSED = {
-    "Instagram": "Instagram is not supported yet. Supported: LinkedIn. Nothing was done.",
-    "instagram": "Instagram is not supported yet. Supported: LinkedIn. Nothing was done.",
-    "FACEBOOK": "Facebook is not supported yet. Supported: LinkedIn. Nothing was done.",
-    "x": "Unknown platform 'x'. Supported: LinkedIn.",
+    "FACEBOOK": "Facebook is not supported yet. Supported: LinkedIn, Instagram. Nothing was done.",
+    "x": "Unknown platform 'x'. Supported: LinkedIn, Instagram.",
 }
 
 

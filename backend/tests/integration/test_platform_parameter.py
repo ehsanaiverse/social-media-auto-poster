@@ -15,7 +15,7 @@ from social_media_auto_poster.operations.schedules import reconfirm_post, schedu
 from social_media_auto_poster.storage.database import open_app_db_read_only
 from social_media_auto_poster.storage.jobs import JobRepository
 
-UNSUPPORTED = [Platform.INSTAGRAM, Platform.FACEBOOK]
+UNSUPPORTED = [Platform.FACEBOOK]
 
 
 @pytest.fixture

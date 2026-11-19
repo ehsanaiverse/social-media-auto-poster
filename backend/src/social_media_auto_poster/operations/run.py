@@ -52,7 +52,7 @@ from social_media_auto_poster.operations.common import (
     outside_warning,
 )
 from social_media_auto_poster.operations.logs import _run_scope
-from social_media_auto_poster.operations.platforms import ADAPTERS, adapter_for
+from social_media_auto_poster.operations.platforms import ADAPTERS, adapter_for, real_unavailable_text
 from social_media_auto_poster.operations.scan import _active_schedules
 from social_media_auto_poster.platforms.base import Publisher
 from social_media_auto_poster.platforms.rules import display_name
@@ -60,7 +60,7 @@ from social_media_auto_poster.platforms.simulator import Simulator
 from social_media_auto_poster.services.real_mode import SimulatedOnly, archive_without_history, posts_only_simulated
 from social_media_auto_poster.services.reconcile import Recovery, reconcile_interrupted_jobs
 from social_media_auto_poster.services.run_lock import single_run_lock
-from social_media_auto_poster.services.scheduling import DueSelection, select_due
+from social_media_auto_poster.services.scheduling import DueSchedule, DueSelection, select_due
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db
 from social_media_auto_poster.storage.jobs import JobRepository
 from social_media_auto_poster.storage.schedules import ScheduleNotFoundError, ScheduleRecord, ScheduleRepository
@@ -113,6 +113,14 @@ class ScheduledPost:
 
 
 @dataclass(frozen=True)
+class SkippedPlatform:
+    """A platform a scheduled run left alone because its setup was refused (D49). Its schedules are unchanged."""
+
+    platform: Platform
+    refusal: RunRefusal
+
+
+@dataclass(frozen=True)
 class RunReport:
     mode: PublishMode
     exit_code: int
@@ -128,6 +136,7 @@ class RunReport:
     due: tuple[ScheduledPost, ...] = ()  # Carried out by this run (at most one), with how late.
     missed: tuple[ScheduledPost, ...] = ()  # More than 6 hours late: marked MISSED, nothing sent.
     waiting: tuple[ScheduledPost, ...] = ()  # Also due and in time: left for the next scheduled runs.
+    skipped: tuple[SkippedPlatform, ...] = ()  # Refused this run; their schedules stay as they were (D49).
 
 
 def run_once(
@@ -137,7 +146,7 @@ def run_once(
     publish_simulated: bool = False,
     interval_s: float = DEFAULT_INTERVAL_S,
     scheduled: bool = False,
-    platform: Platform = PLATFORM,
+    platform: Platform | None = None,
 ) -> RunReport:
     """One complete run: the lock, crash recovery, real-mode safeguards, and every complete post once.
 
@@ -145,19 +154,27 @@ def run_once(
     ``mode`` (at most one published per run; more than 6 hours late -> MISSED) and nothing else in
     incoming/. Returns a RunReport; a refusal is data in the report, not an exception. Raises
     RunLockHeldError if another run holds the lock, and OSError if the run cannot be set up. Log
-    handlers are the caller's job (the CLI and the API each attach their own). ``platform`` (default LinkedIn)
-    must have an adapter: otherwise UnsupportedPlatform is raised before the lock is taken or anything is written.
+    handlers are the caller's job (the CLI and the API each attach their own). ``platform`` must have an
+    adapter: otherwise UnsupportedPlatform is raised before the lock is taken or anything is written. Without
+    it, an ordinary run is LinkedIn's and a scheduled run covers every registered platform (D49): the oldest
+    due schedule of any platform, at most one per run, and a platform whose setup is refused is skipped.
     """
-    adapter_for(platform)  # Refuse an unsupported platform before anything happens.
+    if platform is not None:
+        adapter_for(platform)  # Refuse an unsupported platform before anything happens.
+    scheduled_platforms = (platform,) if platform is not None else tuple(ADAPTERS)
+    label = ",".join(scheduled_platforms) if scheduled else (platform or PLATFORM)
+    platform = platform or PLATFORM
     started = time.monotonic()
     counts: Counter[str] = Counter()
     report: RunReport | None = None
     with single_run_lock(settings.lock_file), _run_scope():
-        logger.info("Run started: platform=%s mode=%s%s", platform, mode, " scheduled=yes" if scheduled else "")
+        logger.info("Run started: platform=%s mode=%s%s", label, mode, " scheduled=yes" if scheduled else "")
         if data_dir_outside_base(settings):
             logger.warning(outside_warning(settings).removeprefix("Warning: "))
         try:
-            report = _run_locked(settings, mode, publish_simulated, interval_s, counts, scheduled, platform)
+            report = _run_locked(
+                settings, mode, publish_simulated, interval_s, counts, scheduled, platform, scheduled_platforms
+            )
             return report
         finally:
             exit_code = report.exit_code if report is not None else EXIT_SETUP_ERROR
@@ -177,8 +194,12 @@ def _run_locked(
     counts: Counter[str],
     scheduled: bool = False,
     platform: Platform = PLATFORM,
+    scheduled_platforms: tuple[Platform, ...] = (PLATFORM,),
 ) -> RunReport:
     """Everything a run does while holding the lock, after "Run started" is logged."""
+    if mode is PublishMode.REAL and not scheduled and (refused := real_unavailable_text(platform)):
+        logger.error("Real run refused: real publishing is not available for %s", platform)
+        return _refused(mode, RunRefusal("real_unavailable", f"Error: {refused}."))
     if mode is PublishMode.REAL:
         # A real run never creates the data folder: a missing one usually means a wrong AUTOPOSTER_DATA_DIR.
         missing = missing_platform_dirs(settings, platform)
@@ -209,12 +230,20 @@ def _run_locked(
         repository = JobRepository(conn)
         schedules = ScheduleRepository(conn)
         selection = now = None
+        skipped: tuple[SkippedPlatform, ...] = ()
+        chosen = platform
         if scheduled:  # Read-only: what is due decides whether a publisher (and the token check) is needed.
             now = clock.now()
-            selection = select_due(schedules.due(platform=platform, mode=mode, now=now), mode=mode, now=now)
+            due = [s for p in scheduled_platforms for s in schedules.due(platform=p, mode=mode, now=now)]
+            selection = select_due(due, mode=mode, now=now)
         if selection is not None and not selection.publish:
             # Nothing to publish: no real publisher, so no token check and no LinkedIn call (D46).
             publisher: Publisher | RunRefusal = _NothingToPublish()
+        elif selection is not None:
+            # Setup checks per platform, oldest due first, before anything changes (D46, D49).
+            publisher, selection, skipped, chosen = _scheduled_publisher(
+                mode, settings, repository, stack, selection, now
+            )
         else:
             # Real-mode checks come before anything changes, so a refused run leaves everything as it was.
             publisher = _publisher_for(mode, settings, repository, stack, platform)
@@ -247,7 +276,8 @@ def _run_locked(
         )
         if selection is not None:
             return _process_scheduled(
-                context, schedules, selection, now, tuple(resumed_lines), recoveries, earlier_problems, counts, platform
+                context, schedules, selection, now, tuple(resumed_lines), recoveries, earlier_problems, counts, chosen,
+                skipped,
             )
         return _process(
             context, schedules, publish_simulated, tuple(resumed_lines), recoveries, earlier_problems, counts, platform,
@@ -271,6 +301,7 @@ def _process_scheduled(
     earlier_problems: bool,
     counts: Counter[str],
     platform: Platform = PLATFORM,
+    skipped: tuple[SkippedPlatform, ...] = (),
 ) -> RunReport:
     """A scheduled run (D46): mark the missed schedules, then carry out at most one due schedule.
 
@@ -315,7 +346,8 @@ def _process_scheduled(
 
     waiting = tuple(_scheduled_post(s, zone, now - s.publish_at) for s in selection.waiting)
     needs_human = any(r.status is JobStatus.NEEDS_REVIEW for r in recoveries)
-    problems = needs_human or earlier_problems or bool(missed) or any(line.problem for line in lines)
+    problems = (needs_human or earlier_problems or bool(missed) or bool(skipped)
+                or any(line.problem for line in lines))
     return RunReport(
         mode=context.mode,
         exit_code=EXIT_JOB_PROBLEMS if problems else EXIT_OK,
@@ -326,6 +358,7 @@ def _process_scheduled(
         scan=ScanResult(candidates=(), pending=(), ambiguous=()),
         footer=_footer(context.mode, tuple(lines), platform),
         scheduled_run=True,
+        skipped=skipped,
         due=tuple(due),
         missed=tuple(missed),
         waiting=waiting,
@@ -355,6 +388,10 @@ def _publisher_for(
     """The publisher for this run, or the refusal that stops a real run before anything changes."""
     if mode is PublishMode.SIMULATED:
         return Simulator()
+    refused = real_unavailable_text(platform)
+    if refused is not None:  # D49: real Instagram is forbidden; checked before anything else.
+        logger.error("Real run refused: real publishing is not available for %s", platform)
+        return RunRefusal("real_unavailable", f"Error: {refused}.")
     unknown = archive_without_history(settings, repository, platform)
     if unknown:
         logger.error("Real run refused: archive holds %d post folder(s) but the job database has no real jobs", len(unknown))
@@ -376,6 +413,57 @@ def _publisher_for(
     if close is not None:
         stack.callback(close)
     return publisher
+
+
+def _scheduled_publisher(
+    mode: PublishMode, settings: Settings, repository: JobRepository, stack: ExitStack,
+    selection: DueSelection, now: datetime,
+) -> tuple[Publisher | RunRefusal, DueSelection, tuple[SkippedPlatform, ...], Platform]:
+    """The publisher for the oldest due schedule whose platform's setup is not refused (D49).
+
+    A refused platform is skipped: its schedules (due, waiting and missed) stay exactly as they are and it is
+    reported. If every platform with something to publish is refused, the whole run is refused as before
+    (D46: exit 1, nothing changed), so a LinkedIn-only setup behaves exactly as it always did.
+    """
+    in_time = [*(item.schedule for item in selection.publish), *selection.waiting]  # Oldest first.
+    refused: dict[Platform, RunRefusal] = {}
+    for schedule in in_time:
+        if schedule.platform in refused:
+            continue
+        publisher = _platform_setup(mode, settings, repository, stack, schedule.platform)
+        if isinstance(publisher, RunRefusal):
+            refused[schedule.platform] = publisher
+            continue
+        skipped = tuple(SkippedPlatform(p, refusal) for p, refusal in refused.items())
+        for item in skipped:
+            logger.warning("Platform skipped by the scheduled run: platform=%s reason=%s",
+                           item.platform, item.refusal.kind)
+        kept = DueSelection(
+            publish=(DueSchedule(schedule, now - schedule.publish_at),),
+            missed=tuple(s for s in selection.missed if s.platform not in refused),
+            waiting=tuple(s for s in in_time if s is not schedule and s.platform not in refused),
+        )
+        return publisher, kept, skipped, schedule.platform
+    refusals = list(refused.values())
+    text = "\n".join(refusal.text for refusal in refusals if refusal.text)
+    return RunRefusal(refusals[0].kind, text), selection, (), in_time[0].platform
+
+
+def _platform_setup(
+    mode: PublishMode, settings: Settings, repository: JobRepository, stack: ExitStack, platform: Platform
+) -> Publisher | RunRefusal:
+    """One platform's setup for a scheduled run: its data folders (real runs), then ``_publisher_for``."""
+    if mode is PublishMode.REAL:
+        missing = missing_platform_dirs(settings, platform)
+        if missing:
+            logger.error("Real run refused: data folders missing: %s", ", ".join(str(path) for path in missing))
+            return RunRefusal("data_folders", "\n".join([
+                f"\nREFUSED: the data folder {settings.data_dir} does not have its {display_name(platform)} folders:",
+                *(f"  {path}" for path in missing),
+                f"Real runs never create them. Check {DATA_DIR_VAR} in backend\\.env; for a new setup, run once "
+                "without --real to create them. Nothing was published.",
+            ]))
+    return _publisher_for(mode, settings, repository, stack, platform)
 
 
 def _resumed_lines(resumed: ResumeResult) -> list[JobLine]:

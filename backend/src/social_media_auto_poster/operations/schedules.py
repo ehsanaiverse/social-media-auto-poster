@@ -15,7 +15,7 @@ from social_media_auto_poster.models import Platform, PostCandidate, PublishMode
 from social_media_auto_poster.operations import clock
 from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, LOGGER_NAME, PLATFORM, _local_time
 from social_media_auto_poster.operations.logs import _run_scope
-from social_media_auto_poster.operations.platforms import adapter_for
+from social_media_auto_poster.operations.platforms import adapter_for, real_unavailable_text
 from social_media_auto_poster.operations.scan import ScheduleView, unstable_files
 from social_media_auto_poster.services.run_lock import single_run_lock
 from social_media_auto_poster.services.scheduling import (
@@ -72,6 +72,8 @@ def schedule_post(
     UnsupportedPlatform for a platform without an adapter (before the lock; nothing changed).
     """
     adapter = adapter_for(platform)
+    if real and (refused := real_unavailable_text(platform)):  # D49: never a real Instagram schedule.
+        raise ScheduleError("real_unavailable", f"{refused}.")
     mode = PublishMode.REAL if real else PublishMode.SIMULATED
     now = clock.now()
     with single_run_lock(settings.lock_file), _run_scope():
@@ -209,6 +211,8 @@ def reconfirm_post(
     UnsupportedPlatform for a platform without an adapter (before the lock; nothing changed).
     """
     adapter = adapter_for(platform)
+    if real and (refused := real_unavailable_text(platform)):  # D49: never a real Instagram schedule.
+        raise ScheduleError("real_unavailable", f"{refused}.")
     mode = PublishMode.REAL if real else PublishMode.SIMULATED
     now = clock.now()
     wanted = name.strip()

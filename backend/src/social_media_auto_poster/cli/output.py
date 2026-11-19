@@ -138,6 +138,12 @@ def _print_run_report(report: RunReport, settings: Settings) -> None:
 
 
 def _print_scheduled_run(report: RunReport) -> None:
+    if report.skipped:
+        print(f"\nSKIPPED ({len(report.skipped)}) - platforms refused this run; their schedules are unchanged")
+        for item in report.skipped:
+            print(f"  {item.platform}:")
+            for line in item.refusal.text.strip().splitlines():
+                print(f"    {line}")
     def late(post: ScheduledPost) -> str:
         minutes = _minutes(post.late_by) if post.late_by is not None else 0
         return "on time" if minutes <= 0 else f"{minutes} min late"

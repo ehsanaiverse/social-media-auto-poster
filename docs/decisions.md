@@ -354,6 +354,18 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
   - `has_jobs` across all platforms would weaken D38's protection once a second platform has real jobs. Two copies of the confirmation phrase could drift apart.
 - **Consequences:**
   - `CLAUDE.md` now reads "Instagram: simulated only (D49). Real Instagram is forbidden until D48 is accepted."
-  - A scheduled run can now publish on one platform while another is refused. **Still to settle in plan steps D/E:** the exit code of such a run. A skipped platform must stay visible in Task Scheduler's history, so 1 or 3 rather than 0.
+  - A scheduled run can now publish on one platform while another is refused.
+  - **Exit code (decided 2026-11-19, step D2):**
+    - **3** when a platform was skipped and the run went on with another, so Task Scheduler's history shows it;
+    - **1** when *every* platform with something to publish was refused: the whole run is refused as before (D46), and nothing changes, not even the missed schedules;
+    - **0** otherwise, or 3 as before for a MISSED, INVALID or FAILED outcome;
+    - **1** for real errors (database, checkpoint store, crash recovery).
+
+    Exit 1 when everything is refused keeps a LinkedIn-only setup exactly as it was: its existing tests (expired token, archive without history, missing data folders) expect exit 1 with nothing changed. A skipped platform's schedules (due, waiting and missed) are not touched; they become MISSED in a later run that is not refused for that platform. The data-folder check for LinkedIn still runs first, as a check of the data folder as a whole (D41).
+  - **Instagram registered for simulated use (step D2):**
+    - a real Instagram run is refused before anything changes (`real_unavailable`, exit 1);
+    - a real Instagram schedule or re-confirmation is refused before the lock (`ScheduleError`, exit 1);
+    - the API refuses `"real": true` for Instagram with 400 before anything happens;
+    - a scheduled run treats real Instagram as a refused platform and skips it.
   - The open questions left in `docs/instagram-plan.md` section 9 (3, 5, 7–10) are answered when their step is built.
   - Step A must still leave every existing test green unchanged. The `has_jobs` change keeps LinkedIn's behaviour identical while no other platform has real jobs, which is the case until D48.
