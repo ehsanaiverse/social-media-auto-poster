@@ -5,6 +5,7 @@ import { useApi, type ScheduleView } from '../context/ApiContext';
 import { contentWarning } from '../lib/schedules';
 import type { ScheduleItem } from '../types/api';
 import { cn } from '../utils/cn';
+import { PlatformPicker } from './PlatformPicker';
 import { SectionHeading } from './ui/SectionHeading';
 import { ModeTag, ScheduleBadge } from './ui/StatusBadge';
 import { EASE_OUT, Reveal } from './ui/motion';
@@ -87,6 +88,7 @@ export const ScheduledPosts: React.FC = () => {
           Each one goes out at or after its time ({scheduleTimezone}) through a scheduled run, as long as your PC is on. Publishing from this page
           never sends them early.
         </SectionHeading>
+        <PlatformPicker />
 
         <Reveal className="mb-5 flex items-center justify-between gap-3">
           <div className="segmented" role="tablist" aria-label="Which schedules">

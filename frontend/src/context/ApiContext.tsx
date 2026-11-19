@@ -3,6 +3,7 @@ import type {
   JobDetail,
   JobSummary,
   LinkedInStatusResponse,
+  PlatformInfo,
   PostCreatePayload,
   PostCreateResponse,
   ResolveRequest,
@@ -17,6 +18,7 @@ import type {
 import { errorMessage, isApiError } from '../types/api';
 import { apiService } from '../services/apiService';
 import { DEFAULT_TIMEZONE, modeWord } from '../lib/schedules';
+import { LINKEDIN_FALLBACK } from '../lib/postRules';
 
 // "When" for a new post: its publish time and mode, the request fields without the name.
 export type ScheduleWhen = ScheduleReconfirmRequest;
@@ -44,6 +46,13 @@ export type Connection = 'checking' | 'online' | 'offline';
 interface ApiContextType {
   connection: Connection;
   retryConnection: () => Promise<void>;
+
+  // GET /api/platforms (LinkedIn alone until it answers). The queue, publishing, the scheduled posts and the
+  // history all show the chosen platform; a new post goes to it too.
+  platforms: PlatformInfo[];
+  platform: string;
+  activePlatform: PlatformInfo;
+  setPlatform: (id: string) => void;
 
   scanData: ScanResponse | null;
   scanReal: boolean;
@@ -109,6 +118,18 @@ const RETRY_MS = 10_000;
 
 export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [connection, setConnection] = useState<Connection>('checking');
+  const [platforms, setPlatforms] = useState<PlatformInfo[]>([LINKEDIN_FALLBACK]);
+  const [platform, setPlatformState] = useState('linkedin');
+  const activePlatform = platforms.find((p) => p.id === platform) ?? platforms[0];
+  const activeRef = useRef(activePlatform);
+  activeRef.current = activePlatform;
+  // Requests name the platform only when it is not LinkedIn, so LinkedIn's requests are exactly as before.
+  const platformArg = () => (activeRef.current.id === 'linkedin' ? undefined : activeRef.current.id);
+  const withPlatform = <T extends object>(req: T): T => {
+    const id = platformArg();
+    return id ? { ...req, platform: id } : req;
+  };
+  const setPlatform = useCallback((id: string) => setPlatformState(id), []);
 
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
   // The page only posts for real, so the queue is always checked against real history.
@@ -168,7 +189,9 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setScanReal(useReal);
       setIsScanning(true);
       try {
-        setScanData(await apiService.scan(useReal));
+        // Real history only matters where real publishing exists (not Instagram, D49).
+        const id = platformArg();
+        setScanData(await (id ? apiService.scan(useReal && activeRef.current.real_available, id) : apiService.scan(useReal)));
       } catch (err) {
         noteError(err);
         setScanData(null);
@@ -183,7 +206,7 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const refreshJobs = useCallback(async () => {
     setIsLoadingJobs(true);
     try {
-      setJobs(await apiService.getJobs(30, filterRef.current));
+      setJobs(await apiService.getJobs(30, filterRef.current, activeRef.current.id));
     } catch (err) {
       noteError(err);
       setJobs([]);
@@ -196,10 +219,10 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const refreshSchedules = useCallback(async () => {
     setIsLoadingSchedules(true);
     try {
-      const active = await apiService.getSchedules(false);
+      const active = await apiService.getSchedules(false, activeRef.current.id);
       setSchedules(active.schedules);
       setScheduleTimezone(active.timezone || DEFAULT_TIMEZONE);
-      setAllSchedules(scheduleViewRef.current === 'all' ? (await apiService.getSchedules(true)).schedules : []);
+      setAllSchedules(scheduleViewRef.current === 'all' ? (await apiService.getSchedules(true, activeRef.current.id)).schedules : []);
     } catch (err) {
       noteError(err);
       setSchedules([]);
@@ -234,6 +257,12 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setConnection('checking');
     if (await apiService.ping()) {
       setConnection('online');
+      try {
+        const list = await apiService.getPlatforms();
+        if (Array.isArray(list) && list.length) setPlatforms(list);
+      } catch {
+        // An older poster without GET /api/platforms: LinkedIn only, as before.
+      }
       await Promise.all([refreshScan(), refreshJobs(), refreshLinkedInStatus(), refreshSchedules()]);
     } else {
       setConnection('offline');
@@ -280,6 +309,17 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => clearInterval(id);
   }, [connection, retryConnection]);
 
+  // Choosing another platform reloads what the page shows for it.
+  const firstPlatform = useRef(true);
+  useEffect(() => {
+    if (firstPlatform.current) {
+      firstPlatform.current = false;
+      return;
+    }
+    if (connection === 'online') void Promise.all([refreshScan(), refreshJobs(), refreshSchedules()]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform]);
+
   // A filter change reloads only the job list.
   const firstFilter = useRef(true);
   useEffect(() => {
@@ -296,7 +336,7 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         let post: PostCreateResponse;
         try {
-          post = await apiService.addPost(payload);
+          post = await apiService.addPost(withPlatform(payload));
         } catch (err) {
           noteError(err);
           addToast('error', 'Post not added', errorMessage(err, 'Something went wrong. Please try again.'));
@@ -313,7 +353,7 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         // The post is in the queue now. Scheduling it is a second step that can be refused on its own.
         try {
-          const schedule = await apiService.createSchedule({ name: post.name, ...when });
+          const schedule = await apiService.createSchedule(withPlatform({ name: post.name, ...when }));
           addToast(
             'success',
             `Added and scheduled '${post.name}'`,
@@ -338,7 +378,7 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const createSchedule = useCallback(
     async (name: string, when: ScheduleWhen) => {
       try {
-        const res = await apiService.createSchedule({ name, ...when });
+        const res = await apiService.createSchedule(withPlatform({ name, ...when }));
         addToast(
           'success',
           `Scheduled '${name}'`,
@@ -397,7 +437,7 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (req: RunRequest) => {
       setIsRunning(true);
       try {
-        const report = await apiService.run(req);
+        const report = await apiService.run(withPlatform(req));
         setLastRunReport(report);
         const published = report.jobs.filter((j) => j.status === 'PUBLISHED').length;
         addToast(
@@ -437,7 +477,11 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (jobId: string, req: ResolveRequest) => {
       try {
         const res = await apiService.resolveJob(jobId, req);
-        addToast('success', 'Saved', res.status === 'PUBLISHED' ? 'Marked as posted.' : 'Marked as not posted. You can post it again.');
+        if ('check' in req && !res.changed) {
+          addToast('info', 'Still not sure', `${res.reason ?? 'No clear answer yet.'} Nothing was changed; try again later.`);
+        } else {
+          addToast('success', 'Saved', res.status === 'PUBLISHED' ? 'Marked as posted.' : 'Marked as not posted. You can post it again.');
+        }
         setResolvingJob(null);
         await Promise.all([refreshJobs(), refreshScan()]);
         return res;
@@ -454,6 +498,10 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     () => ({
       connection,
       retryConnection,
+      platforms,
+      platform,
+      activePlatform,
+      setPlatform,
       scanData,
       scanReal,
       isScanning,
@@ -494,7 +542,7 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       removeToast
     }),
     [
-      connection, retryConnection, scanData, scanReal, isScanning, refreshScan, jobs, isLoadingJobs, jobStatusFilter,
+      connection, retryConnection, platforms, platform, activePlatform, setPlatform, scanData, scanReal, isScanning, refreshScan, jobs, isLoadingJobs, jobStatusFilter,
       refreshJobs, selectedJob, openJob, closeJob, isRunning, lastRunReport, executeRun, isCreatingPost, createPost,
       resolvingJob, resolveJob, linkedInStatus, isCheckingLinkedIn, refreshLinkedInStatus, toasts, addToast, removeToast,
       schedules, allSchedules, scheduleTimezone, isLoadingSchedules, scheduleView, refreshSchedules, scheduleDialog,

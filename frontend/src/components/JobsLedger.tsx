@@ -5,6 +5,7 @@ import { useApi } from '../context/ApiContext';
 import type { JobSummary } from '../types/api';
 import { platformById } from '../lib/platforms';
 import { cn } from '../utils/cn';
+import { PlatformPicker } from './PlatformPicker';
 import { SectionHeading } from './ui/SectionHeading';
 import { ModeTag, STATUS_LABEL, StatusBadge } from './ui/StatusBadge';
 import { EASE_OUT, Reveal } from './ui/motion';
@@ -24,7 +25,7 @@ const formatTime = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 export const JobsLedger: React.FC = () => {
-  const { jobs, isLoadingJobs, jobStatusFilter, setJobStatusFilter, refreshJobs, openJob, setResolvingJob, connection } = useApi();
+  const { jobs, isLoadingJobs, jobStatusFilter, setJobStatusFilter, refreshJobs, openJob, setResolvingJob, connection, activePlatform } = useApi();
   const [query, setQuery] = useState('');
 
   const q = query.trim().toLowerCase();
@@ -51,6 +52,7 @@ export const JobsLedger: React.FC = () => {
         <SectionHeading index="05" icon={History} eyebrow="History" title="Everything you've published">
           Newest first. Tap a post to see its details.
         </SectionHeading>
+        <PlatformPicker />
 
         <Reveal className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="-mx-4 overflow-x-auto px-4 lg:mx-0 lg:px-0">
@@ -100,7 +102,7 @@ export const JobsLedger: React.FC = () => {
                     onClick={() => void openJob(job.job_id)}
                     className="group flex cursor-pointer flex-wrap items-center justify-between gap-3 px-5 py-4 transition-colors hover:bg-white/[0.03]"
                   >
-                    <PlatformDot platform={(job as { platform?: string }).platform} />
+                    <PlatformDot platform={(job as { platform?: string }).platform ?? activePlatform.id} />
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-medium text-slate-100">{job.stem}</p>
                       <p className="mt-1 flex items-center gap-2 text-xs text-slate-500">

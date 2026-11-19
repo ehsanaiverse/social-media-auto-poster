@@ -60,12 +60,12 @@ export const MIN_LEAD_MINUTES = 5;
 const MAX_AHEAD_MINUTES = 365 * 24 * 60;
 
 // Why this choice cannot be sent yet, or null. Times are compared as "YYYY-MM-DD HH:MM" text in the same zone.
-export function scheduleProblem(choice: ScheduleChoice, timeZone: string, now: Date = new Date()): string | null {
+export function scheduleProblem(choice: ScheduleChoice, timeZone: string, now: Date = new Date(), phrase: string = CONFIRM_PHRASE): string | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(choice.date) || !/^\d{2}:\d{2}$/.test(choice.time)) return 'Choose a date and a time.';
   const at = `${choice.date} ${choice.time}`;
   if (at < localNow(timeZone, MIN_LEAD_MINUTES, now)) return `Choose a time at least ${MIN_LEAD_MINUTES} minutes from now.`;
   if (at > localNow(timeZone, MAX_AHEAD_MINUTES, now)) return 'Choose a time within the next year.';
-  if (choice.real && choice.phrase.trim() !== CONFIRM_PHRASE) return `To post it live, type ${CONFIRM_PHRASE}.`;
+  if (choice.real && choice.phrase.trim() !== phrase) return `To post it live, type ${phrase}.`;
   return null;
 }
 

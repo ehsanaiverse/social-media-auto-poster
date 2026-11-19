@@ -2,7 +2,8 @@ import React, { useEffect, useId, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertCircle, AlertTriangle, CalendarClock, CheckCircle2, FolderInput, Globe, Hash, ImagePlus, Inbox, Loader2, Monitor, Send, Smartphone, X } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
-import { MAX_CAPTION_CHARS, captionError as captionProblem, captionLength, imageErrors, postNameError } from '../lib/postRules';
+import { captionError as captionProblem, captionLength, imageErrors, postNameError } from '../lib/postRules';
+import { apiService } from '../services/apiService';
 import { newChoice, scheduleFields, scheduleProblem, type ScheduleChoice } from '../lib/schedules';
 import { PLATFORMS, platformById } from '../lib/platforms';
 import { cn } from '../utils/cn';
@@ -15,7 +16,7 @@ import { EASE_OUT, Reveal, SpotlightCard } from './ui/motion';
 const TAGS = ['#Hiring', '#Engineering', '#Automation', '#BuildInPublic', '#Startups'];
 
 export const IntakeStudio: React.FC = () => {
-  const { createPost, isCreatingPost, linkedInStatus, connection, scheduleTimezone } = useApi();
+  const { createPost, isCreatingPost, linkedInStatus, connection, scheduleTimezone, platforms, activePlatform, setPlatform } = useApi();
   const fileInputId = useId();
 
   const [name, setName] = useState('');
@@ -26,6 +27,8 @@ export const IntakeStudio: React.FC = () => {
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [isDragOver, setIsDragOver] = useState(false);
   const [touched, setTouched] = useState(false);
+  // The backend's own verdict (POST /api/posts/check), the final word on the rules.
+  const [serverErrors, setServerErrors] = useState<string[]>([]);
   // When: now (the next time you publish) or at a chosen time (D46).
   const [when, setWhen] = useState<'now' | 'schedule'>('now');
   const [choice, setChoice] = useState<ScheduleChoice>(() => newChoice(scheduleTimezone));
@@ -43,18 +46,50 @@ export const IntakeStudio: React.FC = () => {
     return () => URL.revokeObjectURL(url);
   }, [image]);
 
+  // Another platform has other rules: check the picture again.
+  useEffect(() => {
+    if (!image) return;
+    let stale = false;
+    void imageErrors(image, activePlatform).then((errors) => !stale && setImageProblems(errors));
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePlatform.id]);
+
+  // Ask the backend shortly after the picture or caption changes. It writes nothing.
+  useEffect(() => {
+    setServerErrors([]);
+    if (!image || connection !== 'online') return;
+    let stale = false;
+    const id = setTimeout(async () => {
+      try {
+        const res = await apiService.checkPost({ caption, image, platform: activePlatform.id === 'linkedin' ? undefined : activePlatform.id });
+        if (!stale && res && Array.isArray(res.errors)) setServerErrors(res.errors);
+      } catch {
+        // Not reachable now: adding the post checks everything again anyway.
+      }
+    }, 400);
+    return () => {
+      stale = true;
+      clearTimeout(id);
+    };
+  }, [image, caption, activePlatform.id, connection]);
+
   const nameError = postNameError(name);
   const chars = captionLength(caption);
   // Over 3,000 characters is refused in every mode (D45), so it blocks adding the post.
-  const captionError = captionProblem(caption);
-  const tooLong = chars > MAX_CAPTION_CHARS;
-  const whenProblem = when === 'schedule' ? scheduleProblem(choice, scheduleTimezone) : null;
+  const maxChars = activePlatform.rules.caption_max_chars;
+  const captionError = captionProblem(caption, activePlatform);
+  const tooLong = chars > maxChars;
+  const whenProblem =
+    when === 'schedule' ? scheduleProblem(choice, scheduleTimezone, undefined, activePlatform.confirmation_phrase ?? undefined) : null;
   const canSubmit =
-    connection === 'online' && !nameError && !captionError && image && imageProblems.length === 0 && !whenProblem && !isCreatingPost;
+    connection === 'online' && !nameError && !captionError && image && imageProblems.length === 0 && serverErrors.length === 0 && !whenProblem && !isCreatingPost;
 
   const pickImage = async (file: File) => {
     setImage(file);
-    setImageProblems(await imageErrors(file));
+    setImageProblems(await imageErrors(file, activePlatform));
     if (!name.trim()) setName(file.name.replace(/\.[^.]+$/, ''));
   };
 
@@ -82,11 +117,12 @@ export const IntakeStudio: React.FC = () => {
   };
 
   const author = linkedInStatus?.member?.name ?? 'You';
+  const PreviewMark = activePlatform.id === 'linkedin' ? LinkedInMark : platformById(activePlatform.id).Icon;
   const checks = [
     { ok: !nameError, label: 'Post has a name' },
     { ok: Boolean(image) && imageProblems.length === 0, label: 'Picture added' },
     { ok: Boolean(caption.trim()), label: 'Caption written' },
-    { ok: !tooLong, label: 'Fits LinkedIn’s length limit' }
+    { ok: !tooLong, label: `Fits ${activePlatform.name}’s length limit` }
   ];
 
   return (
@@ -99,34 +135,58 @@ export const IntakeStudio: React.FC = () => {
         <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-12">
           <Reveal className="space-y-5 lg:col-span-7">
             <form onSubmit={handleSubmit} noValidate className="surface space-y-6 p-6">
-              {/* Platforms: only LinkedIn can be chosen for now */}
+              {/* Platforms: the ones the poster offers (GET /api/platforms) can be chosen; the others are planned. */}
               <fieldset>
                 <legend className="mb-2 text-sm font-medium text-slate-200">Post to</legend>
                 <div className="grid grid-cols-2 gap-2">
-                  {PLATFORMS.map((p) => (
-                    <label
-                      key={p.id}
-                      className={cn(
-                        'relative flex min-h-12 items-center gap-2.5 rounded-xl border px-3 text-sm transition-colors',
-                        p.live
-                          ? 'cursor-pointer border-emerald-500/50 bg-emerald-500/[0.08] text-slate-100'
-                          : 'cursor-not-allowed border-white/[0.06] bg-black/20 text-slate-500'
-                      )}
-                      title={p.live ? undefined : `${p.name} is coming soon`}
-                    >
-                      <input type="checkbox" checked={p.live} disabled={!p.live} readOnly className="sr-only" />
-                      <p.Icon className="h-4 w-4 shrink-0" />
-                      <span className="truncate">{p.name}</span>
-                      {p.live ? (
-                        <span className="ml-auto grid h-4 w-4 place-items-center rounded-full bg-emerald-400 text-[#04110B]">
-                          <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
-                        </span>
-                      ) : (
-                        <span className="ml-auto text-[10px] uppercase tracking-wide">Soon</span>
-                      )}
-                    </label>
-                  ))}
+                  {PLATFORMS.map((p) => {
+                    const offered = platforms.find((o) => o.id === p.id);
+                    const selected = p.id === activePlatform.id;
+                    return (
+                      <label
+                        key={p.id}
+                        className={cn(
+                          'relative flex min-h-12 items-center gap-2.5 rounded-xl border px-3 text-sm transition-colors',
+                          selected
+                            ? 'cursor-pointer border-emerald-500/50 bg-emerald-500/[0.08] text-slate-100'
+                            : offered
+                              ? 'cursor-pointer border-white/[0.1] bg-black/20 text-slate-300 hover:border-white/20'
+                              : 'cursor-not-allowed border-white/[0.06] bg-black/20 text-slate-500'
+                        )}
+                        title={offered ? undefined : `${p.name} is coming soon`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          disabled={!offered}
+                          onChange={() => offered && setPlatform(p.id)}
+                          className="sr-only"
+                        />
+                        <p.Icon className="h-4 w-4 shrink-0" />
+                        <span className="truncate">{p.name}</span>
+                        {selected ? (
+                          <span className="ml-auto grid h-4 w-4 place-items-center rounded-full bg-emerald-400 text-[#04110B]">
+                            <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+                          </span>
+                        ) : offered ? (
+                          !offered.real_available && <span className="ml-auto text-[10px] uppercase tracking-wide">Test only</span>
+                        ) : (
+                          <span className="ml-auto text-[10px] uppercase tracking-wide">Soon</span>
+                        )}
+                      </label>
+                    );
+                  })}
                 </div>
+                {!activePlatform.real_available && (
+                  <p className="mt-2 text-xs text-slate-400">{activePlatform.name} is test only for now: its posts are checked and tried out, never posted.</p>
+                )}
+                {image && serverErrors.length > 0 && (
+                  <ul className="mt-3 space-y-1 text-xs text-rose-300" aria-label={`What ${activePlatform.name} would refuse`}>
+                    {serverErrors.map((e) => (
+                      <li key={e}>{e}</li>
+                    ))}
+                  </ul>
+                )}
               </fieldset>
 
               {/* Name */}
@@ -257,7 +317,7 @@ export const IntakeStudio: React.FC = () => {
                     Caption
                   </label>
                   <span className={cn('font-mono text-[11px]', tooLong ? 'text-rose-300' : 'text-slate-500')}>
-                    {chars.toLocaleString()} / {MAX_CAPTION_CHARS.toLocaleString()}
+                    {chars.toLocaleString()} / {maxChars.toLocaleString()}
                   </span>
                 </div>
                 <textarea
@@ -273,7 +333,7 @@ export const IntakeStudio: React.FC = () => {
                 <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/5">
                   <motion.div
                     className={cn('h-full rounded-full', tooLong ? 'bg-rose-400' : 'bg-emerald-400/70')}
-                    animate={{ width: `${Math.min(100, (chars / MAX_CAPTION_CHARS) * 100)}%` }}
+                    animate={{ width: `${Math.min(100, (chars / maxChars) * 100)}%` }}
                     transition={{ duration: 0.3, ease: EASE_OUT }}
                   />
                 </div>
@@ -415,7 +475,7 @@ export const IntakeStudio: React.FC = () => {
                     </p>
                   </div>
                   <span className="flex items-center gap-1.5 rounded-full bg-[#0A66C2]/15 px-2.5 py-1 text-[11px] font-medium text-sky-200 ring-1 ring-inset ring-[#0A66C2]/40">
-                    <LinkedInMark className="h-3 w-3" /> LinkedIn
+                    <PreviewMark className="h-3 w-3" /> {activePlatform.name}
                   </span>
                 </div>
                 <div className="whitespace-pre-wrap break-words px-4 pb-4 text-sm leading-relaxed text-slate-200">

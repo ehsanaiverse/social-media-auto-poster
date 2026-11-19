@@ -4,6 +4,8 @@ import type {
   JobDetail,
   JobSummary,
   LinkedInStatusResponse,
+  PlatformInfo,
+  PostCheckResponse,
   PostCreatePayload,
   PostCreateResponse,
   ResolveRequest,
@@ -53,13 +55,27 @@ export const apiService = {
 
   getHealth: () => request<HealthResponse>('/health'),
 
-  scan: (real = false) => request<ScanResponse>(`/scan?real=${real}`),
+  // `platform` is left out for LinkedIn, so those requests are exactly as before.
+  scan: (real = false, platform?: string) =>
+    request<ScanResponse>(`/scan?real=${real}${platform ? `&platform=${encodeURIComponent(platform)}` : ''}`),
+
+  getPlatforms: () => request<PlatformInfo[]>('/platforms'),
+
+  // The backend's verdict on an image and caption, while the post is being written. Writes nothing.
+  checkPost(payload: { caption: string; image: File; platform?: string }) {
+    const form = new FormData();
+    form.append('caption', payload.caption);
+    form.append('image', payload.image);
+    if (payload.platform) form.append('platform', payload.platform);
+    return request<PostCheckResponse>('/posts/check', { method: 'POST', body: form, headers: { 'X-AutoPoster': '1' } });
+  },
 
   addPost(payload: PostCreatePayload) {
     const form = new FormData();
     form.append('name', payload.name);
     form.append('caption', payload.caption);
     form.append('image', payload.image);
+    if (payload.platform) form.append('platform', payload.platform);
     // The custom header makes this a non-simple request, so another site
     // cannot submit it from a plain form (api-plan rule 7).
     return request<PostCreateResponse>('/posts', { method: 'POST', body: form, headers: { 'X-AutoPoster': '1' } });
@@ -67,9 +83,10 @@ export const apiService = {
 
   run: (req: RunRequest) => postJson<RunReport>('/run', req),
 
-  getJobs(last = 30, status = 'ALL') {
+  getJobs(last = 30, status = 'ALL', platform?: string) {
     const query = new URLSearchParams({ last: String(last) });
     if (status !== 'ALL') query.set('status', status);
+    if (platform) query.set('platform', platform);
     return request<JobSummary[]>(`/jobs?${query}`);
   },
 
@@ -80,7 +97,12 @@ export const apiService = {
   getLinkedInStatus: (check = false) => request<LinkedInStatusResponse>(`/linkedin/status?check=${check}`),
 
   // Scheduled posts (D46). Reading never changes anything; the others take the run lock (409 while busy).
-  getSchedules: (all = false) => request<ScheduleListResponse>(all ? '/schedules?all=true' : '/schedules'),
+  getSchedules: (all = false, platform?: string) => {
+    const query = new URLSearchParams();
+    if (all) query.set('all', 'true');
+    if (platform) query.set('platform', platform);
+    return request<ScheduleListResponse>(query.size ? `/schedules?${query}` : '/schedules');
+  },
 
   createSchedule: (req: ScheduleCreateRequest) => postJson<ScheduleResponse>('/schedules', req),
 

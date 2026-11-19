@@ -182,3 +182,20 @@ def test_check_cannot_be_combined_with_another_answer(settings, host, client):
         assert response.json()["detail"] == "Send only one of published_post_id, failed: true or check: true."
     assert stored(settings, job_id).status is JobStatus.NEEDS_REVIEW
     assert stored(settings, job_id).platform is Platform.INSTAGRAM
+
+
+# Step F: the dashboard lists one platform's jobs and schedules
+
+
+def test_jobs_and_schedules_can_be_listed_per_platform(settings, client):
+    for platform in ("linkedin", "instagram"):
+        client.post("/api/posts", data={"name": f"{platform}-post", "caption": "Hello", "platform": platform},
+                    files={"image": ("a.jpg", JPEG, "image/jpeg")}, headers=LOCAL)
+        assert client.post("/api/run", json={"platform": platform}).status_code == 200
+
+    every = [job["stem"] for job in client.get("/api/jobs").json()]
+    assert sorted(every) == ["instagram-post", "linkedin-post"]  # Without platform: every platform, as before.
+    only = client.get("/api/jobs", params={"platform": "Instagram"}).json()
+    assert [job["stem"] for job in only] == ["instagram-post"]
+    assert client.get("/api/schedules", params={"platform": "instagram"}).json()["schedules"] == []
+    assert client.get("/api/jobs", params={"platform": "facebook"}).status_code == 400

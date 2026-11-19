@@ -1,6 +1,6 @@
 import React from 'react';
 import { FlaskConical, Rocket } from 'lucide-react';
-import { CONFIRM_PHRASE } from '../lib/postRules';
+import { useApi } from '../context/ApiContext';
 import { type ScheduleChoice } from '../lib/schedules';
 import { cn } from '../utils/cn';
 
@@ -16,11 +16,15 @@ interface ScheduleFieldsProps {
 // The radio cards follow ResolveModal; the phrase box follows the Publish section.
 export const ScheduleFields: React.FC<ScheduleFieldsProps> = ({ idPrefix, choice, onChange, timeZone, problem }) => {
   const set = (patch: Partial<ScheduleChoice>) => onChange({ ...choice, ...patch });
-  const phraseOk = choice.phrase.trim() === CONFIRM_PHRASE;
-  const modes = [
+  const { activePlatform } = useApi();
+  const phrase = activePlatform.confirmation_phrase ?? '';
+  const phraseOk = choice.phrase.trim() === phrase;
+  const allModes = [
     { real: false, icon: FlaskConical, title: 'Test', text: 'A practice run at that time. Nothing is posted.', tone: 'emerald' },
-    { real: true, icon: Rocket, title: 'Live', text: 'Posted to your LinkedIn at that time.', tone: 'amber' }
+    { real: true, icon: Rocket, title: 'Live', text: `Posted to your ${activePlatform.name} at that time.`, tone: 'amber' }
   ] as const;
+  // Instagram is test only (D49): Live is not offered at all.
+  const modes = activePlatform.real_available ? allModes : allModes.filter((m) => !m.real);
 
   return (
     <div className="space-y-4">
@@ -99,7 +103,7 @@ export const ScheduleFields: React.FC<ScheduleFieldsProps> = ({ idPrefix, choice
       {choice.real && (
         <div>
           <label htmlFor={`${idPrefix}-phrase`} className="mb-1.5 block text-sm text-slate-300">
-            To confirm, type <span className="font-medium text-emerald-300">{CONFIRM_PHRASE}</span>
+            To confirm, type <span className="font-medium text-emerald-300">{phrase}</span>
           </label>
           <input
             id={`${idPrefix}-phrase`}

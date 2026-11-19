@@ -506,6 +506,13 @@ Split into E1 (CLI) and E2 (API: `GET /api/platforms`, `POST /api/posts/check`, 
 - **Tests:** Vitest for each component change; `postRules.test.ts` reads the shared `post_rules_cases.json`; Instagram never offers Live; no "ready" count mixes platforms incorrectly; `npm test`, `typecheck`, `build`; `npm audit` reported. A manual browser walkthrough by the developer before the commit (as in M5 commit 8).
 - **Risks:** labelling ("Test" vs "Live" per platform; Instagram always Test); a ready count that includes another platform's posts.
 
+- [x] **F done (2026-11-19).** One platform choice, shared by New post ("Post to") and the pickers in Queue, Scheduled and History, shown only when `GET /api/platforms` offers more than one platform.
+  - Rules and the confirmation phrase come from `GET /api/platforms`; `lib/postRules.ts` keeps only LinkedIn's values as a fallback until the API answers.
+  - While a post is written, `POST /api/posts/check` gives the backend's verdict; its errors block adding the post.
+  - Instagram is test only: no Live schedule, and Publish runs a test with no phrase.
+  - The API gained `?platform=` on `GET /api/jobs` and `GET /api/schedules` (without it, every platform, as before). LinkedIn requests are sent exactly as before.
+  - Not done: the per-platform card in Accounts, and one post sent to several platforms at once (question 7).
+
 ### Future (blocked on the spike and D48 acceptance)
 
 1. **Spike:** a presigned R2 or S3 URL accepted by Meta? Fetched at container creation or at publish? Visibility of posts from a Development-mode app.

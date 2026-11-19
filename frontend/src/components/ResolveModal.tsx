@@ -9,7 +9,9 @@ import { ModeTag } from './ui/StatusBadge';
 type Outcome = 'published' | 'failed';
 
 export const ResolveModal: React.FC = () => {
-  const { resolvingJob, setResolvingJob, resolveJob } = useApi();
+  const { resolvingJob, setResolvingJob, resolveJob, activePlatform } = useApi();
+  // Only Instagram can be asked (read-only; refused while real Instagram is off, D49). LinkedIn cannot.
+  const canAsk = activePlatform.id === 'instagram';
   const job = useLatest(resolvingJob);
   const [outcome, setOutcome] = useState<Outcome>('published');
   const [postId, setPostId] = useState('');
@@ -30,6 +32,13 @@ export const ResolveModal: React.FC = () => {
     if (!job || !resolvingJob || blocked) return;
     setIsSubmitting(true);
     await resolveJob(job.job_id, outcome === 'published' ? { published_post_id: postId.trim() } : { failed: true });
+    setIsSubmitting(false);
+  };
+
+  const ask = async () => {
+    if (!job) return;
+    setIsSubmitting(true);
+    await resolveJob(job.job_id, { check: true });
     setIsSubmitting(false);
   };
 
@@ -60,8 +69,14 @@ export const ResolveModal: React.FC = () => {
             <ModeTag mode={job.mode} />
           </div>
 
+          {canAsk && !isSimulated && (
+            <button type="button" onClick={ask} disabled={isSubmitting} className="btn w-full">
+              Ask {activePlatform.name} now (reads only, never posts)
+            </button>
+          )}
+
           <fieldset>
-            <legend className="mb-2 text-sm text-slate-300">Look for it on your LinkedIn profile, then choose:</legend>
+            <legend className="mb-2 text-sm text-slate-300">Look for it on your {activePlatform.name} profile, then choose:</legend>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {options.map((o) => {
                 const Icon = o.icon;
@@ -97,7 +112,7 @@ export const ResolveModal: React.FC = () => {
           {outcome === 'published' && !isSimulated && (
             <div>
               <label htmlFor="resolve-post-id" className="mb-1.5 block text-sm text-slate-300">
-                LinkedIn post ID
+                {activePlatform.name} post ID
                 <span className="ml-1 text-xs text-slate-500">(from the post’s link)</span>
               </label>
               <input

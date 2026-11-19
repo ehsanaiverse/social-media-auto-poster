@@ -3,7 +3,6 @@ import confetti from 'canvas-confetti';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, ExternalLink, Loader2, Lock, Play, Rocket, ShieldAlert, Sparkles } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
-import { CONFIRM_PHRASE } from '../lib/postRules';
 import { isReady, type RunJobResult } from '../types/api';
 import { cn } from '../utils/cn';
 import { SectionHeading } from './ui/SectionHeading';
@@ -47,7 +46,10 @@ const JobLine: React.FC<{ job: RunJobResult; index: number }> = ({ job, index })
 };
 
 export const RunnerConsole: React.FC = () => {
-  const { executeRun, isRunning, lastRunReport, linkedInStatus, scanData, connection } = useApi();
+  const { executeRun, isRunning, lastRunReport, linkedInStatus, scanData, connection, activePlatform } = useApi();
+  // Instagram is test only (D49): a test run, never the live confirmation.
+  const testOnly = !activePlatform.real_available;
+  const confirmPhrase = activePlatform.confirmation_phrase ?? '';
   const [publishSimulated, setPublishSimulated] = useState(false);
   const [phrase, setPhrase] = useState('');
   const [step, setStep] = useState(0);
@@ -57,8 +59,8 @@ export const RunnerConsole: React.FC = () => {
   const scheduled = scanData?.candidates.filter((c) => c.stable && c.schedule).length ?? 0;
   const tokenState = linkedInStatus?.state ?? 'unknown';
   const tokenUsable = tokenState === 'valid' || tokenState === 'expiring';
-  const phraseOk = phrase.trim() === CONFIRM_PHRASE;
-  const canRun = connection === 'online' && !isRunning && phraseOk;
+  const phraseOk = phrase.trim() === confirmPhrase;
+  const canRun = connection === 'online' && !isRunning && (testOnly || phraseOk);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -68,7 +70,9 @@ export const RunnerConsole: React.FC = () => {
   }, [isRunning]);
 
   const handleRun = async () => {
-    const report = await executeRun({ real: true, publish_simulated: publishSimulated, confirm: phrase.trim() });
+    const report = await executeRun(
+      testOnly ? { real: false, publish_simulated: false, confirm: null } : { real: true, publish_simulated: publishSimulated, confirm: phrase.trim() }
+    );
     if (!report) return;
     setPhrase('');
     if (report.jobs.some((j) => j.status === 'PUBLISHED')) {
@@ -87,17 +91,23 @@ export const RunnerConsole: React.FC = () => {
       <div className="hr-fade absolute inset-x-0 top-0" />
       <div className="page-container">
         <SectionHeading index="03" icon={Play} eyebrow="Step 3" title="Publish">
-          Post everything in your queue to LinkedIn. Every post goes out only once.
+          Post everything in your queue to {activePlatform.name}. Every post goes out only once.
         </SectionHeading>
 
         <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-12">
           <Reveal className="lg:col-span-5">
             <div className="surface space-y-5 p-6">
               <div className="space-y-4">
+                {testOnly ? (
+                  <p className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] p-4 text-sm leading-relaxed text-slate-200">
+                    {activePlatform.name} is test only for now. A run checks each post and records it as a test. Nothing is posted.
+                  </p>
+                ) : (
+                <>
                 <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] p-4 text-sm leading-relaxed text-slate-200">
                   <p className="mb-1 flex items-center gap-2 font-semibold text-emerald-200">
                     <ShieldAlert className="h-4 w-4" aria-hidden="true" />
-                    This posts to your LinkedIn account
+                    This posts to your {activePlatform.name} account
                   </p>
                   If something looks wrong, we stop before posting. If we can't tell whether a post went through, we ask you.
                 </div>
@@ -117,7 +127,7 @@ export const RunnerConsole: React.FC = () => {
 
                 <div>
                   <label htmlFor="confirm-phrase" className="mb-1.5 block text-sm text-slate-300">
-                    To confirm, type <span className="font-medium text-emerald-300">{CONFIRM_PHRASE}</span>
+                    To confirm, type <span className="font-medium text-emerald-300">{confirmPhrase}</span>
                   </label>
                   <input
                     id="confirm-phrase"
@@ -129,11 +139,13 @@ export const RunnerConsole: React.FC = () => {
                     className={cn('field text-sm', phraseOk && 'border-emerald-400/70')}
                   />
                 </div>
+                </>
+                )}
               </div>
 
               <motion.button type="button" onClick={handleRun} disabled={!canRun} whileTap={canRun ? { scale: 0.98 } : undefined} className="btn btn-primary w-full">
                 {isRunning ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}
-                {isRunning ? 'Working…' : `Post ${ready} to LinkedIn`}
+                {isRunning ? 'Working…' : testOnly ? `Test ${ready} on ${activePlatform.name}` : `Post ${ready} to ${activePlatform.name}`}
               </motion.button>
 
               {scheduled > 0 && (

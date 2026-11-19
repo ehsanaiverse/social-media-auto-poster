@@ -7,7 +7,7 @@ from social_media_auto_poster.operations.resolve import ResolveError
 from social_media_auto_poster.models import JobStatus
 from social_media_auto_poster.services.run_lock import RunLockHeldError
 
-from ..dependencies import get_job_service, require_json
+from ..dependencies import get_job_service, parse_platform, require_json
 from ..models import ResolveRequest
 from ..services import JobLookupError, JobService
 
@@ -38,16 +38,21 @@ def _check_prefix(job_id: str) -> str:
 def list_jobs(
     last: int = Query(20, ge=1, le=200),
     status: str | None = Query(None),
+    platform: str | None = Query(None),
     service: JobService = Depends(get_job_service),
 ) -> list[dict]:
-    """Recent jobs, newest first. Read-only; an empty list if there is no job database yet."""
+    """Recent jobs, newest first. Read-only; an empty list if there is no job database yet.
+
+    ``platform`` lists one platform's jobs only; without it, every platform's (as before).
+    """
+    only = parse_platform(platform) if platform is not None and platform.strip() else None
     wanted = None
     if status is not None and status.strip():
         try:
             wanted = JobStatus(status.strip().upper())
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Unknown status '{status}'.") from None
-    return service.list_jobs(last=last, status=wanted)
+    return service.list_jobs(last=last, status=wanted, platform=only)
 
 
 @router.get("/{job_id}")

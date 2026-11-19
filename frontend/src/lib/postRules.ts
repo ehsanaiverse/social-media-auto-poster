@@ -1,5 +1,6 @@
-// Client-side copies of the backend's intake rules, for instant feedback only.
-// The backend checks everything again; these never replace its checks.
+// Instant feedback while a post is written. The rules come from the backend (GET /api/platforms), and the
+// backend checks everything again (POST /api/posts/check while typing, POST /api/posts when adding).
+import type { PlatformInfo } from '../types/api';
 
 // backend/src/social_media_auto_poster/ingestion/intake.py: check_post_name.
 const FORBIDDEN_STEM_CHARS = '<>:"/\\|?*';
@@ -16,13 +17,29 @@ export function postNameError(raw: string): string | null {
   return null;
 }
 
-export const MAX_CAPTION_BYTES = 64 * 1024; // ingestion/validation.py read cap, not LinkedIn's limit
-// LinkedIn's caption limit. The backend refuses a longer caption in every mode, tests and uploads included (D45).
-export const MAX_CAPTION_CHARS = 3000;
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // upload limit decided in D43 (ingestion/intake.py)
+// LinkedIn as GET /api/platforms describes it. Used only until the API has answered (or if it cannot be
+// reached), so the page never shows a post as fine that LinkedIn would refuse.
+export const LINKEDIN_FALLBACK: PlatformInfo = {
+  id: 'linkedin',
+  name: 'LinkedIn',
+  real_available: true,
+  confirmation_phrase: 'publish to LinkedIn',
+  rules: {
+    extensions: ['.jpeg', '.jpg', '.png'],
+    max_image_bytes: 10 * 1024 * 1024,
+    max_caption_bytes: 64 * 1024,
+    caption_max_chars: 3000,
+    caption_max_hashtags: null,
+    caption_max_mentions: null,
+    aspect: null
+  }
+};
 
-// ingestion/validation.py: EXPECTED_TYPE and the file-signature check.
-const EXPECTED_TYPE: Record<string, 'jpeg' | 'png'> = { jpg: 'jpeg', jpeg: 'jpeg', png: 'png' };
+export const MAX_CAPTION_BYTES = LINKEDIN_FALLBACK.rules.max_caption_bytes;
+export const MAX_CAPTION_CHARS = LINKEDIN_FALLBACK.rules.caption_max_chars;
+export const MAX_IMAGE_BYTES = LINKEDIN_FALLBACK.rules.max_image_bytes;
+// The phrase typed to confirm a real LinkedIn publish; each platform's own comes from GET /api/platforms.
+export const CONFIRM_PHRASE = LINKEDIN_FALLBACK.confirmation_phrase as string;
 
 export const extensionOf = (filename: string): string =>
   filename.includes('.') ? filename.split('.').pop()!.toLowerCase() : '';
@@ -34,33 +51,52 @@ export function detectImageType(bytes: Uint8Array): 'jpeg' | 'png' | null {
   return null;
 }
 
-// Every problem with the image, as the backend's validation would list them.
-export async function imageErrors(file: File): Promise<string[]> {
+const typeOf = (ext: string): 'jpeg' | 'png' | null => (ext === 'png' ? 'png' : ext === 'jpg' || ext === 'jpeg' ? 'jpeg' : null);
+
+// 10 MiB is "10 MB" as the backend says it; Instagram's 8,000,000 bytes is "8 MB".
+const sizeText = (bytes: number): string =>
+  bytes % (1024 * 1024) === 0 ? `${bytes / (1024 * 1024)} MB` : `${Math.round(bytes / 1_000_000)} MB`;
+
+// Every problem with the image under this platform's rules, as the backend's validation would list them.
+export async function imageErrors(file: File, platform: PlatformInfo = LINKEDIN_FALLBACK): Promise<string[]> {
   const ext = extensionOf(file.name);
-  const expected = EXPECTED_TYPE[ext];
-  if (!expected) return ['Only JPG and PNG pictures are supported.'];
+  const expected = platform.rules.extensions.includes(`.${ext}`) ? typeOf(ext) : null;
+  if (!expected) {
+    return [platform.rules.extensions.includes('.png') ? 'Only JPG and PNG pictures are supported.' : `${platform.name} accepts JPG pictures only.`];
+  }
   if (file.size === 0) return ['This picture file is empty.'];
   const errors: string[] = [];
-  if (file.size > MAX_IMAGE_BYTES) errors.push('This picture is larger than 10 MB.');
+  if (file.size > platform.rules.max_image_bytes) errors.push(`This picture is larger than ${sizeText(platform.rules.max_image_bytes)}.`);
   const head = new Uint8Array(await file.slice(0, 8).arrayBuffer());
   const detected = detectImageType(head);
-  if (detected === null) errors.push("This file isn't a JPG or PNG picture.");
+  if (detected === null) errors.push(`This file isn't a ${platform.rules.extensions.includes('.png') ? 'JPG or PNG' : 'JPG'} picture.`);
   else if (detected !== expected) errors.push(`This picture is really a ${detected.toUpperCase()} but its name ends in .${ext}. Rename it and try again.`);
   return errors;
 }
 
-// LinkedIn counts caption length in UTF-16 units (D39), which is what .length gives.
+// Length in UTF-16 units, as LinkedIn and the backend count it (D39). It is never less than the code-point
+// count, so it also covers Instagram's limit on either count.
 export const captionLength = (caption: string): number => caption.length;
 
 export const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
 
-// What stops a caption from being added, as the backend's validation would say it; null when it is fine.
-export function captionError(caption: string): string | null {
+// As platforms/instagram/rules.py counts them: '#' before a word character, '@' before a name character.
+const countHashtags = (text: string) => (text.match(/#(?=[\p{L}\p{N}_])/gu) ?? []).length;
+const countMentions = (text: string) => (text.match(/@(?=[A-Za-z0-9._])/g) ?? []).length;
+
+// What stops a caption from being added under this platform's rules; null when it is fine.
+export function captionError(caption: string, platform: PlatformInfo = LINKEDIN_FALLBACK): string | null {
+  const { rules, name } = platform;
   if (!caption.trim()) return 'Please write a caption.';
-  if (captionLength(caption) > MAX_CAPTION_CHARS) return 'The caption is longer than 3,000 characters, which LinkedIn does not allow.';
-  if (utf8Bytes(caption) > MAX_CAPTION_BYTES) return 'The caption is too long.';
+  if (captionLength(caption) > rules.caption_max_chars) {
+    return `The caption is longer than ${rules.caption_max_chars.toLocaleString('en-US')} characters, which ${name} does not allow.`;
+  }
+  if (rules.caption_max_hashtags !== null && countHashtags(caption) > rules.caption_max_hashtags) {
+    return `The caption has more than ${rules.caption_max_hashtags} hashtags, which ${name} does not allow.`;
+  }
+  if (rules.caption_max_mentions !== null && countMentions(caption) > rules.caption_max_mentions) {
+    return `The caption mentions more than ${rules.caption_max_mentions} accounts, which ${name} does not allow.`;
+  }
+  if (utf8Bytes(caption) > rules.max_caption_bytes) return 'The caption is too long.';
   return null;
 }
-
-// The phrase typed to confirm a real publish (api-plan open question 2).
-export const CONFIRM_PHRASE = 'publish to LinkedIn';

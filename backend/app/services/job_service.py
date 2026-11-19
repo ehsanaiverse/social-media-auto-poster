@@ -133,12 +133,12 @@ class JobService:
                 platform=platform,
             )
 
-    def list_jobs(self, *, last: int, status: JobStatus | None) -> list[dict]:
+    def list_jobs(self, *, last: int, status: JobStatus | None, platform: Platform | None = None) -> list[dict]:
         """Recent jobs, newest first. An empty list if there is no job database yet."""
         with self._history() as repository:
             if repository is None:
                 return []
-            return [self._job_json(record) for record in repository.list_recent(last, status=status)]
+            return [self._job_json(record) for record in repository.list_recent(last, status=status, platform=platform)]
 
     def get_job(self, prefix: str) -> dict:
         """One job in full. Raises JobLookupError when the prefix matches none, or more than one, job."""
@@ -197,10 +197,12 @@ class JobService:
 
     # Schedules (D46): the same operations as ``schedules``, ``schedule``, ``unschedule`` and ``reconfirm``.
 
-    def list_schedules(self, *, include_all: bool, status: ScheduleStatus | None, last: int) -> dict:
+    def list_schedules(self, *, include_all: bool, status: ScheduleStatus | None, last: int,
+                       platform: Platform | None = None) -> dict:
         """Schedules, read-only (never locks, writes, creates or upgrades the database)."""
         try:
-            result = schedules_ops.list_schedules(self._settings, include_all=include_all, status=status, limit=last)
+            result = schedules_ops.list_schedules(self._settings, include_all=include_all, status=status, limit=last,
+                                                     platform=platform)
         except ScheduleError as error:
             raise JobDatabaseError(error.message) from error
         return {

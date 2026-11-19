@@ -10,7 +10,7 @@ const keyOf = (d: ScheduleDialog | null) => (d ? (d.kind === 'create' ? `create:
 
 // Schedule a post from the queue, or re-confirm a schedule (a new one for the files as they are now).
 export const ScheduleModal: React.FC = () => {
-  const { scheduleDialog, setScheduleDialog, scheduleTimezone, createSchedule, reconfirmSchedule } = useApi();
+  const { scheduleDialog, setScheduleDialog, scheduleTimezone, createSchedule, reconfirmSchedule, activePlatform } = useApi();
   const dialog = useLatest(scheduleDialog);
   const [choice, setChoice] = useState<ScheduleChoice>(() => newChoice(scheduleTimezone));
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -25,7 +25,7 @@ export const ScheduleModal: React.FC = () => {
 
   const reconfirm = dialog?.kind === 'reconfirm' ? dialog.schedule : null;
   const name = dialog ? (dialog.kind === 'create' ? dialog.name : dialog.schedule.name) : '';
-  const problem = scheduleProblem(choice, scheduleTimezone);
+  const problem = scheduleProblem(choice, scheduleTimezone, undefined, activePlatform.confirmation_phrase ?? undefined);
   const warning = reconfirm ? contentWarning(reconfirm.content_state) : null;
 
   const close = () => setScheduleDialog(null);

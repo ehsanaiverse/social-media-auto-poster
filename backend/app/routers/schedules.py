@@ -42,16 +42,21 @@ def list_schedules(
     all: bool = Query(False),
     status: str | None = Query(None),
     last: int = Query(50, ge=1, le=200),
+    platform: str | None = Query(None),
     service: JobService = Depends(get_job_service),
 ) -> dict:
-    """Active schedules (soonest first), or ``all`` / one ``status`` (newest first). Read-only: no lock."""
+    """Active schedules (soonest first), or ``all`` / one ``status`` (newest first). Read-only: no lock.
+
+    ``platform`` lists one platform's schedules only; without it, every platform's (as before).
+    """
+    only = parse_platform(platform) if platform is not None and platform.strip() else None
     wanted = None
     if status is not None and status.strip():
         try:
             wanted = ScheduleStatus(status.strip().upper())
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Unknown status '{status}'.") from None
-    return service.list_schedules(include_all=all, status=wanted, last=last)
+    return service.list_schedules(include_all=all, status=wanted, last=last, platform=only)
 
 
 @router.post("", status_code=201, dependencies=[Depends(require_json)])

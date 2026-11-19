@@ -18,6 +18,7 @@ import {
   type LucideIcon
 } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
+import { PlatformPicker } from './PlatformPicker';
 import { contentWarning, modeWord } from '../lib/schedules';
 import { scrollToSection } from '../lib/sections';
 import { countOf, type Candidate } from '../types/api';
@@ -218,6 +219,7 @@ export const ScanQueueStation: React.FC = () => {
         <SectionHeading index="02" icon={ScanLine} eyebrow="Step 2" title="Your queue">
           Everything in your posts folder, and what will happen to it. Looking here never changes anything.
         </SectionHeading>
+        <PlatformPicker />
 
         {/* Overview bar: ring, counts (which also filter the list), actions */}
         <Reveal>

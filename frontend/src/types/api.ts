@@ -42,6 +42,7 @@ export interface RunRequest {
   real: boolean;
   publish_simulated: boolean;
   confirm: string | null;
+  platform?: string; // Left out for LinkedIn, as before.
 }
 
 export interface RunJobResult {
@@ -88,13 +89,16 @@ export interface JobDetail extends JobSummary {
 }
 
 // Exactly one of the two, as in `resolve <id> --published <post_id> | --failed`.
-export type ResolveRequest = { published_post_id: string } | { failed: true };
+export type ResolveRequest = { published_post_id: string } | { failed: true } | { check: true };
 
 export interface ResolveResponse {
   job_id: string;
   status: JobStatus;
-  note: string;
-  files_at: string;
+  note?: string;
+  files_at: string | null;
+  // A check ("check": true): whether the answer settled the job, and the platform's answer.
+  changed?: boolean;
+  reason?: string;
 }
 
 export type LinkedInTokenState = 'valid' | 'expiring' | 'expired' | 'missing' | 'unknown';
@@ -112,6 +116,33 @@ export interface PostCreatePayload {
   name: string;
   image: File;
   caption: string;
+  platform?: string;
+}
+
+// GET /api/platforms: what each platform accepts, from the backend's own rules.
+export interface PlatformRules {
+  extensions: string[];
+  max_image_bytes: number;
+  max_caption_bytes: number;
+  caption_max_chars: number;
+  caption_max_hashtags: number | null;
+  caption_max_mentions: number | null;
+  aspect: { min: string; max: string } | null;
+}
+
+export interface PlatformInfo {
+  id: string;
+  name: string;
+  real_available: boolean;
+  confirmation_phrase: string | null; // null while real publishing is not available (Instagram, D49)
+  rules: PlatformRules;
+}
+
+// POST /api/posts/check: the backend's own verdict. It writes nothing.
+export interface PostCheckResponse {
+  platform: string;
+  ok: boolean;
+  errors: string[];
 }
 
 export interface PostCreateResponse {
@@ -171,9 +202,10 @@ export interface ScheduleCreateRequest {
   publish_at: string;
   real: boolean;
   confirm: string | null;
+  platform?: string; // Left out for LinkedIn, as before.
 }
 
-export type ScheduleReconfirmRequest = Omit<ScheduleCreateRequest, 'name'>;
+export type ScheduleReconfirmRequest = Omit<ScheduleCreateRequest, 'name' | 'platform'>;
 
 export interface ScheduleResponse {
   schedule: ScheduleItem;
