@@ -13,7 +13,14 @@ from social_media_auto_poster.operations.common import LOGGER_NAME, RealPublishi
 from social_media_auto_poster.operations.logs import _run_scope
 from social_media_auto_poster.operations.platforms import adapter_for
 from social_media_auto_poster.platforms.rules import display_name
-from social_media_auto_poster.services.archive import ArchiveError, archive_post, post_folder_name, write_error_report
+from social_media_auto_poster.services.archive import (
+    ERROR_REPORT_NAME,
+    JOB_MARKER_NAME,
+    ArchiveError,
+    archive_post,
+    post_folder_name,
+    write_error_report,
+)
 from social_media_auto_poster.services.run_lock import single_run_lock
 from social_media_auto_poster.storage.database import SchemaTooNewError, open_app_db
 from social_media_auto_poster.storage.jobs import JobNotFoundError, JobRecord, JobRepository
@@ -40,7 +47,9 @@ class ResolveError(Exception):
         self.details = details
 
 
-def resolve_job(settings: Settings, job_prefix: str, *, published_post_id: str | None = None) -> ResolveResult:
+def resolve_job(
+    settings: Settings, job_prefix: str, *, published_post_id: str | None = None, platform=None
+) -> ResolveResult:
     """Settle a NEEDS_REVIEW job: PUBLISHED with ``published_post_id``, or FAILED (retryable) without it.
 
     Takes the run lock, so it never changes the database during a run. Raises ResolveError for a
@@ -56,12 +65,14 @@ def resolve_job(settings: Settings, job_prefix: str, *, published_post_id: str |
         except (SchemaTooNewError, sqlite3.Error) as error:
             raise ResolveError("no_database", f"could not open the job database: {error}") from None
         try:
-            return _resolve_in_database(JobRepository(conn), job_prefix, published_post_id)
+            return _resolve_in_database(JobRepository(conn), job_prefix, published_post_id, platform)
         finally:
             conn.close()
 
 
-def _resolve_in_database(repository: JobRepository, prefix: str, published_post_id: str | None) -> ResolveResult:
+def _resolve_in_database(
+    repository: JobRepository, prefix: str, published_post_id: str | None, platform=None
+) -> ResolveResult:
     matches = repository.find_by_id_prefix(prefix)
     if not matches:
         raise ResolveError("not_found", f"no job ID starts with '{prefix}'. Nothing was changed.")
@@ -73,6 +84,7 @@ def _resolve_in_database(repository: JobRepository, prefix: str, published_post_
 
     [job] = matches
     name = f"job {job.job_id[:8]} ({job.stem})"
+    _require_platform(job, platform)
     if job.status is not JobStatus.NEEDS_REVIEW:
         raise ResolveError(
             "not_needs_review",
@@ -118,7 +130,7 @@ class CheckResult:
     destination: str | None = None
 
 
-def check_job(settings: Settings, job_prefix: str) -> CheckResult:
+def check_job(settings: Settings, job_prefix: str, *, platform=None) -> CheckResult:
     """Settle a NEEDS_REVIEW job by asking its platform, read-only (D3). Never publishes anything.
 
     PUBLISHED: the job is PUBLISHED and its files are archived. FAILED (never published): the job is FAILED and its
@@ -134,13 +146,13 @@ def check_job(settings: Settings, job_prefix: str) -> CheckResult:
         except (SchemaTooNewError, sqlite3.Error) as error:
             raise ResolveError("no_database", f"could not open the job database: {error}") from None
         try:
-            return _check_in_database(settings, JobRepository(conn), job_prefix)
+            return _check_in_database(settings, JobRepository(conn), job_prefix, platform)
         finally:
             conn.close()
 
 
-def _check_in_database(settings: Settings, repository: JobRepository, prefix: str) -> CheckResult:
-    job = _one_needs_review_job(repository, prefix)
+def _check_in_database(settings: Settings, repository: JobRepository, prefix: str, platform=None) -> CheckResult:
+    job = _one_needs_review_job(repository, prefix, platform)
     name = f"job {job.job_id[:8]} ({job.stem})"
     platform = display_name(job.platform)
     if job.mode is PublishMode.SIMULATED:
@@ -180,7 +192,14 @@ def _check_in_database(settings: Settings, repository: JobRepository, prefix: st
     return CheckResult(job, outcome.status, outcome.post_id, outcome.reason, notes, destination)
 
 
-def _one_needs_review_job(repository: JobRepository, prefix: str) -> JobRecord:
+def _require_platform(job: JobRecord, platform) -> None:
+    """``resolve --platform X``: refuse a job of another platform (the job ID alone decides otherwise)."""
+    if platform is not None and job.platform is not platform:
+        raise ResolveError("wrong_platform", f"job {job.job_id[:8]} ({job.stem}) is a {job.platform} job, not "
+                                             f"{platform}. Nothing was changed.")
+
+
+def _one_needs_review_job(repository: JobRepository, prefix: str, platform=None) -> JobRecord:
     matches = repository.find_by_id_prefix(prefix)
     if not matches:
         raise ResolveError("not_found", f"no job ID starts with '{prefix}'. Nothing was changed.")
@@ -188,6 +207,7 @@ def _one_needs_review_job(repository: JobRepository, prefix: str) -> JobRecord:
         details = tuple(f"  {r.job_id}  {r.stem}  {r.status}" for r in matches)
         raise ResolveError("ambiguous", f"'{prefix}' matches {len(matches)} jobs; use a longer prefix:", details)
     [job] = matches
+    _require_platform(job, platform)
     if job.status is not JobStatus.NEEDS_REVIEW:
         raise ResolveError("not_needs_review", f"job {job.job_id[:8]} ({job.stem}) is {job.status}; only "
                                                "NEEDS_REVIEW jobs can be resolved. Nothing was changed.")
@@ -203,6 +223,7 @@ def _settle_files(
     if not (candidate.media_path.is_file() and candidate.caption_path.is_file()):
         return job.destination, (f"its files were not found in {folder}; nothing was moved",)
     in_failed = job.destination is not None and folder.parent == settings.failed_dir(job.platform)
+    notes_from_cleanup: tuple[str, ...] = ()
     if status is JobStatus.FAILED and in_failed:
         target = folder
     else:
@@ -214,13 +235,15 @@ def _settle_files(
             repository.update(job.job_id, errors=(*job.errors, f"could not move the files: {error}"))
             return job.destination, (f"could not move the files: {error}",)
         repository.update(job.job_id, destination=str(target))
+        if in_failed and status is JobStatus.PUBLISHED:  # The old failed/ folder no longer means "failed".
+            notes_from_cleanup = (_remove_old_failed_folder(folder, job),)
     if status is JobStatus.FAILED:
         try:
             write_error_report(target, job_id=job.job_id, stem=job.stem, status=status, errors=list(job.errors),
                                platform=job.platform)
         except OSError as error:
             logger.error("Could not write error report: job_id=%s folder=%s error=%s", job.job_id, target, error)
-    return str(target), (f"files are in {target}",)
+    return str(target), (f"files are in {target}", *notes_from_cleanup)
 
 
 def _forget_picture(settings: Settings, repository: JobRepository, job: JobRecord, adapter) -> tuple[str, ...]:
@@ -235,3 +258,25 @@ def _forget_picture(settings: Settings, repository: JobRepository, job: JobRecor
         return (f"the stored picture could not be deleted ({type(error).__name__}); its key is kept for cleanup",)
     repository.clear_media_host_key(job.job_id)
     return ("the stored picture was deleted",)
+
+
+def _remove_old_failed_folder(folder: Path, job: JobRecord) -> str:
+    """After PUBLISHED moved the files out of failed/, remove the folder they left: it no longer means "failed".
+
+    Only removed when it holds exactly what the app wrote there for this job (its marker, naming this job, and
+    the error report); anything else, or a marker of another job, leaves it untouched and says so.
+    """
+    try:
+        names = {child.name for child in folder.iterdir()}
+        marker = (folder / JOB_MARKER_NAME).read_text(encoding="utf-8").strip() if JOB_MARKER_NAME in names else None
+    except OSError as error:
+        return f"the old folder {folder.name} in failed/ could not be read ({error}); it was left as it is"
+    if marker != job.job_id or not names <= {JOB_MARKER_NAME, ERROR_REPORT_NAME}:
+        return f"the old folder {folder.name} in failed/ holds other files; it was left as it is"
+    try:
+        for name in names:
+            (folder / name).unlink()
+        folder.rmdir()
+    except OSError as error:
+        return f"the old folder {folder.name} in failed/ could not be removed ({error})"
+    return f"the old folder {folder.name} in failed/ was removed (it held only its error report)"

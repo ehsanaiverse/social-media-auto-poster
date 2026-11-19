@@ -470,6 +470,20 @@ Split into D1 (schema v3, migration, the recorder writing the container ID), D2 
 
 ### Step E: CLI and API
 
+Split into E1 (CLI) and E2 (API: `GET /api/platforms`, `POST /api/posts/check`, the resolve check).
+
+- [x] **E1 done (2026-11-19).**
+  - `--platform {linkedin,instagram}` (any case) on scan, run, jobs, schedule, unschedule, schedules, reconfirm and resolve.
+    - Without it, every command behaves and prints exactly as before.
+    - `run --scheduled` without it still covers every platform.
+    - `jobs` and `schedules` list every platform unless filtered (a LinkedIn default would hide Instagram rows).
+  - A `PLATFORM` column appears only when a listed row is not LinkedIn, because `test_history_commands.py` pins the existing layout.
+  - `--platform facebook` → exit 1. `--real` with Instagram → the D49 message, exit 1, before any lock, log or database. An unknown name → exit 2.
+  - `resolve --platform X` refuses a job of another platform.
+  - After `resolve --check` → PUBLISHED, the old `failed/` folder is removed if it holds only this job's marker and error report; otherwise it is left and the output says so.
+  - The lock exit code was already 4 everywhere.
+  - `instagram-check` is not added: future work, once real Instagram exists.
+
 - **Files:** `cli/parser.py` (`--platform`, `resolve --check`, help texts), `cli/commands.py`, `cli/output.py` (platform column only when needed), `app/routers/{scan,posts,run,schedules,jobs}.py`, `app/routers/platforms.py` (new), `app/services/job_service.py`, README (commands, multi-platform notes).
 - **Tests:**
   - CLI: `--platform` parsing; defaults identical (a golden comparison of `scan`/`run`/`schedules` output without `--platform`); `run --scheduled` across platforms; `--real --platform instagram` → exit 1 with the message.

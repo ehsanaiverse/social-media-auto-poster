@@ -156,7 +156,7 @@ def unschedule_post(
 
 
 def list_schedules(settings: Settings, *, include_all: bool = False, status: ScheduleStatus | None = None,
-                   limit: int = 50) -> ScheduleList:
+                   limit: int = 50, platform: Platform | None = None) -> ScheduleList:
     """Schedules, read-only: active ones soonest first, or (``include_all`` / ``status``) newest first.
 
     Never locks, writes, creates or upgrades the job database. Raises ScheduleError if it cannot be read.
@@ -172,11 +172,11 @@ def list_schedules(settings: Settings, *, include_all: bool = False, status: Sch
             return ScheduleList((), available=False)
         schedules = ScheduleRepository(conn)
         if status is not None:
-            records = schedules.list_recent(limit, status=status)
+            records = schedules.list_recent(limit, status=status, platform=platform)
         elif include_all:
-            records = schedules.list_recent(limit)
+            records = schedules.list_recent(limit, platform=platform)
         else:
-            records = schedules.list_active()
+            records = schedules.list_active(platform=platform)
         # Active schedules: compare their files with what was confirmed (reads the files, writes nothing).
         views = tuple(
             ScheduleView(r, content_state(r, settings.incoming_dir(r.platform))

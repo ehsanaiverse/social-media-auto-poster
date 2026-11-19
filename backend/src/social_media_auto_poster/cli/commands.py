@@ -28,6 +28,7 @@ from social_media_auto_poster.operations.common import (
     outside_warning,
 )
 from social_media_auto_poster.operations.logs import logging_to
+from social_media_auto_poster.operations.platforms import UnsupportedPlatform, adapter_for, real_unavailable_text
 from social_media_auto_poster.operations.resolve import ResolveError, check_job, resolve_job
 from social_media_auto_poster.operations.run import run_once
 from social_media_auto_poster.operations.scan import scan_preview
@@ -46,14 +47,34 @@ from social_media_auto_poster.storage.database import SchemaTooNewError, open_ap
 from social_media_auto_poster.storage.jobs import JobRepository
 
 
+def _platform_refused(platform, *, real: bool = False) -> bool:
+    """Print why ``--platform`` cannot be used here (exit 1), before any lock, log or database. None: fine."""
+    if platform is None:
+        return False
+    try:
+        adapter_for(platform)
+    except UnsupportedPlatform as error:
+        print(f"Error: {error}.", file=sys.stderr)
+        return True
+    refused = real_unavailable_text(platform) if real else None
+    if refused:
+        print(f"Error: {refused}.", file=sys.stderr)
+        return True
+    return False
+
+
 def _scan(args: argparse.Namespace) -> int:
+    if _platform_refused(args.platform, real=args.real):
+        return EXIT_SETUP_ERROR
+    platform = args.platform or PLATFORM
     settings = load_settings()
     mode = _mode(args)
-    folder = (args.dir if args.dir is not None else settings.incoming_dir(PLATFORM)).resolve()
+    folder = (args.dir if args.dir is not None else settings.incoming_dir(platform)).resolve()
     with logging_to(verbose=False, log_file=None):
         try:
             preview = scan_preview(
-                settings, folder=folder, mode=mode, interval_s=args.interval, check_archive=args.dir is None
+                settings, folder=folder, mode=mode, interval_s=args.interval, check_archive=args.dir is None,
+                platform=platform,
             )
         except FileNotFoundError:
             print(f"Error: incoming folder not found: {folder}", file=sys.stderr)
@@ -62,7 +83,7 @@ def _scan(args: argparse.Namespace) -> int:
 
         if args.dir is None and data_dir_outside_base(settings):
             print(outside_warning(settings), file=sys.stderr)
-        print(f"Scanning {display_name(PLATFORM)} incoming: {folder}" + ("   (duplicate check: real mode)" if args.real else ""))
+        print(f"Scanning {display_name(platform)} incoming: {folder}" + ("   (duplicate check: real mode)" if args.real else ""))
         result = preview.scan
         if not (result.candidates or result.pending or result.ambiguous):
             print("\nNothing found.")
@@ -81,6 +102,8 @@ def _scan(args: argparse.Namespace) -> int:
 
 
 def _jobs(args: argparse.Namespace) -> int:
+    if _platform_refused(args.platform):
+        return EXIT_SETUP_ERROR
     settings = load_settings()
     try:
         conn = open_app_db_read_only(settings.app_db_path)
@@ -93,11 +116,12 @@ def _jobs(args: argparse.Namespace) -> int:
     try:
         repository = JobRepository(conn)
         if args.job_id:
-            return _show_job(repository, args.job_id.strip().lower())
+            return _show_job(repository, args.job_id.strip().lower(), args.platform)
         status = JobStatus(args.status) if args.status else None
-        records = repository.list_recent(args.last, status=status)
+        records = repository.list_recent(args.last, status=status, platform=args.platform)
         if not records:
-            print(f"No jobs with status {status}." if status else "No jobs yet.")
+            on = f" on {display_name(args.platform)}" if args.platform else ""
+            print(f"No jobs with status {status}{on}." if status else f"No jobs yet{on}.")
             return EXIT_OK
         _print_job_table(records)
         return EXIT_OK
@@ -108,8 +132,8 @@ def _jobs(args: argparse.Namespace) -> int:
         conn.close()
 
 
-def _show_job(repository: JobRepository, prefix: str) -> int:
-    matches = repository.find_by_id_prefix(prefix)
+def _show_job(repository: JobRepository, prefix: str, platform=None) -> int:
+    matches = [r for r in repository.find_by_id_prefix(prefix) if platform is None or r.platform is platform]
     if not matches:
         print(f"Error: no job ID starts with '{prefix}'.", file=sys.stderr)
         return EXIT_SETUP_ERROR
@@ -137,13 +161,15 @@ def _show_job(repository: JobRepository, prefix: str) -> int:
 
 
 def _resolve(args: argparse.Namespace) -> int:
+    if _platform_refused(args.platform):
+        return EXIT_SETUP_ERROR
     settings = load_settings()
     if args.check:
-        return _resolve_check(args.job_id, settings)
+        return _resolve_check(args.job_id, settings, args.platform)
     published = args.published
     try:
         with logging_to(verbose=False, log_file=settings.log_file):
-            result = resolve_job(settings, args.job_id, published_post_id=published)
+            result = resolve_job(settings, args.job_id, published_post_id=published, platform=args.platform)
     except ResolveError as error:
         print(f"Error: {error.message}", file=sys.stderr)
         for line in error.details:
@@ -160,10 +186,10 @@ def _resolve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _resolve_check(job_id: str, settings) -> int:
+def _resolve_check(job_id: str, settings, platform=None) -> int:
     try:
         with logging_to(verbose=False, log_file=settings.log_file):
-            result = check_job(settings, job_id)
+            result = check_job(settings, job_id, platform=platform)
     except ResolveError as error:
         print(f"Error: {error.message}", file=sys.stderr)
         for line in error.details:
@@ -189,10 +215,13 @@ def _resolve_check(job_id: str, settings) -> int:
 
 
 def _schedule(args: argparse.Namespace) -> int:
+    if _platform_refused(args.platform, real=args.real):
+        return EXIT_SETUP_ERROR
     settings = load_settings()
     try:
         with logging_to(verbose=False, log_file=settings.log_file):
-            result = schedule_post(settings, args.post, args.at, real=args.real, interval_s=args.interval)
+            result = schedule_post(settings, args.post, args.at, real=args.real, interval_s=args.interval,
+                                   platform=args.platform or PLATFORM)
     except ScheduleError as error:
         print(f"Error: {error.message}", file=sys.stderr)
         return EXIT_SETUP_ERROR
@@ -201,8 +230,8 @@ def _schedule(args: argparse.Namespace) -> int:
         return EXIT_LOCKED
 
     record = result.schedule
-    kind = (f"REAL: to be published to {display_name(PLATFORM)}" if record.mode is PublishMode.REAL
-            else f"simulated: nothing will be sent to {display_name(PLATFORM)}")
+    kind = (f"REAL: to be published to {display_name(record.platform)}" if record.mode is PublishMode.REAL
+            else f"simulated: nothing will be sent to {display_name(record.platform)}")
     print(f"Scheduled '{record.stem}' for {result.local_time} ({record.publish_at:%Y-%m-%d %H:%M} UTC), {kind}.")
     print(f"Schedule ID: {record.schedule_id[:8]}")
     print("Keep both files unchanged in incoming/ until then; a changed file makes the schedule INVALID.")
@@ -214,10 +243,12 @@ def _schedule(args: argparse.Namespace) -> int:
 
 
 def _unschedule(args: argparse.Namespace) -> int:
+    if _platform_refused(args.platform):
+        return EXIT_SETUP_ERROR
     settings = load_settings()
     try:
         with logging_to(verbose=False, log_file=settings.log_file):
-            cancelled = unschedule_post(settings, args.post)
+            cancelled = unschedule_post(settings, args.post, platform=args.platform or PLATFORM)
     except ScheduleError as error:
         print(f"Error: {error.message}", file=sys.stderr)
         return EXIT_SETUP_ERROR
@@ -232,10 +263,13 @@ def _unschedule(args: argparse.Namespace) -> int:
 
 
 def _schedules(args: argparse.Namespace) -> int:
+    if _platform_refused(args.platform):
+        return EXIT_SETUP_ERROR
     settings = load_settings()
     status = ScheduleStatus(args.status) if args.status else None
     try:
-        listing = list_schedules(settings, include_all=args.all, status=status, limit=args.last)
+        listing = list_schedules(settings, include_all=args.all, status=status, limit=args.last,
+                                 platform=args.platform)
     except ScheduleError as error:
         print(f"Error: {error.message}", file=sys.stderr)
         return EXIT_SETUP_ERROR
@@ -251,10 +285,13 @@ def _schedules(args: argparse.Namespace) -> int:
 
 
 def _reconfirm(args: argparse.Namespace) -> int:
+    if _platform_refused(args.platform, real=args.real):
+        return EXIT_SETUP_ERROR
     settings = load_settings()
     try:
         with logging_to(verbose=False, log_file=settings.log_file):
-            result = reconfirm_post(settings, args.post, real=args.real, at=args.at, interval_s=args.interval)
+            result = reconfirm_post(settings, args.post, real=args.real, at=args.at, interval_s=args.interval,
+                                    platform=args.platform or PLATFORM)
     except ScheduleError as error:
         print(f"Error: {error.message}", file=sys.stderr)
         return EXIT_SETUP_ERROR
@@ -263,8 +300,8 @@ def _reconfirm(args: argparse.Namespace) -> int:
         return EXIT_LOCKED
 
     new, old = result.new, result.old
-    kind = (f"REAL: to be published to {display_name(PLATFORM)}" if new.mode is PublishMode.REAL
-            else f"simulated: nothing will be sent to {display_name(PLATFORM)}")
+    kind = (f"REAL: to be published to {display_name(new.platform)}" if new.mode is PublishMode.REAL
+            else f"simulated: nothing will be sent to {display_name(new.platform)}")
     old_now = "now CANCELLED" if old.status is ScheduleStatus.SCHEDULED else f"which stays {old.status}"
     print(f"Re-confirmed '{new.stem}' for {result.local_time} ({new.publish_at:%Y-%m-%d %H:%M} UTC), {kind}.")
     print(f"Schedule ID: {new.schedule_id[:8]} (replaces {old.schedule_id[:8]}, {old_now}).")
@@ -285,16 +322,19 @@ def _run(args: argparse.Namespace) -> int:
     if args.publish_simulated and mode is not PublishMode.REAL:
         print("Error: --publish-simulated only applies together with --real.", file=sys.stderr)
         return EXIT_USAGE
+    if _platform_refused(args.platform, real=mode is PublishMode.REAL):
+        return EXIT_SETUP_ERROR
+    shown = args.platform or PLATFORM  # Without --platform: as before (a scheduled run covers every platform).
     settings = load_settings()
     try:
         with logging_to(verbose=args.verbose, log_file=settings.log_file):
             # flush: when output is piped, stdout is buffered and stderr warnings would overtake it.
-            banner = f"   (REAL MODE: posts are published to {display_name(PLATFORM)})" if mode is PublishMode.REAL else ""
+            banner = f"   (REAL MODE: posts are published to {display_name(shown)})" if mode is PublishMode.REAL else ""
             if args.scheduled:
                 banner += "   (scheduled run: only scheduled posts that are due)"
-            print(f"Processing {display_name(PLATFORM)} incoming: {settings.incoming_dir(PLATFORM)}{banner}", flush=True)
+            print(f"Processing {display_name(shown)} incoming: {settings.incoming_dir(shown)}{banner}", flush=True)
             report = run_once(settings, mode, publish_simulated=args.publish_simulated, interval_s=args.interval,
-                              scheduled=args.scheduled)
+                              scheduled=args.scheduled, platform=args.platform)
     except RunLockHeldError:
         print("Another run is in progress; try again when it has finished.", file=sys.stderr)
         return EXIT_LOCKED

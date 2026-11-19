@@ -293,6 +293,7 @@ python -m social_media_auto_poster.main unschedule <post>                # cance
 python -m social_media_auto_poster.main reconfirm <post>                 # re-confirm a CHANGED/INVALID schedule (--real again for real; --at for a new time)
 python -m social_media_auto_poster.main schedules                        # list active schedules (--all, --status S); read-only
 python -m social_media_auto_poster.main run --scheduled                  # publish the oldest due simulated schedule (--real: real schedules)
+python -m social_media_auto_poster.main run --platform instagram         # --platform on scan/run/jobs/schedule/unschedule/schedules/reconfirm/resolve (default linkedin; Instagram simulated only, D49)
 .\backend\scripts\register-schedule-task.ps1 -WhatIf                   # Task Scheduler task for run --scheduled (from the repo root; -Real, -Remove)
 ```
 

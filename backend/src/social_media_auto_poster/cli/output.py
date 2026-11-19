@@ -4,7 +4,7 @@ import sys
 from zoneinfo import ZoneInfo
 
 from social_media_auto_poster.config import Settings
-from social_media_auto_poster.models import JobStatus, PublishMode, ScanResult
+from social_media_auto_poster.models import JobStatus, Platform, PublishMode, ScanResult
 from social_media_auto_poster.operations.common import DUPLICATE_LABEL, _describe_original, _local_time, _minutes
 from social_media_auto_poster.operations.run import JobLine, RunReport, ScheduledPost
 from social_media_auto_poster.operations.scan import CandidateView, ScheduleView
@@ -66,11 +66,19 @@ def _stability_label(view: CandidateView) -> str:
 
 def _print_job_table(records: list[JobRecord]) -> None:
     stem_width = max(20, *(len(r.stem) for r in records))
-    print(f"  {'JOB':<9} {'CREATED (UTC)':<20} {'STEM':<{stem_width}} {'MODE':<10} STATUS")
+    platforms = _platform_column(r.platform for r in records)  # Empty for a LinkedIn-only list: output as before.
+    print(f"  {'JOB':<9} {platforms and 'PLATFORM':<{len(platforms)}}{'CREATED (UTC)':<20} {'STEM':<{stem_width}} "
+          f"{'MODE':<10} STATUS")
     for r in records:
-        print(f"  {r.job_id[:8]:<9} {r.created_at:%Y-%m-%d %H:%M:%S}  {r.stem:<{stem_width}} {r.mode:<10} {r.status}")
+        column = f"{r.platform:<11}" if platforms else ""
+        print(f"  {r.job_id[:8]:<9} {column}{r.created_at:%Y-%m-%d %H:%M:%S}  {r.stem:<{stem_width}} {r.mode:<10} {r.status}")
         for error in r.errors:
             print(f"  {'':<9} - {error}")
+
+
+def _platform_column(platforms) -> str:
+    """The PLATFORM column's width, or "" when every row is LinkedIn (the output stays exactly as before)."""
+    return "" if all(p is Platform.LINKEDIN for p in platforms) else " " * 11
 
 
 def _print_resolve_next_steps(job: JobRecord, status: JobStatus, settings: Settings) -> None:
@@ -92,11 +100,14 @@ def _print_resolve_next_steps(job: JobRecord, status: JobStatus, settings: Setti
 def _print_schedule_table(views: tuple[ScheduleView, ...], zone: ZoneInfo) -> None:
     stem_width = max(16, *(len(v.schedule.stem) for v in views))
     when = f"WHEN ({zone.key})"
-    print(f"  {'ID':<9} {'POST':<{stem_width}} {'MODE':<10} {when:<22} {'UTC':<17} STATUS")
+    platforms = _platform_column(view.schedule.platform for view in views)  # Empty for LinkedIn only.
+    print(f"  {'ID':<9} {platforms and 'PLATFORM':<{len(platforms)}}{'POST':<{stem_width}} {'MODE':<10} {when:<22} "
+          f"{'UTC':<17} STATUS")
     for view in views:
         r = view.schedule
         local = f"{r.publish_at.astimezone(zone):%Y-%m-%d %H:%M}"
-        print(f"  {r.schedule_id[:8]:<9} {r.stem:<{stem_width}} {r.mode:<10} {local:<22} "
+        column = f"{r.platform:<11}" if platforms else ""
+        print(f"  {r.schedule_id[:8]:<9} {column}{r.stem:<{stem_width}} {r.mode:<10} {local:<22} "
               f"{r.publish_at:%Y-%m-%d %H:%M}  {r.status}")
         if view.content in CONTENT_LABELS:  # Found by reading the files now; the row itself is unchanged.
             print(f"  {'':<9} - {CONTENT_LABELS[view.content]}")

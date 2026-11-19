@@ -277,9 +277,14 @@ class JobRepository:
         rows = self._conn.execute(f"{self._select} WHERE status = ? ORDER BY created_at, rowid", (status.value,)).fetchall()
         return [self._to_record(row) for row in rows]
 
-    def list_recent(self, limit: int = 20, *, status: JobStatus | None = None) -> list[JobRecord]:
-        """The most recently created jobs (optionally only one status), newest first."""
-        where, params = ("WHERE status = ?", (status.value,)) if status else ("", ())
+    def list_recent(
+        self, limit: int = 20, *, status: JobStatus | None = None, platform: Platform | None = None
+    ) -> list[JobRecord]:
+        """The most recently created jobs (optionally only one status and/or platform), newest first."""
+        conditions = [("status = ?", status.value)] if status else []
+        conditions += [("platform = ?", platform.value)] if platform else []
+        where = ("WHERE " + " AND ".join(c for c, _ in conditions)) if conditions else ""
+        params = tuple(value for _, value in conditions)
         rows = self._conn.execute(
             f"{self._select} {where} ORDER BY created_at DESC, rowid DESC LIMIT ?", (*params, limit)
         ).fetchall()

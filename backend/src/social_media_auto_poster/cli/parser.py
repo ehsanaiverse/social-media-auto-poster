@@ -14,7 +14,7 @@ from social_media_auto_poster.cli.commands import (
     _schedules,
     _unschedule,
 )
-from social_media_auto_poster.models import JobStatus, ScheduleStatus
+from social_media_auto_poster.models import JobStatus, Platform, ScheduleStatus
 from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, MIN_JOB_ID_PREFIX
 from social_media_auto_poster.services.scheduling import ScheduleTimeError, check_time_format
 
@@ -120,6 +120,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Check duplicates against real-mode history, as run --real would.",
     )
+    _add_platform_option(scan, 'Platform whose incoming folder to scan (default: linkedin).')
     scan.set_defaults(handler=_scan)
 
     jobs = commands.add_parser(
@@ -132,6 +133,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--status", type=str.upper, choices=[s.value for s in JobStatus], help="Only jobs with this status."
     )
     jobs.add_argument("--id", dest="job_id", help="Show every detail of one job (an ID prefix is enough).")
+    _add_platform_option(jobs, 'Only jobs of this platform (default: every platform).')
     jobs.set_defaults(handler=_jobs)
 
     resolve = commands.add_parser(
@@ -151,6 +153,7 @@ def _build_parser() -> argparse.ArgumentParser:
     outcome.add_argument("--failed", action="store_true", help="It was not published; allow a retry.")
     outcome.add_argument("--check", action="store_true",
                          help="Ask the platform (read-only; never publishes). Not available for LinkedIn.")
+    _add_platform_option(resolve, 'Only if the job belongs to this platform (a safety check; the job ID decides).')
     resolve.set_defaults(handler=_resolve)
 
     run = commands.add_parser(
@@ -182,6 +185,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Publish only scheduled posts that are due (at most one per run), nothing else. "
              "With --real: real schedules; without: simulated schedules. For Windows Task Scheduler.",
     )
+    _add_platform_option(run, 'Platform to process (default: linkedin; with --scheduled, default: every platform).')
     run.set_defaults(handler=_run)
 
     check = commands.add_parser(
@@ -221,6 +225,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Schedule a real post to LinkedIn. Never a default: without it the schedule is simulated.",
     )
     _add_interval_option(schedule)
+    _add_platform_option(schedule, 'Platform of the post (default: linkedin).')
     schedule.set_defaults(handler=_schedule)
 
     unschedule = commands.add_parser(
@@ -231,6 +236,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     unschedule.add_argument("post", help="The post's name: its file names without the extension.")
+    _add_platform_option(unschedule, 'Platform of the post (default: linkedin).')
     unschedule.set_defaults(handler=_unschedule)
 
     reconfirm = commands.add_parser(
@@ -255,6 +261,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Real post to LinkedIn. Never carried over: without it the new schedule is simulated.",
     )
     _add_interval_option(reconfirm)
+    _add_platform_option(reconfirm, 'Platform of the post (default: linkedin).')
     reconfirm.set_defaults(handler=_reconfirm)
 
     schedules = commands.add_parser(
@@ -269,6 +276,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--status", type=str.upper, choices=[s.value for s in ScheduleStatus], help="Only schedules with this status."
     )
     schedules.add_argument("--last", type=_positive_int, default=50, help="With --all or --status: how many (default: 50).")
+    _add_platform_option(schedules, 'Only schedules of this platform (default: every platform).')
     schedules.set_defaults(handler=_schedules)
     return parser
 
@@ -288,6 +296,19 @@ def _add_interval_option(command: argparse.ArgumentParser) -> None:
         default=DEFAULT_INTERVAL_S,
         help=f"Seconds to watch each file for changes (default: {DEFAULT_INTERVAL_S}; 0 checks only for locks).",
     )
+
+
+def _add_platform_option(parser: argparse.ArgumentParser, help_text: str) -> None:
+    parser.add_argument("--platform", type=_platform, metavar="{linkedin,instagram}", help=help_text)
+
+
+def _platform(text: str) -> Platform:
+    """A platform name in any case. Facebook parses, and is refused by the command (it has no integration)."""
+    wanted = text.strip().casefold()
+    for platform in Platform:
+        if platform.value.casefold() == wanted:
+            return platform
+    raise argparse.ArgumentTypeError(f"unknown platform {text!r} (use linkedin or instagram)")
 
 
 def _job_id_prefix(text: str) -> str:
