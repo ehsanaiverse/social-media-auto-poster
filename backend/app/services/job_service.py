@@ -16,6 +16,7 @@ from pathlib import Path
 
 from social_media_auto_poster.config import Settings, data_dir_outside_base
 from social_media_auto_poster.ingestion.intake import add_post as add_post_to_incoming
+from social_media_auto_poster.operations import instagram as instagram_ops
 from social_media_auto_poster.operations import schedules as schedules_ops
 from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, PLATFORM, _local_time, outside_warning
 from social_media_auto_poster.operations.linkedin import LinkedInStatus, linkedin_status
@@ -191,6 +192,19 @@ class JobService:
                 errors.append(str(error))
         errors.extend(validate_content(platform, image_extension, image, caption).errors)
         return {"platform": platform.value, "ok": not errors, "errors": errors}
+
+    def instagram(self, *, check: bool) -> dict:
+        """The Instagram card: set up or not, and with ``check`` the result of ``instagram-check``."""
+        data = {"configured": instagram_ops.instagram_configured(self._settings), "token_type": instagram_ops.TOKEN_TYPE,
+                "checked": False, "ok": None, "username": None, "account_id": None, "quota": None,
+                "media_host_ok": None, "problems": []}
+        if not check:
+            return data
+        with logging_to(verbose=False, log_file=self._settings.log_file, console=False):
+            report = instagram_ops.instagram_check(self._settings)
+        quota = None if report.quota_used is None else {"used": report.quota_used, "total": report.quota_total}
+        return data | {"checked": True, "ok": report.ok, "username": report.username, "account_id": report.account_id,
+                       "quota": quota, "media_host_ok": report.media_host_ok, "problems": self._texts(report.problems)}
 
     def linkedin(self, *, check: bool) -> LinkedInStatus:
         return linkedin_status(self._settings, check=check)

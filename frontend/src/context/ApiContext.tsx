@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import type {
   JobDetail,
   JobSummary,
+  InstagramStatusResponse,
   LinkedInStatusResponse,
   PlatformInfo,
   PostCreatePayload,
@@ -99,6 +100,10 @@ interface ApiContextType {
   isCheckingLinkedIn: boolean;
   refreshLinkedInStatus: (check?: boolean) => Promise<void>;
 
+  instagramStatus: InstagramStatusResponse | null;
+  isCheckingInstagram: boolean;
+  refreshInstagramStatus: (check?: boolean) => Promise<void>;
+
   toasts: ToastMessage[];
   addToast: (type: ToastMessage['type'], title: string, message?: string) => void;
   removeToast: (id: string) => void;
@@ -158,6 +163,8 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [linkedInStatus, setLinkedInStatus] = useState<LinkedInStatusResponse | null>(null);
   const [isCheckingLinkedIn, setIsCheckingLinkedIn] = useState(false);
+  const [instagramStatus, setInstagramStatus] = useState<InstagramStatusResponse | null>(null);
+  const [isCheckingInstagram, setIsCheckingInstagram] = useState(false);
 
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const filterRef = useRef(jobStatusFilter);
@@ -253,6 +260,28 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [addToast, noteError]
   );
 
+  // Without check: only whether backend\.env is set up. With check: instagram-check (read-only, never publishes).
+  const refreshInstagramStatus = useCallback(
+    async (check = false) => {
+      setIsCheckingInstagram(true);
+      try {
+        const status = await apiService.getInstagramStatus(check);
+        if (!status) return; // An older poster without this endpoint (or a test that does not mock it).
+        setInstagramStatus(status);
+        if (check) {
+          addToast(status.ok ? 'success' : 'warning', status.ok ? 'Instagram is connected' : 'Instagram needs attention',
+            status.ok ? `Posting as ${status.username ?? 'your account'}.` : status.problems.join(' '));
+        }
+      } catch (err) {
+        noteError(err);
+        if (check) addToast('error', "Couldn't check Instagram", errorMessage(err, 'Please try again.'));
+      } finally {
+        setIsCheckingInstagram(false);
+      }
+    },
+    [addToast, noteError]
+  );
+
   const retryConnection = useCallback(async () => {
     setConnection('checking');
     if (await apiService.ping()) {
@@ -263,7 +292,7 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } catch {
         // An older poster without GET /api/platforms: LinkedIn only, as before.
       }
-      await Promise.all([refreshScan(), refreshJobs(), refreshLinkedInStatus(), refreshSchedules()]);
+      await Promise.all([refreshScan(), refreshJobs(), refreshLinkedInStatus(), refreshSchedules(), refreshInstagramStatus()]);
     } else {
       setConnection('offline');
       setScanData(null);
@@ -272,7 +301,7 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSchedules([]);
       setAllSchedules([]);
     }
-  }, [refreshScan, refreshJobs, refreshLinkedInStatus, refreshSchedules]);
+  }, [refreshScan, refreshJobs, refreshLinkedInStatus, refreshSchedules, refreshInstagramStatus]);
 
   // First load.
   useEffect(() => {
@@ -537,6 +566,9 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       linkedInStatus,
       isCheckingLinkedIn,
       refreshLinkedInStatus,
+      instagramStatus,
+      isCheckingInstagram,
+      refreshInstagramStatus,
       toasts,
       addToast,
       removeToast
@@ -544,7 +576,7 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [
       connection, retryConnection, platforms, platform, activePlatform, setPlatform, scanData, scanReal, isScanning, refreshScan, jobs, isLoadingJobs, jobStatusFilter,
       refreshJobs, selectedJob, openJob, closeJob, isRunning, lastRunReport, executeRun, isCreatingPost, createPost,
-      resolvingJob, resolveJob, linkedInStatus, isCheckingLinkedIn, refreshLinkedInStatus, toasts, addToast, removeToast,
+      resolvingJob, resolveJob, linkedInStatus, isCheckingLinkedIn, refreshLinkedInStatus, toasts, addToast, removeToast, instagramStatus, isCheckingInstagram, refreshInstagramStatus,
       schedules, allSchedules, scheduleTimezone, isLoadingSchedules, scheduleView, refreshSchedules, scheduleDialog,
       createSchedule, cancelSchedule, reconfirmSchedule
     ]

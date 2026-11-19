@@ -113,10 +113,32 @@ def _remote_checker(settings: Settings) -> RemoteChecker:
     return InstagramRemoteChecker(_client(settings))
 
 
+TOKEN_TYPE = "System User, no expiry"  # D48: never refreshed.
+
+
 @dataclass(frozen=True)
 class InstagramCheck:
     ok: bool
     lines: tuple[str, ...]
+    # The same answers as data, for the API (never the token, a key or a URL).
+    username: str | None = None
+    account_id: str | None = None
+    quota_used: int | None = None
+    quota_total: int | None = None
+    media_host_ok: bool | None = None
+
+    @property
+    def problems(self) -> tuple[str, ...]:
+        return tuple(line.removeprefix("  PROBLEM  ") for line in self.lines if line.startswith("  PROBLEM"))
+
+
+def instagram_configured(settings: Settings) -> bool:
+    """Whether the token and the account ID are set in backend/.env. No network."""
+    try:
+        _credentials(settings)
+    except RealPublishingUnavailable:
+        return False
+    return True
 
 
 def instagram_check(settings: Settings) -> InstagramCheck:
@@ -131,30 +153,33 @@ def instagram_check(settings: Settings) -> InstagramCheck:
     try:
         try:
             account_id, username = _account(client)
+            found = {"username": username or None, "account_id": account_id or None}
             lines.append(f"  OK       account {username or '(no username)'} (ID {account_id})")
         except RealPublishingUnavailable as error:
             return InstagramCheck(False, (f"  PROBLEM  {error}",))
-        lines.append(_quota_line(client))
-        ok = not lines[-1].startswith("  PROBLEM")
+        quota_line, used, total = _quota(client)
+        lines.append(quota_line)
+        ok = used is not None
     finally:
         client.close()
     host_line = _media_round_trip(settings)
     lines.append(host_line)
-    return InstagramCheck(ok and host_line.startswith("  OK"), tuple(lines))
+    host_ok = host_line.startswith("  OK")
+    return InstagramCheck(ok and host_ok, tuple(lines), quota_used=used, quota_total=total, media_host_ok=host_ok, **found)
 
 
-def _quota_line(client: InstagramClient) -> str:
+def _quota(client: InstagramClient) -> tuple[str, int | None, int | None]:
     try:
         response = client.publishing_limit()
     except httpx.HTTPError as error:
-        return f"  PROBLEM  the publishing quota could not be read ({type(error).__name__})"
+        return f"  PROBLEM  the publishing quota could not be read ({type(error).__name__})", None, None
     entries = json_or_empty(response).get("data") if response.status_code == 200 else None
     entry = entries[0] if isinstance(entries, list) and entries and isinstance(entries[0], dict) else {}
     usage, config = entry.get("quota_usage"), entry.get("config")
     total = config.get("quota_total") if isinstance(config, dict) else None
     if not isinstance(usage, int) or not isinstance(total, int):
-        return f"  PROBLEM  the publishing quota could not be read (HTTP {response.status_code})"
-    return f"  OK       publishing quota: {usage} of {total} posts used in the last 24 hours"
+        return f"  PROBLEM  the publishing quota could not be read (HTTP {response.status_code})", None, None
+    return f"  OK       publishing quota: {usage} of {total} posts used in the last 24 hours", usage, total
 
 
 def _media_round_trip(settings: Settings) -> str:

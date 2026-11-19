@@ -3,6 +3,7 @@ import type {
   HealthResponse,
   JobDetail,
   JobSummary,
+  InstagramStatusResponse,
   LinkedInStatusResponse,
   PlatformInfo,
   PostCheckResponse,
@@ -95,6 +96,8 @@ export const apiService = {
   resolveJob: (id: string, req: ResolveRequest) => postJson<ResolveResponse>(`/jobs/${encodeURIComponent(id)}/resolve`, req),
 
   getLinkedInStatus: (check = false) => request<LinkedInStatusResponse>(`/linkedin/status?check=${check}`),
+
+  getInstagramStatus: (check = false) => request<InstagramStatusResponse>(`/instagram/status?check=${check}`),
 
   // Scheduled posts (D46). Reading never changes anything; the others take the run lock (409 while busy).
   getSchedules: (all = false, platform?: string) => {

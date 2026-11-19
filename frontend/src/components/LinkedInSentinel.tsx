@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Clock, RefreshCw, ShieldCheck, UserRound } from 'lucide-react';
+import { Clock, Gauge, HardDrive, KeyRound, RefreshCw, ShieldCheck, UserRound } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
 import type { LinkedInTokenState } from '../types/api';
 import { PLATFORMS, type Platform } from '../lib/platforms';
@@ -120,6 +120,68 @@ const LinkedInCard: React.FC<{ platform: Platform }> = ({ platform }) => {
   );
 };
 
+// Instagram (D48): the account, its never-expiring System User token, the quota and the media host.
+// Filled by GET /api/instagram/status; "Check connection" runs instagram-check (read-only, never publishes).
+const InstagramCard: React.FC<{ platform: Platform; index: number }> = ({ platform, index }) => {
+  const { instagramStatus: s, isCheckingInstagram, refreshInstagramStatus, connection } = useApi();
+  const offline = connection !== 'online';
+  const copy = offline
+    ? OFFLINE
+    : !s?.configured
+      ? { label: 'Not connected', text: 'Add the token and account ID to backend\\.env.', hex: '#fb7185' }
+      : !s.checked
+        ? { label: 'Set up', text: 'Check the connection to see the account.', hex: '#94a3b8' }
+        : s.ok
+          ? { label: 'Connected', text: 'Ready to post.', hex: '#34d399' }
+          : { label: 'Needs attention', text: 'See the problems below.', hex: '#fbbf24' };
+  const rows: [typeof KeyRound, string, string][] = [
+    [KeyRound, 'Token', s?.token_type ?? 'System User, no expiry'],
+    [Gauge, 'Posts in the last 24 h', s?.quota ? `${s.quota.used} of ${s.quota.total}` : '—'],
+    [HardDrive, 'Picture storage', s?.media_host_ok === null || s?.media_host_ok === undefined ? '—' : s.media_host_ok ? 'OK' : 'Not OK']
+  ];
+
+  return (
+    <CardShell platform={platform} status={copy.label} hex={copy.hex} index={index}>
+      <p className="mt-1 flex items-center gap-1.5 text-sm text-slate-400">
+        {s?.username && !offline ? (
+          <>
+            <UserRound className="h-3.5 w-3.5" aria-hidden="true" /> Posting as <span className="truncate text-slate-200">{s.username}</span>
+          </>
+        ) : (
+          copy.text
+        )}
+      </p>
+      <dl className="mt-5 space-y-2 text-xs">
+        {rows.map(([Icon, label, value]) => (
+          <div key={label} className="flex items-center justify-between gap-3">
+            <dt className="flex items-center gap-1.5 text-slate-500">
+              <Icon className="h-3 w-3" aria-hidden="true" /> {label}
+            </dt>
+            <dd className="text-right text-slate-200">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {s?.checked && s.problems.length > 0 && (
+        <ul className="mt-3 space-y-1 text-xs text-amber-300">
+          {s.problems.map((p) => (
+            <li key={p}>{p}</li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={() => void refreshInstagramStatus(true)}
+        disabled={isCheckingInstagram || offline}
+        className="btn btn-primary mt-auto w-full text-sm"
+        style={{ marginTop: '1.25rem' }}
+      >
+        <RefreshCw className={cn('h-4 w-4', isCheckingInstagram && 'animate-spin')} aria-hidden="true" />
+        {isCheckingInstagram ? 'Checking…' : 'Check connection'}
+      </button>
+    </CardShell>
+  );
+};
+
 const ComingSoonCard: React.FC<{ platform: Platform; index: number }> = ({ platform, index }) => (
   <CardShell platform={platform} status="Coming soon" hex="#64748b" index={index} dim>
     <p className="mt-1 text-sm text-slate-400">Not available yet.</p>
@@ -132,17 +194,30 @@ const ComingSoonCard: React.FC<{ platform: Platform; index: number }> = ({ platf
   </CardShell>
 );
 
-export const LinkedInSentinel: React.FC = () => (
+export const LinkedInSentinel: React.FC = () => {
+  // Instagram gets its card once the poster offers it (GET /api/platforms); until then it is "Coming soon".
+  const { platforms } = useApi();
+  const hasInstagram = platforms.some((p) => p.id === 'instagram');
+  return (
   <section id="linkedin" className="relative py-16 lg:py-20">
     <div className="hr-fade absolute inset-x-0 top-0" />
     <div className="page-container">
       <SectionHeading index="06" icon={ShieldCheck} eyebrow="Accounts" title="Your connected accounts">
-        Connect each platform once. LinkedIn is ready today, and more are on the way.
+        Connect each platform once. {hasInstagram ? 'LinkedIn and Instagram are' : 'LinkedIn is'} ready today, and more are on the way.
       </SectionHeading>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {PLATFORMS.map((p, i) => (p.live ? <LinkedInCard key={p.id} platform={p} /> : <ComingSoonCard key={p.id} platform={p} index={i} />))}
+        {PLATFORMS.map((p, i) =>
+          p.live ? (
+            <LinkedInCard key={p.id} platform={p} />
+          ) : p.id === 'instagram' && hasInstagram ? (
+            <InstagramCard key={p.id} platform={p} index={i} />
+          ) : (
+            <ComingSoonCard key={p.id} platform={p} index={i} />
+          )
+        )}
       </div>
     </div>
   </section>
-);
+  );
+};

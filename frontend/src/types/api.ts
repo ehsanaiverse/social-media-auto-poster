@@ -103,6 +103,19 @@ export interface ResolveResponse {
 
 export type LinkedInTokenState = 'valid' | 'expiring' | 'expired' | 'missing' | 'unknown';
 
+// GET /api/instagram/status. Never contains the token, a key or a URL.
+export interface InstagramStatusResponse {
+  configured: boolean;
+  token_type: string;
+  checked: boolean; // true only after check=true (instagram-check: read-only, never publishes)
+  ok: boolean | null;
+  username: string | null;
+  account_id: string | null;
+  quota: { used: number; total: number } | null;
+  media_host_ok: boolean | null;
+  problems: string[];
+}
+
 export interface LinkedInStatusResponse {
   token_set: boolean;
   state: LinkedInTokenState;

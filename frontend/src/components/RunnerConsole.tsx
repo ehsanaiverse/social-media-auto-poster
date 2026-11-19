@@ -46,7 +46,7 @@ const JobLine: React.FC<{ job: RunJobResult; index: number }> = ({ job, index })
 };
 
 export const RunnerConsole: React.FC = () => {
-  const { executeRun, isRunning, lastRunReport, linkedInStatus, scanData, connection, activePlatform } = useApi();
+  const { executeRun, isRunning, lastRunReport, linkedInStatus, instagramStatus, scanData, connection, activePlatform } = useApi();
   // Instagram is test only (D49): a test run, never the live confirmation.
   const testOnly = !activePlatform.real_available;
   const confirmPhrase = activePlatform.confirmation_phrase ?? '';
@@ -58,7 +58,13 @@ export const RunnerConsole: React.FC = () => {
   const ready = scanData?.candidates.filter(isReady).length ?? 0;
   const scheduled = scanData?.candidates.filter((c) => c.stable && c.schedule).length ?? 0;
   const tokenState = linkedInStatus?.state ?? 'unknown';
-  const tokenUsable = tokenState === 'valid' || tokenState === 'expiring';
+  const isLinkedIn = activePlatform.id === 'linkedin';
+  const tokenUsable = isLinkedIn ? tokenState === 'valid' || tokenState === 'expiring' : Boolean(instagramStatus?.configured);
+  const tokenText = isLinkedIn
+    ? TOKEN_TEXT[tokenState]
+    : instagramStatus?.configured
+      ? `${activePlatform.name} is set up (${instagramStatus.token_type} token).`
+      : `${activePlatform.name} is not set up yet: check Accounts.`;
   const phraseOk = phrase.trim() === confirmPhrase;
   const canRun = connection === 'online' && !isRunning && (testOnly || phraseOk);
 
@@ -114,7 +120,7 @@ export const RunnerConsole: React.FC = () => {
 
                 <p className={cn('flex items-center gap-2 text-sm', tokenUsable ? 'text-emerald-300' : 'text-rose-300')}>
                   <span className={cn('h-2 w-2 rounded-full', tokenUsable ? 'bg-emerald-400' : 'bg-rose-400')} />
-                  {TOKEN_TEXT[tokenState]}
+                  {tokenText}
                 </p>
 
                 <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/[0.06] bg-black/20 p-3 text-sm text-slate-300">

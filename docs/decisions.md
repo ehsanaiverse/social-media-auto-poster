@@ -365,6 +365,7 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
     7. send `media_publish` **once**, never retried.
   - **Recovery:** as in D50 and `resolve --check` (D3). A media ID is looked up with `GET /{ig-user-id}/media?fields=id,caption,timestamp`, which reads `+0000` timestamps and treats a missing `caption` as empty.
   - **Confirmation phrase per platform:** `publish to Instagram`, checked against the request's platform. One platform's phrase never enables real mode on another.
+- **First real post (2026-11-19, job `7ada9327`, media `17998365165024359`):** Meta accepted the presigned B2 URL; the container was `PUBLISHED` after `media_publish`; the B2 object was deleted and the job's media key cleared. Still unverified: the error from a second `media_publish` (the code never sends one).
 - **Still unverified, checked on the first supervised real run:**
   - whether Meta accepts a presigned B2 URL;
   - the container status after `media_publish` (expected `PUBLISHED`);
