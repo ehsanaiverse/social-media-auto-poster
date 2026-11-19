@@ -19,10 +19,12 @@ class RunRequest(BaseModel):
 
 
 class ResolveRequest(BaseModel):
-    """``POST /api/jobs/{id}/resolve``: send exactly one of ``published_post_id`` or ``failed: true``."""
+    """``POST /api/jobs/{id}/resolve``: send exactly one of ``published_post_id``, ``failed: true`` or
+    ``check: true`` (ask the platform, read-only; Instagram only, and refused while real Instagram is off)."""
 
     published_post_id: str | None = None
     failed: bool = False
+    check: bool = False
 
 
 class ScheduleRequest(BaseModel):

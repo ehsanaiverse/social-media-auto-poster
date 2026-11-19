@@ -1,7 +1,5 @@
 # Plan: multi-platform refactor and Instagram (simulated)
 
-> **Historical plan.** Sections 1–7 describe the code before step A. What was built is recorded in each step's notes below, in `docs/decisions.md` (D49, D50) and in `CLAUDE.md`.
-
 **Status:** plan only, 2026-11-19. Nothing here is built. Real Instagram publishing and the R2 media host are **future** work, blocked on the presigned-URL spike and on D48 being accepted (`docs/instagram-api-notes.md`, section 13). Simulated Instagram (steps A–F) is allowed by **D49**; real Instagram stays forbidden until D48 is accepted.
 
 **Labels:** **[existing]** is how the code works today (checked against the source on 2026-11-19). **[proposed]** is what this plan would build. **[future]** is out of scope until the spike and D48.
@@ -370,16 +368,17 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
   - Double-post: none (no flow change), but `_publisher_for` is the gate for real mode. The tests `test_a_plain_run_never_asks_for_the_real_publisher` and `test_env_can_never_switch_*` must stay green untouched.
   - Patch seams: a patch could silently stop reaching the code; the guard catches it.
   - Labelling: footer texts are now generated; the existing tests pin them.
-- [x] Step B: Instagram rules (validation in every mode; Instagram not runnable yet)
+
+- [X] Step B: Instagram rules (validation in every mode; Instagram not runnable yet)
 
 - **Done (2026-11-19).**
+
   - `platforms/image_header.py: jpeg_info` reads the EXIF orientation, the MPF flag and the colour components; `image_size` is unchanged.
   - `platforms/instagram/rules.py` holds the caption and picture rules, with their source IDs.
   - `PostRules` gains `media_problems` and `media_read_limit`: validation reads the whole image (up to 8,000,001 bytes) only for a platform that defines them, so LinkedIn still reads 8 bytes.
   - `UnsupportedPlatform` moved to `platforms/rules.py` (re-exported by `operations/platforms.py`), and `check_schedulable` uses `rules_for`.
   - Instagram has rules but **no adapter**, so it is still unreachable.
   - One existing assertion changed, with the developer's approval: `test_platform_rules.py::test_only_linkedin_has_rules` now expects exactly `{LinkedIn, Instagram}`.
-
 - **Files:** `platforms/instagram/__init__.py`, `platforms/instagram/rules.py` (new), `platforms/image_header.py` (EXIF orientation, MPF, components), `platforms/rules.py` (register Instagram), `tests/fixtures/post_rules_cases.json` (new).
 - **Also here (moved from A1):** `PostRules.media_problems` (the all-modes image check; validation reads the whole image only for platforms that define it, so LinkedIn keeps reading 8 bytes) and `rules_for(platform)`, which raises `UnsupportedPlatform` for a platform without rules, where a caller must not silently skip the platform's checks.
 - **Tests:** `tests/unit/test_instagram_rules.py`:
@@ -395,7 +394,7 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
 
 ### Step C: Instagram adapter and publisher against fakes (no network, not reachable by real runs)
 
-- [x] **Done (2026-11-19).**
+- [X] **Done (2026-11-19).**
   - `platforms/instagram/{client,publisher,remote}.py`, `platforms/media_host.py`, plus `ReferenceRecorder`, `RemoteOutcome` and `PublishOutcomeUnknown` in `platforms/base.py`.
   - `operations/instagram.py`: `InstagramAdapter` with `real_available = False`, **not registered**. Its real publisher is refused with the D49 message before anything is read.
   - The client refuses any transport that is not a test `MockTransport`.
@@ -431,22 +430,24 @@ Each step is one or more commits; each leaves the **full** suite green (pytest; 
 
 Split into D1 (schema v3, migration, the recorder writing the container ID), D2 (register the Instagram adapter, simulated only; `run --scheduled` across platforms, refused platforms skipped, exit code 3 when one was), D3 (`resolve --check` with the remote checker).
 
-- [x] **D3 done (2026-11-19).**
+- [X] **D3 done (2026-11-19).**
+
   - `resolve <job> --check` (`operations/resolve.py: check_job`): read-only, under the run lock, for real NEEDS_REVIEW jobs of a platform whose adapter has a `remote_checker`.
   - PUBLISHED → PUBLISHED + archive (no post ID, with a note, if the post cannot be identified); FAILED → FAILED in `failed/` with the report rewritten; uncertain → unchanged, exit 3.
   - The stored picture is deleted and its key cleared on PUBLISHED or FAILED; a failed delete keeps the key.
   - LinkedIn: refused (no checker). Real Instagram: refused (D49, `_remote_checker`/`_media_host`).
   - The API's `{"check": true}` is left for step E (section 5.3).
   - When PUBLISHED moves the files out of `failed/`, the old folder with its error report and marker stays.
-- [x] **D2 done (2026-11-19).**
+- [X] **D2 done (2026-11-19).**
+
   - Instagram is registered (`real_available = False`), so simulated Instagram works through `run_once`, `scan_preview`, the schedule operations and the API (`platform`). Facebook is still refused.
   - `real_unavailable_text` refuses real Instagram in `_run_locked` (before anything changes), `_publisher_for`, `schedule_post`/`reconfirm_post` (before the lock) and the API (400).
   - `run_once(scheduled=True)` without a platform covers every registered platform: the oldest due schedule of any platform, at most one per run. Per-platform setup (data folders, archive history, real availability, token) is checked oldest first; a refused platform is skipped, with its schedules unchanged, logged as `Platform skipped by the scheduled run: platform=… reason=…` and shown as `SKIPPED`.
   - Exit codes as recorded in D49: 3 if a platform was skipped, 1 if every platform with something to publish was refused (unchanged D46 behaviour), 0 otherwise.
   - The "Run started" line of a scheduled run now reads `platform=LinkedIn,Instagram`; the only LinkedIn-visible change, because scheduled runs are no longer LinkedIn-only.
   - Tests edited with the developer's approval: the Instagram cases of the A2/A3a/A3b refusal tests, four Instagram-registration assertions, and the two Facebook/unknown-name message strings.
+- [X] **D1 done (2026-11-19).**
 
-- [x] **D1 done (2026-11-19).**
   - Migration 3 adds `jobs.remote_ref` and `jobs.media_host_key`, backed up first as `app.db.bak-v2`.
   - `JobRepository.record_remote_ref` commits the reference in its own transaction, and only for a `PUBLISHING` job without one.
   - The `publish` node passes the recorder to a publisher that `records_references`.
@@ -474,7 +475,7 @@ Split into D1 (schema v3, migration, the recorder writing the container ID), D2 
 
 Split into E1 (CLI) and E2 (API: `GET /api/platforms`, `POST /api/posts/check`, the resolve check).
 
-- [x] **E1 done (2026-11-19).**
+- [X] **E1 done (2026-11-19).**
   - `--platform {linkedin,instagram}` (any case) on scan, run, jobs, schedule, unschedule, schedules, reconfirm and resolve.
     - Without it, every command behaves and prints exactly as before.
     - `run --scheduled` without it still covers every platform.
@@ -485,6 +486,11 @@ Split into E1 (CLI) and E2 (API: `GET /api/platforms`, `POST /api/posts/check`, 
   - After `resolve --check` → PUBLISHED, the old `failed/` folder is removed if it holds only this job's marker and error report; otherwise it is left and the output says so.
   - The lock exit code was already 4 everywhere.
   - `instagram-check` is not added: future work, once real Instagram exists.
+- [x] **E2 done (2026-11-19).**
+  - `GET /api/platforms`: `id`, `name`, `real_available`, `confirmation_phrase` (null while real is off), and `rules` built from the backend's own constants.
+  - `POST /api/posts/check` (form: `caption`, `image`, optional `name`, `platform`): `ingestion/validation.py: validate_content` runs the same checks as a file in `incoming/`, on the bytes in memory, and writes nothing. A caption that cannot be encoded (a lone surrogate) → 400 "The caption is not valid text."
+  - `POST /api/jobs/{id}/resolve` with `{"check": true}`: the same `check_job` as the CLI, read-only. Its response includes `changed` (false when still uncertain). Real Instagram checking is refused → 400 (D49). Combined with another answer → 400.
+  - Every existing request is unchanged. The dashboard still uses its own copy of the rules; switching it to `/api/platforms` is step F.
 
 - **Files:** `cli/parser.py` (`--platform`, `resolve --check`, help texts), `cli/commands.py`, `cli/output.py` (platform column only when needed), `app/routers/{scan,posts,run,schedules,jobs}.py`, `app/routers/platforms.py` (new), `app/services/job_service.py`, README (commands, multi-platform notes).
 - **Tests:**

@@ -21,6 +21,9 @@ RESOLVE_STATUS_CODES = {
     "not_needs_review": 409,
     "no_longer_needs_review": 409,
     "simulated_published": 422,
+    "simulated_check": 422,
+    "check_unavailable": 400,
+    "wrong_platform": 400,
 }
 
 
@@ -60,13 +63,21 @@ def get_job(job_id: str, service: JobService = Depends(get_job_service)) -> dict
 
 @router.post("/{job_id}/resolve", dependencies=[Depends(require_json)])
 def resolve(job_id: str, body: ResolveRequest, service: JobService = Depends(get_job_service)) -> dict:
-    """Settle a NEEDS_REVIEW job, as ``resolve`` does. Takes the run lock (409 while a run is in progress)."""
+    """Settle a NEEDS_REVIEW job, as ``resolve`` does. Takes the run lock (409 while a run is in progress).
+
+    ``check: true`` is ``resolve --check``: the platform is asked, read-only, and its answer decides; nothing is
+    ever published. ``changed`` is false when the answer was still uncertain (the job stays NEEDS_REVIEW).
+    """
     prefix = _check_prefix(job_id)
-    if body.failed == (body.published_post_id is not None):
+    if body.check and (body.failed or body.published_post_id is not None):
+        raise HTTPException(status_code=400, detail="Send only one of published_post_id, failed: true or check: true.")
+    if not body.check and body.failed == (body.published_post_id is not None):
         raise HTTPException(
             status_code=400, detail="Send exactly one of published_post_id or failed: true."
         )
     try:
+        if body.check:
+            return service.check(prefix)
         return service.resolve(prefix, published_post_id=body.published_post_id)
     except ResolveError as error:
         code = RESOLVE_STATUS_CODES.get(error.kind, 409)

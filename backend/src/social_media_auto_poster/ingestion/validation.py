@@ -40,6 +40,20 @@ def validate_candidate(candidate: PostCandidate) -> ValidationResult:
     return ValidationResult(is_valid=not errors, errors=tuple(errors))
 
 
+def validate_content(platform: Platform, image_extension: str, image: bytes, caption: bytes) -> ValidationResult:
+    """The same checks as ``validate_candidate``, on an image and a caption held in memory.
+
+    Nothing is read from or written to disk (``POST /api/posts/check``). ``image_extension`` is the upload's
+    extension as named (".jpg"); the bytes are cut to what the file checks would read.
+    """
+    media = _image_errors(image_extension, image[: len(PNG_SIGNATURE)])
+    rules = RULES.get(platform)
+    if not media and rules is not None and rules.media_problems is not None:
+        media = rules.media_problems(image[: rules.media_read_limit + 1])
+    errors = [*media, *_caption_data_errors(caption[: MAX_CAPTION_BYTES + 1], _caption_rule(platform))]
+    return ValidationResult(is_valid=not errors, errors=tuple(errors))
+
+
 def _caption_rule(platform: Platform) -> Callable[[str], list[str]] | None:
     """The platform's own caption rule (platforms/rules.py), or None for a platform without one.
 
@@ -58,12 +72,16 @@ def _media_errors(path: Path) -> list[str]:
         return ["media file not found"]
     except OSError as error:
         return [f"media file could not be read: {error.strerror or error}"]
+    return _image_errors(path.suffix, head)
 
-    suffix = path.suffix.casefold()
+
+def _image_errors(extension: str, head: bytes) -> list[str]:
+    """The shared image checks on the first bytes of a picture named with ``extension``."""
+    suffix = extension.casefold()
     expected = EXPECTED_TYPE.get(suffix)
     if expected is None:
         allowed = ", ".join(EXPECTED_TYPE)
-        return [f"unsupported image type '{path.suffix}' (allowed: {allowed})"]
+        return [f"unsupported image type '{extension}' (allowed: {allowed})"]
     if not head:
         return ["image file is empty"]
 
@@ -71,7 +89,7 @@ def _media_errors(path: Path) -> list[str]:
     if actual is None:
         return [f"image content is not a valid {expected}"]
     if actual != expected:
-        return [f"file is {actual} but named {path.suffix}"]
+        return [f"file is {actual} but named {extension}"]
     return []
 
 
@@ -112,7 +130,11 @@ def _caption_errors(path: Path, platform_rule: Callable[[str], list[str]] | None
         return ["caption file not found"]
     except OSError as error:
         return [f"caption file could not be read: {error.strerror or error}"]
+    return _caption_data_errors(data, platform_rule)
 
+
+def _caption_data_errors(data: bytes, platform_rule: Callable[[str], list[str]] | None) -> list[str]:
+    """The caption checks on its bytes, read up to one byte past MAX_CAPTION_BYTES."""
     if len(data) > MAX_CAPTION_BYTES:
         return [f"caption file too large (over {MAX_CAPTION_BYTES // 1024} KB)"]
     try:

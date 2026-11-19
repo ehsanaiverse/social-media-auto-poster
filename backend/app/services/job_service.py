@@ -20,7 +20,14 @@ from social_media_auto_poster.operations import schedules as schedules_ops
 from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, PLATFORM, _local_time, outside_warning
 from social_media_auto_poster.operations.linkedin import LinkedInStatus, linkedin_status
 from social_media_auto_poster.operations.logs import logging_to
-from social_media_auto_poster.operations.resolve import resolve_job
+from social_media_auto_poster.ingestion.intake import MAX_IMAGE_BYTES, check_post_name
+from social_media_auto_poster.ingestion.validation import EXPECTED_TYPE, MAX_CAPTION_BYTES, validate_content
+from social_media_auto_poster.operations.platforms import ADAPTERS
+from social_media_auto_poster.operations.common import REAL_CONFIRMATION
+from social_media_auto_poster.operations.resolve import check_job, resolve_job
+from social_media_auto_poster.platforms.instagram import rules as instagram_rules
+from social_media_auto_poster.platforms.linkedin.caption import MAX_CAPTION_LENGTH as LINKEDIN_CAPTION_MAX
+from social_media_auto_poster.platforms.rules import display_name
 from social_media_auto_poster.operations.run import RunReport, run_once
 from social_media_auto_poster.operations.scan import CandidateView, find_duplicate, scan_preview
 from social_media_auto_poster.models import JobStatus, Platform, PostCandidate, PublishMode, ScheduleStatus
@@ -153,6 +160,37 @@ class JobService:
         destination = self._relative(job.destination)
         files_at = destination or f"not moved by the app (check {self._settings.incoming_dir(job.platform)})"
         return {"job_id": job.job_id, "status": str(result.status), "note": result.note, "files_at": files_at}
+
+    def check(self, prefix: str) -> dict:
+        """``resolve --check``: ask the job's platform, read-only. Raises ResolveError or RunLockHeldError."""
+        with logging_to(verbose=False, log_file=self._settings.log_file, console=False):
+            result = check_job(self._settings, prefix)
+        job = result.job
+        return {
+            "job_id": job.job_id,
+            "status": str(result.status),
+            "changed": result.status is not JobStatus.NEEDS_REVIEW,
+            "post_id": result.post_id,
+            "reason": result.reason,
+            "notes": self._texts(result.notes),
+            "files_at": self._relative(result.destination or job.destination),
+        }
+
+    def platforms(self) -> list[dict]:
+        """Every platform the app can use, with the rules the dashboard shows (the backend's own numbers)."""
+        return [_platform_to_dict(platform, adapter.real_available) for platform, adapter in ADAPTERS.items()]
+
+    def check_post(self, *, name: str | None, image: bytes, image_extension: str, caption: bytes,
+                   platform: Platform = PLATFORM) -> dict:
+        """The upload's problems for ``platform``, from the same checks as a post in incoming/. Writes nothing."""
+        errors: list[str] = []
+        if name is not None:
+            try:
+                check_post_name(name)
+            except ValueError as error:
+                errors.append(str(error))
+        errors.extend(validate_content(platform, image_extension, image, caption).errors)
+        return {"platform": platform.value, "ok": not errors, "errors": errors}
 
     def linkedin(self, *, check: bool) -> LinkedInStatus:
         return linkedin_status(self._settings, check=check)
@@ -306,6 +344,29 @@ class JobService:
             raise JobDatabaseError(str(error)) from error
         finally:
             conn.close()
+
+
+def _platform_to_dict(platform: Platform, real_available: bool) -> dict:
+    extensions = sorted(EXPECTED_TYPE)
+    rules = {"extensions": extensions, "max_image_bytes": MAX_IMAGE_BYTES, "max_caption_bytes": MAX_CAPTION_BYTES,
+             "caption_max_chars": LINKEDIN_CAPTION_MAX, "caption_max_hashtags": None,
+             "caption_max_mentions": None, "aspect": None}
+    if platform is Platform.INSTAGRAM:
+        rules.update(
+            extensions=[e for e in extensions if EXPECTED_TYPE[e] == "JPEG"],
+            max_image_bytes=min(MAX_IMAGE_BYTES, instagram_rules.MAX_IMAGE_BYTES),
+            caption_max_chars=instagram_rules.MAX_CAPTION_CHARS,
+            caption_max_hashtags=instagram_rules.MAX_HASHTAGS,
+            caption_max_mentions=instagram_rules.MAX_MENTIONS,
+            aspect={"min": "%d:%d" % instagram_rules.MIN_ASPECT, "max": "1.91:1"},
+        )
+    return {
+        "id": platform.value.casefold(),
+        "name": display_name(platform),
+        "real_available": real_available,
+        "confirmation_phrase": REAL_CONFIRMATION if real_available else None,
+        "rules": rules,
+    }
 
 
 def _candidate_to_dict(view: CandidateView, settings: Settings) -> dict:

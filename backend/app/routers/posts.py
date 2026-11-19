@@ -49,6 +49,27 @@ async def create_post(
         raise HTTPException(status_code=code, detail=error.message) from None
 
 
+@router.post("/check", dependencies=[Depends(require_local_marker)])
+async def check_post(
+    caption: str = Form(""),
+    image: UploadFile = File(...),
+    name: str | None = Form(None),
+    platform: str | None = Form(None),
+    service: JobService = Depends(get_job_service),
+) -> dict:
+    """Check a post against a platform's rules (the same checks as ``POST /api/posts``). Writes nothing."""
+    chosen = parse_platform(platform)
+    data = await image.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="The image is larger than 10 MB.")
+    try:
+        caption_bytes = caption.encode("utf-8")  # A lone surrogate (not text) cannot be encoded: 400.
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=400, detail="The caption is not valid text.") from None
+    return service.check_post(name=name, image=data, image_extension=_extension(image.filename or ""),
+                              caption=caption_bytes, platform=chosen)
+
+
 def _extension(filename: str) -> str:
     dot = filename.rfind(".")
     return filename[dot:].lower() if dot != -1 else ""
