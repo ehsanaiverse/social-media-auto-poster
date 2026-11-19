@@ -41,9 +41,9 @@ Platform order:
 
 1. LinkedIn — implemented (personal profile, one image + caption per post).
 2. Facebook — planned, not implemented.
-3. Instagram — planned, not implemented.
+3. Instagram — simulated only (`--platform instagram`); real publishing is refused until D48 is accepted (D49).
 
-Facebook and Instagram are placeholders for future work, not supported integrations.
+Facebook is a placeholder for future work, not a supported integration.
 
 ## Project roles
 
@@ -62,7 +62,8 @@ backend/                           The Python project
     models.py                      Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult, PostContent
     platforms/                     Publisher protocol (base.py) and simulator (simulator.py)
     platforms/linkedin/            caption.py, image_size.py, client.py, publisher.py, credentials.py, check.py
-    platforms/{facebook,instagram}/   Empty
+    platforms/instagram/           rules.py, client.py, publisher.py, remote.py (simulated only, D49)
+    platforms/facebook/            Empty
     graph/                         LangGraph workflow: state.py, nodes.py, workflow.py, checkpoints.py, resume.py
     ingestion/                     Scanning/pairing, stability check, validation, adding a post (intake.py)
     services/                      Hashing, reading post content, moving posts, crash recovery, real-mode checks, single-run lock
@@ -477,6 +478,6 @@ See `CLAUDE.md` for the binding project rules.
 2. Durable application records: SQLite repository, job states, hashes, duplicate detection, restart reconciliation (done).
 3. Persistent LangGraph execution: SQLite checkpointer, resume and interruption tests (done).
 4. Real LinkedIn publishing through official APIs, with safeguards for ambiguous outcomes (done; first real post 2026-10-28; signed off 2026-11-17).
-5. Reliability, operational docs, PostgreSQL evaluation, and Facebook/Instagram planning (next).
+5. Reliability, operational docs, PostgreSQL evaluation, and Instagram, simulated only (in progress).
 
 The local API and the React dashboard were added alongside Milestone 4 (D42, D43). No feature (for example an OAuth login flow or a folder watcher) should be considered available until it is implemented and covered by appropriate tests.

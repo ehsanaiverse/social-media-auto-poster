@@ -19,7 +19,7 @@ def real_forbidden_text(platform: Platform) -> str:
             "(D49); nothing was published")
 
 
-PLATFORM = Platform.LINKEDIN  # The default platform of every operation (the only one with an adapter).
+PLATFORM = Platform.LINKEDIN  # The default platform of every operation when none is given.
 DEFAULT_INTERVAL_S = 1.0
 
 EXIT_OK = 0

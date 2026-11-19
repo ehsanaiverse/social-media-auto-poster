@@ -1,7 +1,7 @@
 // Client-side copies of the backend's intake rules, for instant feedback only.
 // The backend checks everything again; these never replace its checks.
 
-// backend/scripts/app.py: check_stem (to move into ingestion/intake.py, api-plan refactor 1).
+// backend/src/social_media_auto_poster/ingestion/intake.py: check_post_name.
 const FORBIDDEN_STEM_CHARS = '<>:"/\\|?*';
 
 export function postNameError(raw: string): string | null {
@@ -19,7 +19,7 @@ export function postNameError(raw: string): string | null {
 export const MAX_CAPTION_BYTES = 64 * 1024; // ingestion/validation.py read cap, not LinkedIn's limit
 // LinkedIn's caption limit. The backend refuses a longer caption in every mode, tests and uploads included (D45).
 export const MAX_CAPTION_CHARS = 3000;
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // proposal in api-plan open question 3
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // upload limit decided in D43 (ingestion/intake.py)
 
 // ingestion/validation.py: EXPECTED_TYPE and the file-signature check.
 const EXPECTED_TYPE: Record<string, 'jpeg' | 'png'> = { jpg: 'jpeg', jpeg: 'jpeg', png: 'png' };

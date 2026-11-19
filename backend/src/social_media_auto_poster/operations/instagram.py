@@ -1,4 +1,4 @@
-"""Instagram's adapter (step C). NOT registered in operations/platforms.py: Instagram stays unreachable until step D.
+"""Instagram's adapter, registered in operations/platforms.py for simulated use only (D49).
 
 Real Instagram is forbidden until D48 is accepted (D49), so ``real_available`` is False and building the
 real publisher is refused, even when called directly, before any setting or token is read. A second

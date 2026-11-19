@@ -1,5 +1,7 @@
 # Plan: multi-platform refactor and Instagram (simulated)
 
+> **Historical plan.** Sections 1–7 describe the code before step A. What was built is recorded in each step's notes below, in `docs/decisions.md` (D49, D50) and in `CLAUDE.md`.
+
 **Status:** plan only, 2026-11-19. Nothing here is built. Real Instagram publishing and the R2 media host are **future** work, blocked on the presigned-URL spike and on D48 being accepted (`docs/instagram-api-notes.md`, section 13). Simulated Instagram (steps A–F) is allowed by **D49**; real Instagram stays forbidden until D48 is accepted.
 
 **Labels:** **[existing]** is how the code works today (checked against the source on 2026-11-19). **[proposed]** is what this plan would build. **[future]** is out of scope until the spike and D48.

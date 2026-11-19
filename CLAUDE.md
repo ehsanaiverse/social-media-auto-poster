@@ -8,7 +8,7 @@ These rules are binding. If `README.md` or other docs disagree with this file, t
 A Windows-first, folder-driven social media auto-poster. A user drops an image and a matching caption file into a platform's `incoming/` folder; the application detects, validates, tracks, and (eventually) publishes the post through official platform APIs.
 
 - **LinkedIn** is the platform in scope for real publishing. Instagram: simulated only (D49). Real Instagram is forbidden until D48 is accepted. Facebook has folders only; do not implement it.
-- **Publishing is simulated** until Milestone 4. No code may contact LinkedIn (or any platform) before then.
+- **Publishing is simulated** unless `--real` is given (M4, D38). Only LinkedIn may be contacted; tests never reach any network.
 - The developer has intermediate Python/AI experience: favour readable code, explain design decisions, and build incrementally.
 - The Python application lives in `backend/`. A local FastAPI API (`backend/app/`) and a React dashboard (`frontend/`) are built (see "3. Web UI" below, D32 and D42). Both are optional; the CLI does not need them.
 
@@ -129,10 +129,11 @@ social-media-auto-poster/
 │   │   ├── graph/                 # LangGraph only: state.py, nodes.py, workflow.py
 │   │   ├── ingestion/             # Folder scanning, file stability, media/caption pairing, validation
 │   │   ├── storage/               # SQLite repository layer
-│   │   ├── platforms/             # base.py (publisher protocol), simulator, linkedin/ (caption.py, image_size.py, client.py, publisher.py)
+│   │   ├── platforms/             # base.py (publisher protocol), simulator, rules.py, image_header.py, media_host.py,
+│   │   │                          #   linkedin/ (caption.py, image_size.py, client.py, publisher.py), instagram/ (simulated only, D49)
 │   │   ├── services/              # Hashing, archiving, reconciliation, run lock
 │   │   ├── operations/            # What the CLI and the API both call (D47): common.py, clock.py, logs.py, scan.py (scan_preview),
-│   │   │                          #   linkedin.py (linkedin_status, the real publisher), resolve.py (resolve_job),
+│   │   │                          #   platforms.py (adapters), linkedin.py (linkedin_status, the real publisher), instagram.py, resolve.py (resolve_job),
 │   │   │                          #   schedules.py (schedule_post, reconfirm_post, list_schedules...), run.py (run_once)
 │   │   ├── cli/                   # The command line: parser.py, commands.py (one handler per command), output.py (printing)
 │   │   └── main.py                # Entry point only (`python -m social_media_auto_poster.main`): main() and a few re-exports
@@ -141,6 +142,9 @@ social-media-auto-poster/
 │   ├── scripts/app.py             # Sandbox tester
 │   └── data/ database/ logs/ sandbox/ .env autoposter.lock   # Runtime, Git-ignored
 ├── docs/decisions.md              # Decision records
+├── docs/api-plan.md               # API plan (rules still binding)
+├── docs/instagram-api-notes.md    # What Instagram's official docs say, with sources
+├── docs/instagram-plan.md         # Multi-platform refactor and Instagram (simulated) plan, step notes
 ├── docs/linkedin-api-notes.md     # What LinkedIn's official docs say (M4), with sources
 ├── docs/milestone-4-review.md     # Milestone 4 review: what was built, results, known limitations
 ├── frontend/                      # React dashboard (Vite, TypeScript); node_modules/ and dist/ Git-ignored
@@ -194,7 +198,7 @@ Work **directly on `main`**: no new branches and no pull requests. For every cha
 | 3 | Persistent LangGraph execution: SQLite checkpointer, resume/interrupt tests, checkpoint data kept separate | **Complete** (signed off 2026-10-28; D34) |
 | 4 | Real LinkedIn publishing: verify official API, auth, media upload, post creation, ambiguous-outcome safeguards; simulated and real modes clearly separated | **Complete** (signed off 2026-11-17; D45). D36: 4.0 docs research and design; 4.1 `--real` switch + D33 safeguards (D38); 4.2 exact bytes; 4.3 LinkedIn client and publisher (D39); 4.4 credentials, token expiry, `linkedin-check`, checked against the real LinkedIn (D40); data folder safeguard (D41); first real post published 2026-10-28 (job `41ac71e1`). Review: `docs/milestone-4-review.md` |
 | — | Local API (`backend/app/`, FastAPI) and React dashboard (`frontend/`), added alongside M4 (D42, D43): `9f0370b` (core functions return data), `c281556`, `260277b` (API on the current core), `a3bb081` (API tests), `19d03a4`, `5f32054` (dashboard) | **Implemented**; API tests in `tests/api/`, frontend tests with `npm test` (M5 commit 8); walked through in the browser on 2026-11-18 (read-only, real data) |
-| 5 | Reliability and expansion: logging/monitoring, operational docs, evaluate PostgreSQL, plan Facebook/Instagram adapters | **In progress**: step 1, scheduled posts (D46; rules in "4. Scheduled posts"). Done: caption limit checked in validation (`aa5ef83`), the schedules API (commit 7) and scheduling in the dashboard (commit 8) |
+| 5 | Reliability and expansion: logging/monitoring, operational docs, evaluate PostgreSQL, plan Facebook/Instagram adapters | **In progress**: step 1, scheduled posts (D46; rules in "4. Scheduled posts"). Done: caption limit checked in validation (`aa5ef83`), the schedules API (commit 7) and scheduling in the dashboard (commit 8). Then Instagram, simulated only (D49; `docs/instagram-plan.md`): steps A–D and E1 (CLI `--platform`) done; E2 (API) next |
 
 ### Milestone 2 status detail
 
@@ -254,7 +258,7 @@ Tests must cover, as the features appear: normal execution, validation failures,
 - `backend/pyproject.toml` is the only source of truth for dependencies: runtime in `[project] dependencies`, test tooling in `[project.optional-dependencies] dev`. The supported install is `pip install -e ".[dev]"` from `backend/`. There is no `requirements.txt` (removed in D32); do not re-add one.
 - Add a dependency only in the milestone that uses it. Verify the package name, current version, and Python compatibility on PyPI or the official docs before adding or pinning it. Bounds are `>=` the version actually installed and tested, `<` the next major version. **The one exception is `tzdata`:** it is time zone data, not code, and newer data is always the correct data (a capped version would keep outdated clock-change rules), so it has only a lower bound.
 - Current: `langgraph`, `langgraph-checkpoint-sqlite` (`>=3.1.2,<4`, M3; past the CVE-2025-67644 fix, and it requires `langgraph-checkpoint>=4.3.0`, past the CVE-2025-64439 fix), `httpx` (`>=0.28.1,<1`, M4, D36), `python-dotenv`, `tzdata` (`>=2026.6`, M5, D46: time zone data for `zoneinfo`, which Windows lacks; no upper bound, see below) (runtime); `pytest` (dev). Verified on Python 3.14.8 with langgraph 1.2.18.
-- **Frontend** (`frontend/package.json`, npm; exact versions, as the rest of the file): test tooling as `devDependencies` only (M5 commit 8, approved by the developer): `vitest` 5.1.0, `jsdom` 30.1.3, `@testing-library/react` 16.3.3, `@testing-library/jest-dom` 7.0.1, `@testing-library/user-event` 14.6.8 (npm also installed their required peer `@testing-library/dom` 10.4.2). Each was the newest release at least two weeks old and supports Vite 7 / React 19. Run `npm audit` after any change and report the result; none of these is in the built page.
+- **Frontend** (`frontend/package.json`, npm; test tooling pinned to exact versions; some runtime packages and their `@types` use `^` ranges, fixed by `package-lock.json` and `npm ci`): test tooling as `devDependencies` only (M5 commit 8, approved by the developer): `vitest` 5.1.0, `jsdom` 30.1.3, `@testing-library/react` 16.3.3, `@testing-library/jest-dom` 7.0.1, `@testing-library/user-event` 14.6.8 (npm also installed their required peer `@testing-library/dom` 10.4.2). Each was the newest release at least two weeks old and supports Vite 7 / React 19. Run `npm audit` after any change and report the result; none of these is in the built page.
 - Expected later: `watchdog` (when folder watching is added). **No Pillow** (D37) unless the developer approves it. `langchain` is **not** a dependency (see "No LLMs" above).
 - **Python version:** the developer uses **Python 3.14**; minimum is 3.12 (`requires-python = ">=3.12"`). `langgraph` officially lists classifiers only through 3.13, so re-check 3.14 compatibility whenever a dependency is added (`langgraph-checkpoint-sqlite` 3.1.2 was verified in M3). Falling back to 3.13 is the remedy if something breaks.
 - **Virtual environment:** the project venv is named `.vevn` (developer's choice) and lives at the repo root, shared by the whole repo; the planned frontend uses Node, not Python.

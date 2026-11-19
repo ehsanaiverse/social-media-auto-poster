@@ -14,7 +14,7 @@ from social_media_auto_poster.config import Settings
 from social_media_auto_poster.ingestion.validation import EXPECTED_TYPE, MAX_CAPTION_BYTES, validate_candidate
 from social_media_auto_poster.models import Platform, PostCandidate
 
-MAX_IMAGE_BYTES = 10 * 1024 * 1024  # Proposal from docs/api-plan.md (open question 3).
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # Upload limit decided in D43 (api-plan open question 3).
 FORBIDDEN_STEM_CHARS = frozenset('<>:"/\\|?*')
 HIDDEN_PREFIXES = (".", "~$")  # The scanner ignores these names, so a name starting with them could never post.
 

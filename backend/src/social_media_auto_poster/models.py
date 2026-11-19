@@ -8,8 +8,8 @@ from pathlib import Path
 class Platform(StrEnum):
     """Platforms with content folders. Values match the folder names under ``data/``.
 
-    Only LinkedIn is processed; Facebook and Instagram exist so their folders
-    can be created, not because they are integrated.
+    LinkedIn is integrated (simulated and real); Instagram is simulated only (D49);
+    Facebook exists so its folders can be created, not because it is integrated.
     """
 
     LINKEDIN = "LinkedIn"

@@ -5,7 +5,7 @@ export type PlatformId = 'linkedin' | 'instagram' | 'facebook' | 'x';
 export interface Platform {
   id: PlatformId;
   name: string;
-  // Only LinkedIn is built in the backend; the others are planned.
+  // LinkedIn is live; Instagram is simulated only in the backend (D49); Facebook is planned.
   live: boolean;
   color: string;
   Icon: React.FC<{ className?: string }>;

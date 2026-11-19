@@ -97,13 +97,13 @@ exit codes:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m social_media_auto_poster.main",
-        description="Folder-driven social media auto-poster. LinkedIn only; publishing is simulated unless run --real.",
+        description="Folder-driven social media auto-poster. LinkedIn, and Instagram simulated only (--platform); publishing is simulated unless run --real.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
     scan = commands.add_parser(
         "scan",
-        help="Report what is in the LinkedIn incoming folder. Read-only.",
+        help="Report what is in a platform's incoming folder (default: LinkedIn). Read-only.",
         description=(
             "Report candidates (with stability and validation), pending files, and ambiguous stems. "
             "Never moves or publishes."
@@ -112,7 +112,7 @@ def _build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--dir",
         type=Path,
-        help="Folder to scan instead of the configured LinkedIn incoming folder.",
+        help="Folder to scan instead of the platform's configured incoming folder.",
     )
     _add_interval_option(scan)
     scan.add_argument(
@@ -160,7 +160,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "run",
         help="Process every complete post once. Simulated unless --real.",
         description=(
-            "Run each complete post in the configured LinkedIn incoming folder through the workflow. "
+            "Run each complete post in the platform's configured incoming folder (default: LinkedIn) through the workflow. "
             "Invalid or failed posts move to failed/ with an error report; simulated posts stay in incoming/; "
             "posts published with --real move to archive/."
         ),
@@ -206,7 +206,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     schedule = commands.add_parser(
         "schedule",
-        help="Schedule a post in the LinkedIn incoming folder for a date and time.",
+        help="Schedule a post in a platform's incoming folder (default: LinkedIn) for a date and time.",
         description=(
             "Schedule one post (its name, without extension) for a date and time. The post is checked now: it "
             "must be complete, valid, and not already handled or scheduled. Its files must not change before then."
