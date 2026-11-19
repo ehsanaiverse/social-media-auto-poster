@@ -183,7 +183,7 @@ class LinkedInPublisher:
             raise PublishOutcomeUnknown(
                 f"the connection failed after the post was sent ({type(error).__name__}); "
                 "check LinkedIn before re-posting"
-            ) from error
+            ) from None  # Not chained: the workflow logs the traceback, and httpx's message is not ours.
 
         status = response.status_code
         if status == 201:
