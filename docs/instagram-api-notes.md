@@ -306,7 +306,7 @@ D48 is **accepted** and recorded in `docs/decisions.md` (D48), with the spike re
 - **API and token.** The token from "API setup with Unified login" is a System User token (`EAA…`, never expires) that works on **`graph.facebook.com`**, not `graph.instagram.com`. Its scopes are `instagram_basic` and `instagram_content_publish`. There is no 60-day expiry and no refresh, so sections 3 and 12 (token dates, renewal) do not apply to this token.
 - **Identity.** `me` is not the Instagram account with this token. The Instagram user ID is configured (`INSTAGRAM_USER_ID`) instead of read from `/me` (section 2, sections 4–9).
 - **Confirmed:** the publishing limit, container creation and `media_publish`; the post is publicly visible from a Development-mode app (section 11). `GET /{ig-user-id}/media` returns `caption` and `timestamp` (`+0000`); `caption` is missing when the caption is empty (section 9).
-- **Media host (section 8):** Cloudflare R2, private bucket, presigned GET URLs valid 1 hour. Requests are signed with hand-written SigV4 over `httpx` (no new dependency), tested against AWS's SigV4 test vectors. The R2 keys live only in `backend/.env` and are never logged.
+- **Media host (section 8):** S3-compatible storage, Backblaze B2 (private bucket), with path-style URLs and presigned GET URLs valid 1 hour. Sections 8 and 12 compared R2 and S3; B2 replaces both. Requests are signed with hand-written SigV4 over `httpx` (no new dependency), tested against AWS's SigV4 test vectors. The R2 keys live only in `backend/.env` and are never logged.
 - **Still unverified,** to check on the first real run:
   - Meta accepts a presigned URL;
   - the container status after `media_publish`;

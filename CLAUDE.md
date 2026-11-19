@@ -7,7 +7,7 @@ These rules are binding. If `README.md` or other docs disagree with this file, t
 
 A Windows-first, folder-driven social media auto-poster. A user drops an image and a matching caption file into a platform's `incoming/` folder; the application detects, validates, tracks, and (eventually) publishes the post through official platform APIs.
 
-- **LinkedIn** is the platform in scope for real publishing. Instagram: simulated only (D49). Real Instagram is forbidden until D48 is accepted. Facebook has folders only; do not implement it.
+- **LinkedIn** is the platform in scope for real publishing. Instagram: simulated only (D49). Real Instagram is forbidden until the real-Instagram step lifts the D49 guards. Facebook has folders only; do not implement it.
 - **Publishing is simulated** unless `--real` is given (M4, D38). Only LinkedIn may be contacted; tests never reach any network.
 - The developer has intermediate Python/AI experience: favour readable code, explain design decisions, and build incrementally.
 - The Python application lives in `backend/`. A local FastAPI API (`backend/app/`) and a React dashboard (`frontend/`) are built (see "3. Web UI" below, D32 and D42). Both are optional; the CLI does not need them.
@@ -129,7 +129,7 @@ social-media-auto-poster/
 │   │   ├── graph/                 # LangGraph only: state.py, nodes.py, workflow.py
 │   │   ├── ingestion/             # Folder scanning, file stability, media/caption pairing, validation
 │   │   ├── storage/               # SQLite repository layer
-│   │   ├── platforms/             # base.py (publisher protocol), simulator, rules.py, image_header.py, media_host.py,
+│   │   ├── platforms/             # base.py (publisher protocol), simulator, rules.py, image_header.py, media_host.py, s3_media_host.py + sigv4.py (D48, not wired in yet),
 │   │   │                          #   linkedin/ (caption.py, image_size.py, client.py, publisher.py), instagram/ (simulated only, D49)
 │   │   ├── services/              # Hashing, archiving, reconciliation, run lock
 │   │   ├── operations/            # What the CLI and the API both call (D47): common.py, clock.py, logs.py, scan.py (scan_preview),

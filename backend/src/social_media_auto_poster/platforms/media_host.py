@@ -1,8 +1,7 @@
 """Where a picture is put so a platform can fetch it by URL (Instagram accepts images only by URL, S12/S13).
 
-Only the interface lives here. The real host (Cloudflare R2 or S3, signed GET URLs) is future work,
-blocked on D48 and a separate decision about SigV4 or a new dependency; tests use an in-memory fake
-(``tests/media_host_fake.py``).
+Only the interface lives here. The real host is ``platforms/s3_media_host.py`` (S3-compatible storage,
+Backblaze B2, D48), not used by the publisher yet; tests use an in-memory fake (``tests/media_host_fake.py``).
 
 A URL from ``url`` is a bearer secret: anyone holding it can fetch the picture until it expires. It is
 never logged, stored, put in an error text or returned by the API.
