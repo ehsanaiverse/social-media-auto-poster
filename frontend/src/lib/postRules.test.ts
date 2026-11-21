@@ -60,25 +60,42 @@ describe('isReel and video rules (D51)', () => {
     expect(errors).toContain('video not supported on LinkedIn');
   });
 
-  it('accepts video on Instagram under 300 MB', async () => {
+  const instagramPlatform = {
+    id: 'instagram',
+    name: 'Instagram',
+    real_available: true,
+    confirmation_phrase: 'publish to Instagram',
+    rules: {
+      extensions: ['.jpeg', '.jpg', '.mp4', '.mov'],
+      max_image_bytes: 8000000,
+      max_video_bytes: 300_000_000,
+      max_caption_bytes: 64 * 1024,
+      caption_max_chars: 2200,
+      caption_max_hashtags: 30,
+      caption_max_mentions: 20,
+      aspect: { min: '4:5', max: '1.91:1' },
+    },
+  };
+
+  // imageErrors reads only file.size for a reel, so a defined size keeps these boundary tests tiny.
+  const reelOfSize = (size: number): File => {
     const file = new File(['dummy'], 'video.mp4', { type: 'video/mp4' });
-    const instagramPlatform = {
-      id: 'instagram',
-      name: 'Instagram',
-      real_available: true,
-      confirmation_phrase: 'publish to Instagram',
-      rules: {
-        extensions: ['.jpeg', '.jpg', '.mp4', '.mov'],
-        max_image_bytes: 8000000,
-        max_video_bytes: 300 * 1024 * 1024,
-        max_caption_bytes: 64 * 1024,
-        caption_max_chars: 2200,
-        caption_max_hashtags: 30,
-        caption_max_mentions: 20,
-        aspect: { min: '4:5', max: '1.91:1' },
-      },
-    };
-    const errors = await imageErrors(file, instagramPlatform);
+    Object.defineProperty(file, 'size', { value: size });
+    return file;
+  };
+
+  it('accepts video on Instagram under 300 MB', async () => {
+    const errors = await imageErrors(reelOfSize(1024), instagramPlatform);
     expect(errors).toEqual([]);
+  });
+
+  it('accepts exactly 300,000,000 bytes (decimal 300 MB, not 300 MiB)', async () => {
+    const errors = await imageErrors(reelOfSize(300_000_000), instagramPlatform);
+    expect(errors).toEqual([]);
+  });
+
+  it('refuses 300,000,001 bytes with the 300 MB message', async () => {
+    const errors = await imageErrors(reelOfSize(300_000_001), instagramPlatform);
+    expect(errors).toEqual(['This video is larger than 300 MB.']);
   });
 });

@@ -71,7 +71,8 @@ export async function imageErrors(file: File, platform: PlatformInfo = LINKEDIN_
       return [`${platform.name} does not accept video.`];
     }
     if (file.size === 0) return ['This video file is empty.'];
-    const maxVideoBytes = platform.rules.max_video_bytes ?? 300 * 1024 * 1024;
+    // The backend's D51 limit is decimal 300 MB (300,000,000 bytes), not 300 MiB.
+    const maxVideoBytes = platform.rules.max_video_bytes ?? 300_000_000;
     if (file.size > maxVideoBytes) return [`This video is larger than ${sizeText(maxVideoBytes)}.`];
     return [];
   }
