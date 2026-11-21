@@ -225,7 +225,7 @@ class JobService:
         media_path, too_large = _copy_to_temp(image_stream, image_extension, MAX_VIDEO_BYTES)
         try:
             if too_large:
-                errors.append(f"the video is larger than {MAX_VIDEO_BYTES // (1024 * 1024)} MB")
+                errors.append(f"the video is larger than {MAX_VIDEO_BYTES // 1_000_000} MB")
             else:
                 caption_path = _write_temp(caption, ".txt")
                 try:

@@ -96,7 +96,7 @@ def add_post(
             _stream_new(temp_media, image_stream, max_media_bytes, media_noun)
         elif image is not None:
             if len(image) > max_media_bytes:
-                raise IntakeError("too_large", f"the {media_noun} is larger than {max_media_bytes // (1024 * 1024)} MB")
+                raise IntakeError("too_large", f"the {media_noun} is larger than {max_media_bytes // 1_000_000} MB")
             _write_new(temp_media, image)
         else:
             raise IntakeError("invalid_post", "no media provided")
@@ -126,7 +126,7 @@ def _stream_new(path: Path, stream: BinaryIO, max_bytes: int, media_noun: str) -
         while chunk := stream.read(1024 * 1024):
             written += len(chunk)
             if written > max_bytes:
-                raise IntakeError("too_large", f"the {media_noun} is larger than {max_bytes // (1024 * 1024)} MB")
+                raise IntakeError("too_large", f"the {media_noun} is larger than {max_bytes // 1_000_000} MB")
             handle.write(chunk)
 
 

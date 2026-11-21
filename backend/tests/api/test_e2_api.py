@@ -63,7 +63,7 @@ def test_platforms_lists_the_backend_rules(client):
         ("Instagram", True, "publish to Instagram")
     assert instagram["rules"] == {
         "extensions": [".jpeg", ".jpg", ".mov", ".mp4"], "max_image_bytes": 8_000_000,
-        "max_video_bytes": 300 * 1024 * 1024, "max_caption_bytes": 64 * 1024,
+        "max_video_bytes": 300_000_000, "max_caption_bytes": 64 * 1024,
         "caption_max_chars": 2200, "caption_max_hashtags": 30, "caption_max_mentions": 20,
         "aspect": {"min": "4:5", "max": "1.91:1"},
     }

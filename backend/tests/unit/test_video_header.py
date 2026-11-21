@@ -7,7 +7,7 @@ Checks:
 - mvhd: duration between 3 seconds and 15 minutes (v0 and v1).
 - tkhd: visual track dimensions, width <= 1920, aspect ratio between 0.01 and 10.
 - No edit lists (elst/edts forbidden).
-- Max video size 300 MB.
+- Max video size 300 MB (exactly 300,000,000 bytes; the tests pin the boundary).
 """
 
 from pathlib import Path
@@ -115,10 +115,19 @@ def test_aspect_ratio_out_of_bounds_rejected():
     assert any("aspect ratio is 19.20" in p or "outside 0.01 to 10" in p for p in problems_wide)
 
 
-def test_file_size_over_300_mb_rejected(tmp_path: Path):
+def test_video_limit_is_decimal_300_mb():
+    # "300 MB" means 300,000,000 bytes, not 300 MiB (314,572,800), all the way down to the constant.
+    assert MAX_VIDEO_BYTES == 300_000_000
+
+
+def test_file_size_at_exactly_300_mb_accepted(tmp_path: Path):
     video_file = tmp_path / "reel.mp4"
-    data = build_mp4()
-    video_file.write_bytes(data)
-    # Check with oversized file_size parameter
+    video_file.write_bytes(build_mp4())
+    assert video_problems(video_file, file_size=MAX_VIDEO_BYTES) == []
+
+
+def test_file_size_one_byte_over_300_mb_rejected(tmp_path: Path):
+    video_file = tmp_path / "reel.mp4"
+    video_file.write_bytes(build_mp4())
     problems = video_problems(video_file, file_size=MAX_VIDEO_BYTES + 1)
-    assert any("larger than" in p and "300 MB" in p for p in problems)
+    assert any("larger than 300,000,000 bytes (300 MB)" in p for p in problems)

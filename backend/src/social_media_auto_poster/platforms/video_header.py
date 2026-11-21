@@ -20,7 +20,8 @@ from pathlib import Path
 import struct
 from typing import BinaryIO
 
-MAX_VIDEO_BYTES = 300 * 1024 * 1024  # 300 MB limit (D51)
+# D51: exactly 300 MB decimal (300,000,000 bytes), not 300 MiB. Instagram documents "300 MB".
+MAX_VIDEO_BYTES = 300_000_000
 MIN_DURATION_S = 3.0
 MAX_DURATION_S = 900.0  # 15 minutes
 MAX_WIDTH = 1920
