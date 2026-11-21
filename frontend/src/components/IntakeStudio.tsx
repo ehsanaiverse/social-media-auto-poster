@@ -2,7 +2,7 @@ import React, { useEffect, useId, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertCircle, AlertTriangle, CalendarClock, CheckCircle2, FolderInput, Globe, Hash, ImagePlus, Inbox, Loader2, Monitor, Send, Smartphone, X } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
-import { captionError as captionProblem, captionLength, imageErrors, postNameError } from '../lib/postRules';
+import { captionError as captionProblem, captionLength, imageErrors, isReel, postNameError } from '../lib/postRules';
 import { apiService } from '../services/apiService';
 import { newChoice, scheduleFields, scheduleProblem, type ScheduleChoice } from '../lib/schedules';
 import { PLATFORMS, platformBadge, platformById } from '../lib/platforms';
@@ -241,7 +241,11 @@ export const IntakeStudio: React.FC = () => {
                   <input
                     id={fileInputId}
                     type="file"
-                    accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+                    accept={
+                      activePlatform.id === 'instagram'
+                        ? '.jpg,.jpeg,.png,.mp4,.mov,image/jpeg,image/png,video/mp4,video/quicktime'
+                        : '.jpg,.jpeg,.png,image/jpeg,image/png'
+                    }
                     className="sr-only"
                     onChange={(e) => {
                       const file = e.target.files?.[0];
@@ -258,7 +262,11 @@ export const IntakeStudio: React.FC = () => {
                         exit={{ opacity: 0 }}
                         className="group relative flex items-center gap-4 p-3"
                       >
-                        <img src={previewUrl} alt="" className="h-24 w-32 shrink-0 rounded-lg object-cover ring-1 ring-white/10" />
+                        {isReel(image.name) ? (
+                          <video src={previewUrl} className="h-24 w-32 shrink-0 rounded-lg object-cover ring-1 ring-white/10" />
+                        ) : (
+                          <img src={previewUrl} alt="" className="h-24 w-32 shrink-0 rounded-lg object-cover ring-1 ring-white/10" />
+                        )}
                         <div className="min-w-0 flex-1">
                           <p className="truncate font-mono text-sm text-slate-200">{image.name}</p>
                           <p className="mt-0.5 font-mono text-xs text-slate-500">{(image.size / 1024).toFixed(0)} KB</p>
@@ -291,9 +299,14 @@ export const IntakeStudio: React.FC = () => {
                           <ImagePlus className="h-6 w-6" aria-hidden="true" />
                         </motion.span>
                         <span className="mt-3 text-sm text-slate-200">
-                          Drop a picture here or <span className="text-emerald-300 underline underline-offset-4">browse</span>
+                          Drop {activePlatform.id === 'instagram' ? 'a picture or Reel' : 'a picture'} here or{' '}
+                          <span className="text-emerald-300 underline underline-offset-4">browse</span>
                         </span>
-                        <span className="mt-1 font-mono text-[11px] text-slate-500">JPG or PNG, up to 10 MB</span>
+                        <span className="mt-1 font-mono text-[11px] text-slate-500">
+                          {activePlatform.id === 'instagram'
+                            ? 'JPG or PNG up to 10 MB, MP4 or MOV up to 300 MB'
+                            : 'JPG or PNG, up to 10 MB'}
+                        </span>
                       </motion.label>
                     )}
                   </AnimatePresence>
@@ -493,20 +506,29 @@ export const IntakeStudio: React.FC = () => {
                     <span className="italic text-slate-500">Your caption appears here.</span>
                   )}
                 </div>
-                {/* The whole picture at its own shape, never cropped. */}
+                {/* The whole picture or video at its own shape, never cropped. */}
                 <div className="w-full border-t border-white/[0.06] bg-black/40">
                   {previewUrl ? (
-                    <motion.img
-                      key={previewUrl}
-                      src={previewUrl}
-                      alt="Post image preview"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ duration: 0.4 }}
-                      className="mx-auto block h-auto max-h-[640px] w-full object-contain"
-                    />
+                    isReel(image?.name) ? (
+                      <video
+                        key={previewUrl}
+                        src={previewUrl}
+                        controls
+                        className="mx-auto block h-auto max-h-[640px] w-full object-contain"
+                      />
+                    ) : (
+                      <motion.img
+                        key={previewUrl}
+                        src={previewUrl}
+                        alt="Post image preview"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ duration: 0.4 }}
+                        className="mx-auto block h-auto max-h-[640px] w-full object-contain"
+                      />
+                    )
                   ) : (
-                    <div className="grid aspect-[1.91/1] place-items-center text-xs text-slate-600">No picture yet</div>
+                    <div className="grid aspect-[1.91/1] place-items-center text-xs text-slate-600">No media yet</div>
                   )}
                 </div>
               </SpotlightCard>

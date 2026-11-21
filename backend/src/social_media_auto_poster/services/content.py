@@ -17,20 +17,27 @@ class ContentNotReadyError(Exception):
 
 
 def read_post_content(candidate: PostCandidate, *, media_sha256: str, caption_sha256: str) -> PostContent:
-    """Read both files once and return them, if they still match the recorded hashes."""
+    """Read both files once and return them, if they still match the recorded hashes.
+
+    Videos (.mp4, .mov) are never read into memory here: their bytes are streamed
+    in chunks during upload and verified against media_sha256 on the wire (D51).
+    """
+    is_video = candidate.media_path.suffix.casefold() in (".mp4", ".mov")
     try:
-        media = candidate.media_path.read_bytes()
+        if not candidate.media_path.is_file():
+            raise FileNotFoundError(f"media file not found: {candidate.media_path}")
+        media = b"" if is_video else candidate.media_path.read_bytes()
         caption_bytes = candidate.caption_path.read_bytes()
     except OSError as error:
         raise ContentNotReadyError(f"could not read the files to publish them ({error})") from error
 
-    changed = [
-        name
-        for name, data, recorded in (("image", media, media_sha256), ("caption", caption_bytes, caption_sha256))
-        if sha256_bytes(data) != recorded
-    ]
-    if changed:
+    if not is_video and sha256_bytes(media) != media_sha256:
+        changed = ["image"]
+        if sha256_bytes(caption_bytes) != caption_sha256:
+            changed.append("caption")
         raise ContentNotReadyError(f"{' and '.join(changed)} changed after the duplicate check")
+    elif sha256_bytes(caption_bytes) != caption_sha256:
+        raise ContentNotReadyError("caption changed after the duplicate check")
 
     try:
         caption = decode_caption(caption_bytes)

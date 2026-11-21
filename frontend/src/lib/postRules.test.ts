@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_CAPTION_CHARS, captionError, captionLength, detectImageType, postNameError } from './postRules';
+import {
+  LINKEDIN_FALLBACK,
+  MAX_CAPTION_CHARS,
+  captionError,
+  captionLength,
+  detectImageType,
+  imageErrors,
+  isReel,
+  postNameError,
+} from './postRules';
 
 describe('captionError: the 3,000-character limit blocks in every mode (D45)', () => {
   it('accepts exactly 3,000 characters', () => {
@@ -33,5 +42,43 @@ describe('postNameError and detectImageType', () => {
     expect(detectImageType(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe('jpeg');
     expect(detectImageType(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe('png');
     expect(detectImageType(new Uint8Array([0x47, 0x49, 0x46]))).toBeNull();
+  });
+});
+
+describe('isReel and video rules (D51)', () => {
+  it('identifies MP4 and MOV as reels', () => {
+    expect(isReel('video.mp4')).toBe(true);
+    expect(isReel('video.mov')).toBe(true);
+    expect(isReel('video.MP4')).toBe(true);
+    expect(isReel('photo.jpg')).toBe(false);
+    expect(isReel(null)).toBe(false);
+  });
+
+  it('rejects video on LinkedIn', async () => {
+    const file = new File(['dummy'], 'video.mp4', { type: 'video/mp4' });
+    const errors = await imageErrors(file, LINKEDIN_FALLBACK);
+    expect(errors).toContain('video not supported on LinkedIn');
+  });
+
+  it('accepts video on Instagram under 300 MB', async () => {
+    const file = new File(['dummy'], 'video.mp4', { type: 'video/mp4' });
+    const instagramPlatform = {
+      id: 'instagram',
+      name: 'Instagram',
+      real_available: true,
+      confirmation_phrase: 'publish to Instagram',
+      rules: {
+        extensions: ['.jpeg', '.jpg', '.mp4', '.mov'],
+        max_image_bytes: 8000000,
+        max_video_bytes: 300 * 1024 * 1024,
+        max_caption_bytes: 64 * 1024,
+        caption_max_chars: 2200,
+        caption_max_hashtags: 30,
+        caption_max_mentions: 20,
+        aspect: { min: '4:5', max: '1.91:1' },
+      },
+    };
+    const errors = await imageErrors(file, instagramPlatform);
+    expect(errors).toEqual([]);
   });
 });

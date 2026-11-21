@@ -1,6 +1,7 @@
 import React from 'react';
 import { ExternalLink, Wrench } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
+import { isReel } from '../lib/postRules';
 import { Modal, useLatest } from './ui/Modal';
 import { ModeTag, StatusBadge } from './ui/StatusBadge';
 
@@ -58,6 +59,11 @@ export const JobDetailsModal: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={job.status} />
             <ModeTag mode={job.mode} />
+            {isReel(job.media_name) && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-pink-500/10 px-2 py-0.5 text-[10px] font-medium text-pink-300 ring-1 ring-inset ring-pink-400/25">
+                Reel
+              </span>
+            )}
           </div>
           <p className="text-sm leading-relaxed text-slate-300">{NEXT_STEP[job.status]}</p>
 
@@ -70,7 +76,7 @@ export const JobDetailsModal: React.FC = () => {
                 </a>
               </Row>
             )}
-            <Row label="Picture">{job.media_filename ?? '—'}</Row>
+            <Row label={isReel(job.media_name) ? "Video" : "Picture"}>{job.media_name ?? '—'}</Row>
             <Row label="Files are in">{job.destination ? `${job.destination.split('/')[0]} folder` : 'queue folder'}</Row>
           </div>
 

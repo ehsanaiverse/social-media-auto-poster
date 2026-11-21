@@ -9,12 +9,15 @@ and an existing post is never overwritten.
 import os
 import uuid
 from pathlib import Path
+from typing import BinaryIO
 
 from social_media_auto_poster.config import Settings
-from social_media_auto_poster.ingestion.validation import EXPECTED_TYPE, MAX_CAPTION_BYTES, validate_candidate
+from social_media_auto_poster.ingestion.validation import EXPECTED_TYPE, MAX_CAPTION_BYTES, VIDEO_EXTENSIONS, validate_candidate
 from social_media_auto_poster.models import Platform, PostCandidate
+from social_media_auto_poster.platforms.video_header import MAX_VIDEO_BYTES
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # Upload limit decided in D43 (api-plan open question 3).
+# MAX_VIDEO_BYTES (D51) is the same limit validation uses, so the two can never disagree.
 FORBIDDEN_STEM_CHARS = frozenset('<>:"/\\|?*')
 HIDDEN_PREFIXES = (".", "~$")  # The scanner ignores these names, so a name starting with them could never post.
 
@@ -45,12 +48,13 @@ def add_post(
     settings: Settings,
     *,
     name: str,
-    image: bytes,
+    image: bytes | None = None,
+    image_stream: BinaryIO | None = None,
     image_extension: str,
     caption: bytes,
     platform: Platform = Platform.LINKEDIN,
 ) -> PostCandidate:
-    """Write a new post (image + caption) into the platform's incoming folder and return it.
+    """Write a new post (image/video + caption) into the platform's incoming folder and return it.
 
     Raises ``IntakeError``; on any error nothing is left behind in incoming/.
     """
@@ -63,10 +67,19 @@ def add_post(
         raise IntakeError("invalid_name", str(error)) from None
 
     extension = image_extension.lower()
-    if extension not in EXPECTED_TYPE:
+    if extension in VIDEO_EXTENSIONS:
+        if platform == Platform.LINKEDIN:
+            raise IntakeError("unsupported_type", "video not supported on LinkedIn")
+        if platform != Platform.INSTAGRAM:
+            raise IntakeError("unsupported_type", f"video not supported on {platform.value}")
+        max_media_bytes = MAX_VIDEO_BYTES
+        media_noun = "video"
+    elif extension in EXPECTED_TYPE:
+        max_media_bytes = MAX_IMAGE_BYTES
+        media_noun = "image"
+    else:
         raise IntakeError("unsupported_type", "the image must be a .jpg, .jpeg or .png file")
-    if len(image) > MAX_IMAGE_BYTES:
-        raise IntakeError("too_large", f"the image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB")
+
     if len(caption) > MAX_CAPTION_BYTES:
         raise IntakeError("too_large", f"the caption is larger than {MAX_CAPTION_BYTES // 1024} KB")
     if _stem_taken(incoming, stem):
@@ -79,7 +92,15 @@ def add_post(
     final_media = incoming / f"{stem}{extension}"
     final_caption = incoming / f"{stem}.txt"
     try:
-        _write_new(temp_media, image)
+        if image_stream is not None:
+            _stream_new(temp_media, image_stream, max_media_bytes, media_noun)
+        elif image is not None:
+            if len(image) > max_media_bytes:
+                raise IntakeError("too_large", f"the {media_noun} is larger than {max_media_bytes // (1024 * 1024)} MB")
+            _write_new(temp_media, image)
+        else:
+            raise IntakeError("invalid_post", "no media provided")
+
         _write_new(temp_caption, caption)
         check = PostCandidate(platform=platform, stem=stem, media_path=temp_media, caption_path=temp_caption)
         result = validate_candidate(check)
@@ -97,6 +118,16 @@ def add_post(
         temp_media.unlink(missing_ok=True)
         temp_caption.unlink(missing_ok=True)
     return PostCandidate(platform=platform, stem=stem, media_path=final_media, caption_path=final_caption)
+
+
+def _stream_new(path: Path, stream: BinaryIO, max_bytes: int, media_noun: str) -> None:
+    written = 0
+    with open(path, "xb") as handle:
+        while chunk := stream.read(1024 * 1024):
+            written += len(chunk)
+            if written > max_bytes:
+                raise IntakeError("too_large", f"the {media_noun} is larger than {max_bytes // (1024 * 1024)} MB")
+            handle.write(chunk)
 
 
 def _stem_taken(folder: Path, stem: str) -> bool:

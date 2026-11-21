@@ -25,12 +25,23 @@ readings disagree about the aspect ratio (Instagram does not say which it uses).
 """
 
 import re
+from pathlib import Path
 
 from social_media_auto_poster.platforms.image_header import (
     JPEG_START,
     ROTATED_ORIENTATIONS,
     ImageSizeError,
     jpeg_info,
+)
+from social_media_auto_poster.platforms.video_header import (
+    MAX_ASPECT as MAX_VIDEO_ASPECT,
+    MAX_DURATION_S,
+    MAX_VIDEO_BYTES,
+    MAX_WIDTH as MAX_VIDEO_WIDTH,
+    MIN_ASPECT as MIN_VIDEO_ASPECT,
+    MIN_DURATION_S,
+    VideoHeaderError,
+    parse_video_header,
 )
 
 MAX_CAPTION_CHARS = 2200  # S13: "Maximum 2200 characters, 30 hashtags, and 20 @ tags."; S20: caption too long
@@ -127,3 +138,39 @@ def media_problems(data: bytes) -> list[str]:
             f"the picture is {width} x {height}; Instagram accepts an aspect ratio from 4:5 (tall) to 1.91:1 (wide)"
         )
     return problems
+
+
+def video_problems(source: object, file_size: int | None = None) -> list[str]:
+    """Every reason this video cannot be posted to Instagram as a Reel (D51)."""
+    if file_size is None:
+        if isinstance(source, Path):
+            try:
+                file_size = source.stat().st_size
+            except OSError as error:
+                return [f"media file could not be read: {error.strerror or error}"]
+        elif isinstance(source, (bytes, bytearray)):
+            file_size = len(source)
+    if file_size is not None and file_size > MAX_VIDEO_BYTES:
+        return [f"the video is larger than {MAX_VIDEO_BYTES:,} bytes (300 MB); Instagram accepts at most 300 MB"]
+
+    try:
+        info = parse_video_header(source)  # type: ignore[arg-type]
+    except VideoHeaderError as error:
+        return [str(error)]
+    except OSError as error:
+        return [f"media file could not be read: {error.strerror or error}"]
+
+    problems = []
+    if info.duration_s < MIN_DURATION_S:
+        problems.append(f"video duration is {info.duration_s:.1f} s; Instagram allows 3 s to 15 min")
+    elif info.duration_s > MAX_DURATION_S:
+        problems.append(f"video duration is {info.duration_s:.1f} s; Instagram allows 3 s to 15 min")
+
+    if info.width > MAX_VIDEO_WIDTH:
+        problems.append(f"video width is {info.width}; Instagram allows at most 1,920")
+
+    if info.aspect < MIN_VIDEO_ASPECT or info.aspect > MAX_VIDEO_ASPECT:
+        problems.append(f"video aspect ratio is {info.aspect:.2f}; Instagram allows 0.01 to 10")
+
+    return problems
+

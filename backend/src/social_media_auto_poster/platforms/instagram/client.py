@@ -58,6 +58,25 @@ class InstagramClient:
         """``POST /<IG_ID>/media`` with ``image_url`` and ``caption`` (S12, S13). Returns ``{"id": ...}``."""
         return self._client.post(f"/{self._user_id}/media", json={"image_url": image_url, "caption": caption})
 
+    def create_reel_container(self, caption: str) -> httpx.Response:
+        """``POST /<IG_ID>/media`` with media_type=REELS, upload_type=resumable and caption. Returns {"id": ..., "uri": ...}."""
+        payload: dict[str, Any] = {"media_type": "REELS", "upload_type": "resumable"}
+        if caption.strip():
+            payload["caption"] = caption
+        return self._client.post(f"/{self._user_id}/media", json=payload)
+
+    def upload_reel_bytes(self, uri: str, file_size: int, content: Any) -> httpx.Response:
+        """``POST`` to rupload.facebook.com with Authorization: OAuth <token>, offset: 0, file_size."""
+        headers = {
+            "Authorization": f"OAuth {self._token}",
+            "offset": "0",
+            "file_size": str(file_size),
+            # An explicit length: with an iterable body httpx would otherwise send chunked,
+            # which rupload does not accept.
+            "Content-Length": str(file_size),
+        }
+        return self._client.post(uri, content=content, headers=headers)
+
     def container_status(self, container_id: str) -> httpx.Response:
         """``GET /<IG_CONTAINER_ID>?fields=status_code`` (S16): EXPIRED, ERROR, FINISHED, IN_PROGRESS, PUBLISHED."""
         return self._client.get(f"/{_digits(container_id)}", params={"fields": "status_code,status"})

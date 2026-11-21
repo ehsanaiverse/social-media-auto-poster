@@ -10,6 +10,7 @@ from app.main import create_app
 from social_media_auto_poster.config import Settings, ensure_data_dirs, load_settings
 from social_media_auto_poster.models import Platform
 from social_media_auto_poster.operations import common
+from video_fake import build_mp4
 
 JPEG = (Path(__file__).resolve().parents[1] / "fixtures" / "images" / "baseline-7x5.jpg").read_bytes()
 LOCAL = {"X-AutoPoster": "1"}
@@ -93,3 +94,53 @@ def test_a_real_instagram_reconfirmation_needs_instagrams_phrase(settings, clien
 def test_linkedin_requests_without_a_platform_are_unchanged(settings, client):
     response = client.post("/api/run", json={})
     assert response.status_code == 200 and response.json()["mode"] == "simulated"
+
+# Reels (D51): a video is streamed to disk, accepted only for Instagram.
+
+
+def _video_post(client, *, platform="instagram", name="reel", video=None):
+    data = build_mp4(width=1080, height=1920)
+    return client.post("/api/posts", data={"name": name, "caption": "Launch day", "platform": platform},
+                       files={"image": ("reel.mp4", video if video is not None else data, "video/mp4")},
+                       headers=LOCAL)
+
+
+def test_a_reel_upload_is_streamed_into_incoming(settings, client):
+    video = build_mp4(width=1080, height=1920)
+    response = _video_post(client, video=video)
+
+    assert response.status_code == 201, response.text
+    incoming = settings.incoming_dir(Platform.INSTAGRAM)
+    assert (incoming / "reel.mp4").read_bytes() == video
+    assert (incoming / "reel.txt").read_text(encoding="utf-8") == "Launch day"
+    assert list(incoming.glob(".upload-*")) == []  # No temporary files left behind.
+
+
+def test_a_video_upload_is_refused_for_linkedin(settings, client):
+    response = _video_post(client, platform="linkedin")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "video not supported on LinkedIn"
+    assert list(settings.incoming_dir(Platform.LINKEDIN).iterdir()) == []
+
+
+def test_a_reel_is_checked_without_writing_anything(settings, client):
+    response = client.post("/api/posts/check",
+                           data={"name": "reel", "caption": "Launch day", "platform": "instagram"},
+                           files={"image": ("reel.mp4", build_mp4(width=1080, height=1920), "video/mp4")},
+                           headers=LOCAL)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True and response.json()["errors"] == []
+    assert list(settings.incoming_dir(Platform.INSTAGRAM).iterdir()) == []
+
+
+def test_a_short_reel_is_refused_by_the_check(client):
+    response = client.post("/api/posts/check",
+                           data={"name": "reel", "caption": "Launch day", "platform": "instagram"},
+                           files={"image": ("reel.mp4", build_mp4(duration=2000), "video/mp4")},
+                           headers=LOCAL)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert any("3 s to 15 min" in error for error in response.json()["errors"])

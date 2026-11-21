@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from social_media_auto_poster.ingestion.intake import MAX_IMAGE_BYTES, IntakeError
+from social_media_auto_poster.ingestion.validation import VIDEO_EXTENSIONS
 
 from ..dependencies import get_job_service, parse_platform, require_local_marker
 from ..services import JobService
@@ -30,15 +31,30 @@ async def create_post(
 ) -> dict:
     """Add a post. It is checked like a file copied in by hand; nothing is published."""
     chosen = parse_platform(platform)  # Before the upload is read or anything is written.
-    # Read one byte past the limit: a larger upload is refused without being kept in memory.
-    data = await image.read(MAX_IMAGE_BYTES + 1)
-    if len(data) > MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=413, detail="The image is larger than 10 MB.")
     try:
         caption_bytes = caption.encode("utf-8")
     except UnicodeEncodeError:
         raise HTTPException(status_code=400, detail="The caption is not valid text.") from None
+
     extension = _extension(image.filename or "")
+    if extension in VIDEO_EXTENSIONS:
+        try:
+            return await run_in_threadpool(
+                service.add_post_stream,
+                name=name,
+                image_stream=image.file,
+                image_extension=extension,
+                caption=caption_bytes,
+                platform=chosen,
+            )
+        except IntakeError as error:
+            code = INTAKE_STATUS_CODES.get(error.kind, 400)
+            raise HTTPException(status_code=code, detail=error.message) from None
+
+    # Read one byte past the limit: a larger upload is refused without being kept in memory.
+    data = await image.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="The image is larger than 10 MB.")
     try:
         return await run_in_threadpool(
             service.add_post, name=name, image=data, image_extension=extension, caption=caption_bytes,
@@ -59,14 +75,26 @@ async def check_post(
 ) -> dict:
     """Check a post against a platform's rules (the same checks as ``POST /api/posts``). Writes nothing."""
     chosen = parse_platform(platform)
-    data = await image.read(MAX_IMAGE_BYTES + 1)
-    if len(data) > MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=413, detail="The image is larger than 10 MB.")
     try:
         caption_bytes = caption.encode("utf-8")  # A lone surrogate (not text) cannot be encoded: 400.
     except UnicodeEncodeError:
         raise HTTPException(status_code=400, detail="The caption is not valid text.") from None
-    return service.check_post(name=name, image=data, image_extension=_extension(image.filename or ""),
+
+    extension = _extension(image.filename or "")
+    if extension in VIDEO_EXTENSIONS:
+        return await run_in_threadpool(
+            service.check_post_stream,
+            name=name,
+            image_stream=image.file,
+            image_extension=extension,
+            caption=caption_bytes,
+            platform=chosen,
+        )
+
+    data = await image.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="The image is larger than 10 MB.")
+    return service.check_post(name=name, image=data, image_extension=extension,
                               caption=caption_bytes, platform=chosen)
 
 

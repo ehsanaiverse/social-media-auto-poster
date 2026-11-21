@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronRight, History, RefreshCw, Search, Wrench } from 'lucide-react';
+import { ChevronRight, History, RefreshCw, Search, Video, Wrench } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
 import type { JobSummary } from '../types/api';
+import { isReel } from '../lib/postRules';
 import { platformById } from '../lib/platforms';
 import { cn } from '../utils/cn';
 import { PlatformPicker } from './PlatformPicker';
@@ -104,7 +105,14 @@ export const JobsLedger: React.FC = () => {
                   >
                     <PlatformDot platform={(job as { platform?: string }).platform ?? activePlatform.id} />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium text-slate-100">{job.stem}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="truncate font-medium text-slate-100">{job.stem}</p>
+                        {isReel(job.media_name) && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-pink-500/10 px-2 py-0.5 text-[10px] font-medium text-pink-300 ring-1 ring-inset ring-pink-400/25">
+                            <Video className="h-3 w-3" aria-hidden="true" /> Reel
+                          </span>
+                        )}
+                      </div>
                       <p className="mt-1 flex items-center gap-2 text-xs text-slate-500">
                         {formatTime(job.created_at)} <ModeTag mode={job.mode} />
                       </p>

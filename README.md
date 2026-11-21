@@ -41,7 +41,7 @@ Platform order:
 
 1. LinkedIn — implemented (personal profile, one image + caption per post).
 2. Facebook — planned, not implemented.
-3. Instagram — simulated only (`--platform instagram`); real publishing is refused until D48 is accepted (D49).
+3. Instagram — images (via S3/B2, D48) and Reels (direct resumable upload, D51).
 
 Facebook is a placeholder for future work, not a supported integration.
 
@@ -60,9 +60,9 @@ backend/                           The Python project
   src/social_media_auto_poster/
     config.py                      Settings (base folder = backend/) and data-folder creation
     models.py                      Platform, JobStatus, PostCandidate, ScanResult, ValidationResult, PublishResult, PostContent
-    platforms/                     Publisher protocol (base.py) and simulator (simulator.py)
+    platforms/                     Publisher protocol (base.py), simulator, image/video header checks (image_header.py, video_header.py)
     platforms/linkedin/            caption.py, image_size.py, client.py, publisher.py, credentials.py, check.py
-    platforms/instagram/           rules.py, client.py, publisher.py, remote.py (simulated only, D49)
+    platforms/instagram/           rules.py, client.py, publisher.py (images via B2, Reels via resumable upload; D48, D51), remote.py
     platforms/facebook/            Empty
     graph/                         LangGraph workflow: state.py, nodes.py, workflow.py, checkpoints.py, resume.py
     ingestion/                     Scanning/pairing, stability check, validation, adding a post (intake.py)
@@ -97,6 +97,15 @@ backend/data/LinkedIn/incoming/product-launch.txt
 ```
 
 The planned initial image extensions are `.jpg`, `.jpeg`, and `.png`. Pairing, the file-copy stability check, and validation (extension, image signature, UTF-8 non-empty caption) exist; see `CLAUDE.md`, "Input conventions". This convention is provisional; media support will be reviewed against each platform's official API before implementation.
+
+**Reels (D51).** For Instagram, a video works the same way: one `.mp4` or `.mov` plus the same-name `.txt` caption, for example:
+
+```text
+backend/data/Instagram/incoming/launch-reel.mp4
+backend/data/Instagram/incoming/launch-reel.txt
+```
+
+The video must be 3 seconds to 15 minutes, at most 300 MB, at most 1,920 pixels wide, with an aspect ratio from 0.01 to 10, and its `moov` atom (metadata) before `mdat` (media data) with no edit lists — what a normal phone export or `ffmpeg` produces. Reels are uploaded straight to Meta in chunks (no Backblaze B2 needed); images are unchanged. LinkedIn refuses video ("video not supported on LinkedIn"). The dashboard accepts a video upload of up to 300 MB for Instagram and labels the post as a Reel in the queue and history.
 
 ## Windows setup
 

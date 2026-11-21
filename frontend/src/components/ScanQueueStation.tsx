@@ -14,10 +14,12 @@ import {
   Play,
   RefreshCw,
   ScanLine,
+  Video,
   XCircle,
   type LucideIcon
 } from 'lucide-react';
 import { useApi } from '../context/ApiContext';
+import { isReel } from '../lib/postRules';
 import { PlatformPicker } from './PlatformPicker';
 import { contentWarning, modeWord } from '../lib/schedules';
 import { scrollToSection } from '../lib/sections';
@@ -116,6 +118,11 @@ const PostRow: React.FC<{ candidate: Candidate; index: number }> = ({ candidate:
             <h4 className="truncate text-[15px] font-semibold text-slate-100" title={c.name}>
               {c.name}
             </h4>
+            {isReel(c.media_name) && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-pink-500/10 px-2 py-0.5 text-[10px] font-medium text-pink-300 ring-1 ring-inset ring-pink-400/25">
+                <Video className="h-3 w-3" aria-hidden="true" /> Reel
+              </span>
+            )}
             {c.only_simulated && (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-inset ring-amber-400/25">
                 <FlaskConical className="h-3 w-3" aria-hidden="true" /> Only tested

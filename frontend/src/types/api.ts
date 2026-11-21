@@ -70,6 +70,7 @@ export interface JobSummary {
   job_id: string;
   created_at: string;
   stem: string;
+  media_name?: string;
   mode: JobMode;
   status: JobStatus;
   errors?: string[] | null;
@@ -81,7 +82,6 @@ export interface JobSummary {
 // stored in the job database, so it is not part of a job.
 export interface JobDetail extends JobSummary {
   platform?: string;
-  media_filename?: string;
   caption_filename?: string;
   media_sha256?: string | null;
   caption_sha256?: string | null;
@@ -136,6 +136,7 @@ export interface PostCreatePayload {
 export interface PlatformRules {
   extensions: string[];
   max_image_bytes: number;
+  max_video_bytes?: number;
   max_caption_bytes: number;
   caption_max_chars: number;
   caption_max_hashtags: number | null;

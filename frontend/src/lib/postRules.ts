@@ -57,9 +57,25 @@ const typeOf = (ext: string): 'jpeg' | 'png' | null => (ext === 'png' ? 'png' : 
 const sizeText = (bytes: number): string =>
   bytes % (1024 * 1024) === 0 ? `${bytes / (1024 * 1024)} MB` : `${Math.round(bytes / 1_000_000)} MB`;
 
-// Every problem with the image under this platform's rules, as the backend's validation would list them.
+export const isReel = (filename?: string | null): boolean =>
+  Boolean(filename && (filename.toLowerCase().endsWith('.mp4') || filename.toLowerCase().endsWith('.mov')));
+
+// Every problem with the image or video under this platform's rules, as the backend's validation would list them.
 export async function imageErrors(file: File, platform: PlatformInfo = LINKEDIN_FALLBACK): Promise<string[]> {
   const ext = extensionOf(file.name);
+  if (isReel(file.name)) {
+    if (platform.id === 'linkedin') {
+      return ['video not supported on LinkedIn'];
+    }
+    if (!platform.rules.extensions.includes(`.${ext}`)) {
+      return [`${platform.name} does not accept video.`];
+    }
+    if (file.size === 0) return ['This video file is empty.'];
+    const maxVideoBytes = platform.rules.max_video_bytes ?? 300 * 1024 * 1024;
+    if (file.size > maxVideoBytes) return [`This video is larger than ${sizeText(maxVideoBytes)}.`];
+    return [];
+  }
+
   const expected = platform.rules.extensions.includes(`.${ext}`) ? typeOf(ext) : null;
   if (!expected) {
     return [platform.rules.extensions.includes('.png') ? 'Only JPG and PNG pictures are supported.' : `${platform.name} accepts JPG pictures only.`];

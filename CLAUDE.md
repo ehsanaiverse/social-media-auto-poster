@@ -7,8 +7,8 @@ These rules are binding. If `README.md` or other docs disagree with this file, t
 
 A Windows-first, folder-driven social media auto-poster. A user drops an image and a matching caption file into a platform's `incoming/` folder; the application detects, validates, tracks, and (eventually) publishes the post through official platform APIs.
 
-- **LinkedIn** and **Instagram** can publish for real. Instagram (D48, built in step R1) goes through `graph.facebook.com` with a System User token and the S3-compatible media host (Backblaze B2). Real mode only with `--real` (CLI) or that platform's own phrase in the API (`publish to LinkedIn`, `publish to Instagram`); one platform's phrase never enables another. Facebook has folders only; do not implement it.
-- **Publishing is simulated** unless `--real` is given (M4, D38). Only LinkedIn may be contacted; tests never reach any network.
+- **LinkedIn** and **Instagram** can publish for real. Instagram (D48, built in step R1) goes through `graph.facebook.com` with a System User token and the S3-compatible media host (Backblaze B2) for images, and direct resumable upload for Reels (D51; .mp4/.mov, size <= 300 MB, stdlib atom validation, no B2). Real mode only with `--real` (CLI) or that platform's own phrase in the API (`publish to LinkedIn`, `publish to Instagram`); one platform's phrase never enables another. Facebook has folders only; do not implement it.
+- **Publishing is simulated** unless `--real` is given (M4, D38); a real run contacts only the platform it publishes to. Tests never reach any network.
 - The developer has intermediate Python/AI experience: favour readable code, explain design decisions, and build incrementally.
 - The Python application lives in `backend/`. A local FastAPI API (`backend/app/`) and a React dashboard (`frontend/`) are built (see "3. Web UI" below, D32 and D42). Both are optional; the CLI does not need them.
 
@@ -97,7 +97,7 @@ These rules are binding for the scheduling work. They describe the agreed design
 
 - Folders: `data/<Platform>/{incoming,archive,failed}/` (by default `backend/data/...`) for `LinkedIn`, `Facebook`, `Instagram`.
 - A post is one image plus one UTF-8 `.txt` caption with the same filename stem, e.g. `product-launch.jpg` + `product-launch.txt`.
-- Supported images (initially): `.jpg`, `.jpeg`, `.png`. Video is out of scope for now.
+- Supported images (initially): `.jpg`, `.jpeg`, `.png`; plus `.mp4`/`.mov` Reels for **Instagram only** (D51). Video is refused everywhere else (LinkedIn: "video not supported on LinkedIn") in intake and validation, so no publisher is ever reached. A Reel is checked from its MP4/QuickTime atoms without reading `mdat`: `ftyp` first, `moov` before `mdat`, no edit lists, 3 s–15 min, width ≤ 1,920, aspect ratio 0.01–10, ≤ 300 MB (`platforms/video_header.py`). Its bytes are streamed to `rupload.facebook.com` in chunks and hashed on the wire (B2 is for images only, D51); a different hash is `FAILED` and never published.
 - Handle explicitly: incomplete copies, missing caption, missing media, unsupported extension, empty or whitespace-only caption, undecodable caption.
 - **Unpaired files are "pending", not errors.** A lone image or lone caption with no partner is left untouched: it does not become a job and is not moved to `failed/`. It is picked up on a later scan once its partner arrives.
 - **Genuine validation errors fail immediately:** unsupported extension, empty or whitespace-only caption, caption that is not valid UTF-8.
@@ -130,8 +130,8 @@ social-media-auto-poster/
 │   │   ├── graph/                 # LangGraph only: state.py, nodes.py, workflow.py
 │   │   ├── ingestion/             # Folder scanning, file stability, media/caption pairing, validation
 │   │   ├── storage/               # SQLite repository layer
-│   │   ├── platforms/             # base.py (publisher protocol), simulator, rules.py, image_header.py, media_host.py, s3_media_host.py + sigv4.py (D48, used by the Instagram publisher),
-│   │   │                          #   linkedin/ (caption.py, image_size.py, client.py, publisher.py), instagram/ (client on graph.facebook.com, publisher, remote checker; D48)
+│   │   ├── platforms/             # base.py (publisher protocol), simulator, rules.py, image_header.py, video_header.py (D51), media_host.py, s3_media_host.py + sigv4.py (D48, used by the Instagram publisher),
+│   │   │                          #   linkedin/ (caption.py, image_size.py, client.py, publisher.py), instagram/ (client on graph.facebook.com, publisher for images and Reels, remote checker; D48, D51)
 │   │   ├── services/              # Hashing, archiving, reconciliation, run lock
 │   │   ├── operations/            # What the CLI and the API both call (D47): common.py, clock.py, logs.py, scan.py (scan_preview),
 │   │   │                          #   platforms.py (adapters), linkedin.py (linkedin_status, the real publisher), instagram.py, resolve.py (resolve_job),

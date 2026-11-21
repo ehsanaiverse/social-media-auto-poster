@@ -8,13 +8,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from social_media_auto_poster.models import Platform, PostCandidate, ValidationResult
-from social_media_auto_poster.platforms.rules import RULES, PostRules
+from social_media_auto_poster.platforms.instagram import rules as instagram
+from social_media_auto_poster.platforms.rules import RULES, PostRules, display_name
 
 JPEG_SIGNATURE = b"\xff\xd8\xff"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 # Supported extension -> the image type its content must be.
 EXPECTED_TYPE = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG"}
+VIDEO_EXTENSIONS = frozenset({".mp4", ".mov"})
 
 # A safety guard so a wrong or huge file is never read into memory.
 # This is NOT a platform's caption limit; those are in platforms/rules.py.
@@ -27,12 +29,22 @@ def validate_candidate(candidate: PostCandidate) -> ValidationResult:
     Only the first few bytes of the image are read (a file-signature check,
     not a full decode), unless the platform has its own picture rules: then the
     file is read up to its limit and checked by them (header only, never decoded).
+    For videos, container atoms are parsed without loading mdat into memory.
     The caption is read up to ``MAX_CAPTION_BYTES``.
     """
-    media = _media_errors(candidate.media_path)
-    rules = RULES.get(candidate.platform)
-    if not media and rules is not None and rules.media_problems is not None:
-        media = _platform_media_errors(candidate.media_path, rules)
+    suffix = candidate.media_path.suffix.casefold()
+    if suffix in VIDEO_EXTENSIONS:
+        if candidate.platform == Platform.LINKEDIN:
+            media = ["video not supported on LinkedIn"]
+        elif candidate.platform == Platform.INSTAGRAM:
+            media = instagram.video_problems(candidate.media_path)
+        else:
+            media = [f"video not supported on {display_name(candidate.platform)}"]
+    else:
+        media = _media_errors(candidate.media_path)
+        rules = RULES.get(candidate.platform)
+        if not media and rules is not None and rules.media_problems is not None:
+            media = _platform_media_errors(candidate.media_path, rules)
     errors = [
         *media,
         *_caption_errors(candidate.caption_path, _caption_rule(candidate.platform)),
@@ -46,10 +58,19 @@ def validate_content(platform: Platform, image_extension: str, image: bytes, cap
     Nothing is read from or written to disk (``POST /api/posts/check``). ``image_extension`` is the upload's
     extension as named (".jpg"); the bytes are cut to what the file checks would read.
     """
-    media = _image_errors(image_extension, image[: len(PNG_SIGNATURE)])
-    rules = RULES.get(platform)
-    if not media and rules is not None and rules.media_problems is not None:
-        media = rules.media_problems(image[: rules.media_read_limit + 1])
+    suffix = image_extension.casefold()
+    if suffix in VIDEO_EXTENSIONS:
+        if platform == Platform.LINKEDIN:
+            media = ["video not supported on LinkedIn"]
+        elif platform == Platform.INSTAGRAM:
+            media = instagram.video_problems(image)
+        else:
+            media = [f"video not supported on {display_name(platform)}"]
+    else:
+        media = _image_errors(image_extension, image[: len(PNG_SIGNATURE)])
+        rules = RULES.get(platform)
+        if not media and rules is not None and rules.media_problems is not None:
+            media = rules.media_problems(image[: rules.media_read_limit + 1])
     errors = [*media, *_caption_data_errors(caption[: MAX_CAPTION_BYTES + 1], _caption_rule(platform))]
     return ValidationResult(is_valid=not errors, errors=tuple(errors))
 

@@ -28,21 +28,24 @@ message (it can echo the image URL or input), and pass through ``redact`` as a l
 Nothing here logs the caption, the token or the media URL.
 """
 
+import hashlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import httpx
 
 from social_media_auto_poster.models import PostContent, PublishResult
 from social_media_auto_poster.platforms.base import MediaKeyRecorder, PublishOutcomeUnknown, ReferenceRecorder
 from social_media_auto_poster.platforms.instagram.client import InstagramClient
-from social_media_auto_poster.platforms.instagram.rules import caption_problems, media_problems
+from social_media_auto_poster.platforms.instagram.rules import caption_problems, media_problems, video_problems
 from social_media_auto_poster.platforms.media_host import MediaHost, new_media_key
 
 logger = logging.getLogger(__name__)
 
 POLL_ATTEMPTS = 5  # S12: "once per minute, for no more than 5 minutes".
+VIDEO_POLL_ATTEMPTS = 10  # D51: bounded, ~10 min.
 POLL_INTERVAL_S = 60.0
 
 # Answers to media_publish that mean "refused, not published" (HTTP 4xx with these Graph error codes).
@@ -69,12 +72,14 @@ class InstagramPublisher:
         *,
         sleep: Callable[[float], None] = time.sleep,
         poll_attempts: int = POLL_ATTEMPTS,
+        video_poll_attempts: int = VIDEO_POLL_ATTEMPTS,
         poll_interval_s: float = POLL_INTERVAL_S,
     ):
         self._client = client
         self._host = media_host
         self._sleep = sleep
         self._poll_attempts = poll_attempts
+        self._video_poll_attempts = video_poll_attempts
         self._poll_interval_s = poll_interval_s
 
     def __repr__(self) -> str:
@@ -86,6 +91,9 @@ class InstagramPublisher:
     def publish(
         self, post: PostContent, /, *, record: ReferenceRecorder, record_media: MediaKeyRecorder
     ) -> PublishResult:
+        if post.candidate.media_path.suffix.casefold() in (".mp4", ".mov"):
+            return self._publish_reel(post, record=record)
+
         problems = [*caption_problems(post.caption), *media_problems(post.media)]
         if problems:
             return _failed(f"{'; '.join(problems)}; nothing was sent")
@@ -124,6 +132,66 @@ class InstagramPublisher:
         self._delete(key, record_media)
         return result
 
+    def _publish_reel(self, post: PostContent, /, *, record: ReferenceRecorder) -> PublishResult:
+        source: Path | bytes = post.candidate.media_path if post.candidate.media_path.is_file() else post.media
+        problems = [*caption_problems(post.caption), *video_problems(source)]
+        if problems:
+            return _failed(f"{'; '.join(problems)}; nothing was sent")
+        try:
+            self._check_quota()
+        except _NotPublished as error:
+            return _failed(f"{error}; nothing was sent")
+
+        try:
+            container_id, upload_uri = self._create_reel_container(post.caption)
+            try:
+                record(container_id)
+            except Exception as error:
+                raise _NotPublished(f"the container ID could not be recorded ({type(error).__name__})") from error
+            streamed_hash = self._upload_reel(upload_uri, post)
+            if streamed_hash != post.media_sha256:
+                return _failed("the streamed video hash differs from the recorded hash; nothing was published")
+            self._wait_until_finished(container_id, attempts=self._video_poll_attempts)
+        except _NotPublished as error:
+            return _failed(f"{error}; nothing was published")
+
+        return self._publish_once(container_id)
+
+    def _create_reel_container(self, caption: str) -> tuple[str, str]:
+        response = self._call(lambda: self._client.create_reel_container(caption), "creating the container")
+        data = self._json(response, "creating the container")
+        container_id = data.get("id")
+        upload_uri = data.get("uri")
+        if not (isinstance(container_id, str) and container_id.isdigit()):
+            raise _NotPublished("Instagram did not return a usable container ID")
+        if not (isinstance(upload_uri, str) and upload_uri.strip()):
+            raise _NotPublished("Instagram did not return a usable upload URI")
+        return container_id, upload_uri
+
+    def _upload_reel(self, upload_uri: str, post: PostContent) -> str:
+        if post.candidate.media_path.is_file():
+            file_size = post.candidate.media_path.stat().st_size
+            stream = _HashingStream(post.candidate.media_path)
+        elif post.media:
+            file_size = len(post.media)
+            stream = _HashingStream(post.media)
+        else:
+            raise _NotPublished("video file not found")
+
+        try:
+            response = self._client.upload_reel_bytes(upload_uri, file_size, stream)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+            raise _NotPublished(f"could not connect to Instagram to upload video ({type(error).__name__})") from error
+        except httpx.HTTPError as error:
+            raise _NotPublished(f"uploading the video failed ({type(error).__name__})") from error
+
+        if response.status_code not in (200, 201):
+            raise _NotPublished(self._client.redact(
+                f"uploading the video failed: Instagram answered {response.status_code}{_codes_text(_error_codes(response))}"
+            ))
+
+        return stream.digest
+
     # Steps before media_publish: any failure means no post exists.
 
     def _check_quota(self) -> None:
@@ -149,8 +217,9 @@ class InstagramPublisher:
             raise _NotPublished("Instagram did not return a usable container ID")
         return container_id
 
-    def _wait_until_finished(self, container_id: str) -> None:
-        for attempt in range(self._poll_attempts):
+    def _wait_until_finished(self, container_id: str, *, attempts: int | None = None) -> None:
+        max_attempts = attempts if attempts is not None else self._poll_attempts
+        for attempt in range(max_attempts):
             status = self._json(self._call(lambda: self._client.container_status(container_id),
                                            "checking the container"), "checking the container").get("status_code")
             if status == "FINISHED":
@@ -162,9 +231,9 @@ class InstagramPublisher:
                     f"Instagram reports container {container_id} as PUBLISHED before it was published; "
                     "check Instagram before re-posting"
                 )
-            if attempt + 1 < self._poll_attempts:
+            if attempt + 1 < max_attempts:
                 self._sleep(self._poll_interval_s)
-        raise _NotPublished(f"the container was still not ready after {self._poll_attempts} checks")
+        raise _NotPublished(f"the container was still not ready after {max_attempts} checks")
 
     # media_publish: sent exactly once, never retried.
 
@@ -284,3 +353,29 @@ def _is_int(value: object) -> bool:
 
 def _failed(message: str) -> PublishResult:
     return PublishResult(success=False, simulated=False, error=message)
+
+
+class _HashingStream:
+    """Stream chunks from a file path or bytes while hashing with SHA-256."""
+
+    def __init__(self, source: Path | bytes, chunk_size: int = 1024 * 1024):
+        self._source = source
+        self._chunk_size = chunk_size
+        self._hasher = hashlib.sha256()
+
+    def __iter__(self) -> Iterator[bytes]:
+        if isinstance(self._source, Path):
+            with self._source.open("rb") as f:
+                while chunk := f.read(self._chunk_size):
+                    self._hasher.update(chunk)
+                    yield chunk
+        else:
+            for i in range(0, len(self._source), self._chunk_size):
+                chunk = self._source[i : i + self._chunk_size]
+                self._hasher.update(chunk)
+                yield chunk
+
+    @property
+    def digest(self) -> str:
+        return self._hasher.hexdigest()
+

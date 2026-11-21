@@ -439,3 +439,38 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
   - This relaxes CLAUDE.md's "real → NEEDS_REVIEW, never retried" for one case, and CLAUDE.md says so.
   - The step C publisher's `publish` takes `record_media` as well as `record`, and `MediaHost.put` takes the key chosen by `new_media_key()`.
   - Cleaning up pictures left behind (a sweep of the job rows that still have a `media_host_key`) is still future work, together with the real media host (D48).
+
+## D51. Instagram Reels (2026-11-20)
+
+- **Decision:**
+  - **Input & Kind by extension:** Instagram accepts `.mp4` and `.mov` paired with a same-name `.txt` caption in `incoming/` or through the dashboard. The media kind is determined by file extension. LinkedIn rejects video (`"video not supported on LinkedIn"`).
+  - **Validation (stdlib only, no new dependency):**
+    - `ftyp`: file must start with an `ftyp` box (ISO Base Media / QuickTime).
+    - `moov` before `mdat`: metadata must precede media data (fast-start streaming).
+    - Edit lists: forbidden (any `elst` or `edts` atom in track/moov is rejected).
+    - Duration: 3 s–15 min (from `mvhd` timescale and duration, v0 and v1).
+    - Dimensions: width ≤ 1,920 and aspect ratio 0.01–10 (from visual `tkhd`, v0 and v1).
+    - Size: ≤ 300 MB.
+    - Codec, fps, and bitrate are left to Meta.
+  - **Publishing (graph.facebook.com, no Backblaze B2):**
+    - Publishing flow:
+      1. Quota check via `content_publishing_limit`.
+      2. `POST /{ig-user-id}/media` with `media_type=REELS`, `upload_type=resumable`, and caption.
+      3. Commit container ID through `record(container_id)`.
+      4. `POST` to returned URI on `rupload.facebook.com` with headers `Authorization: OAuth <token>`, `offset: 0`, `file_size`. Stream chunks and compute SHA-256 while sending.
+      5. If the streamed hash differs from the recorded job hash → `FAILED`, never publish.
+      6. If upload errors (network or HTTP failure) → `FAILED`.
+      7. Poll container status until `FINISHED` (bounded ~10 min, injected sleep).
+      8. `POST /{ig-user-id}/media_publish` sent once, never retried.
+      9. Archive: post files moved to `archive/` or `failed/`.
+    - Same `NEEDS_REVIEW` / `resolve --check` / crash recovery rules as images (D50).
+    - Memory: the video file is never loaded into memory in full; chunks are streamed and hashed on the wire.
+  - **Dashboard:** Instagram New post accepts video; upload limit is 300 MB for video only (images keep 10 MB, D43), streamed directly to disk; Queue and History show a "Reel" badge.
+- **Why:**
+  - Meta supports direct resumable video uploads to `rupload.facebook.com`, removing the need for an external S3/B2 media host for Reels.
+  - Hashing while chunk-streaming ensures byte integrity and avoids duplicate disk reads or memory bloat.
+  - Checking container ID commitment and polling for FINISHED before calling `media_publish` guarantees the post is ready and crash recovery is consistent.
+- **Consequences:**
+  - Instagram supports both feed images (via S3/B2) and Reels (via direct resumable upload).
+  - LinkedIn rejects video in intake and validation (`"video not supported on LinkedIn"`), so `platforms/linkedin/` is unchanged and its publisher is never reached.
+  - Memory consumption stays constant regardless of video size up to 300 MB.

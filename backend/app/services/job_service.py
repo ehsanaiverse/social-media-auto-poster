@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import BinaryIO
 
 from social_media_auto_poster.config import Settings, data_dir_outside_base
 from social_media_auto_poster.ingestion.intake import add_post as add_post_to_incoming
@@ -21,8 +23,8 @@ from social_media_auto_poster.operations import schedules as schedules_ops
 from social_media_auto_poster.operations.common import DEFAULT_INTERVAL_S, PLATFORM, _local_time, outside_warning
 from social_media_auto_poster.operations.linkedin import LinkedInStatus, linkedin_status
 from social_media_auto_poster.operations.logs import logging_to
-from social_media_auto_poster.ingestion.intake import MAX_IMAGE_BYTES, check_post_name
-from social_media_auto_poster.ingestion.validation import EXPECTED_TYPE, MAX_CAPTION_BYTES, validate_content
+from social_media_auto_poster.ingestion.intake import MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, check_post_name
+from social_media_auto_poster.ingestion.validation import EXPECTED_TYPE, MAX_CAPTION_BYTES, VIDEO_EXTENSIONS, validate_candidate, validate_content
 from social_media_auto_poster.operations.platforms import ADAPTERS
 from social_media_auto_poster.operations.common import REAL_CONFIRMATION
 from social_media_auto_poster.operations.resolve import check_job, resolve_job
@@ -125,6 +127,21 @@ class JobService:
             "duplicate_of": self._duplicate_job_id(candidate),
         }
 
+    def add_post_stream(
+        self, *, name: str, image_stream: BinaryIO, image_extension: str, caption: bytes,
+        platform: Platform = PLATFORM
+    ) -> dict:
+        """Write a new post into incoming/ by streaming media. Never loads the whole file into memory."""
+        candidate = add_post_to_incoming(
+            self._settings, name=name, image_stream=image_stream, image_extension=image_extension,
+            caption=caption, platform=platform
+        )
+        return {
+            "name": candidate.stem,
+            "files": {"image": candidate.media_path.name, "caption": candidate.caption_path.name},
+            "duplicate_of": self._duplicate_job_id(candidate),
+        }
+
     def run(self, *, real: bool, publish_simulated: bool, platform: Platform = PLATFORM) -> RunReport:
         """One run, the same as ``run`` / ``run --real``. Raises RunLockHeldError if another run is in progress."""
         mode = PublishMode.REAL if real else PublishMode.SIMULATED
@@ -191,6 +208,33 @@ class JobService:
             except ValueError as error:
                 errors.append(str(error))
         errors.extend(validate_content(platform, image_extension, image, caption).errors)
+        return {"platform": platform.value, "ok": not errors, "errors": errors}
+
+    def check_post_stream(
+        self, *, name: str | None, image_stream: BinaryIO, image_extension: str, caption: bytes,
+        platform: Platform = PLATFORM
+    ) -> dict:
+        """Check a video upload for ``platform`` by streaming it to a temporary file. Writes nothing permanent."""
+        errors: list[str] = []
+        if name is not None:
+            try:
+                check_post_name(name)
+            except ValueError as error:
+                errors.append(str(error))
+
+        media_path, too_large = _copy_to_temp(image_stream, image_extension, MAX_VIDEO_BYTES)
+        try:
+            if too_large:
+                errors.append(f"the video is larger than {MAX_VIDEO_BYTES // (1024 * 1024)} MB")
+            else:
+                caption_path = _write_temp(caption, ".txt")
+                try:
+                    candidate = PostCandidate(platform, name or "check", media_path, caption_path)
+                    errors.extend(validate_candidate(candidate).errors)
+                finally:
+                    caption_path.unlink(missing_ok=True)
+        finally:
+            media_path.unlink(missing_ok=True)
         return {"platform": platform.value, "ok": not errors, "errors": errors}
 
     def instagram(self, *, check: bool) -> dict:
@@ -373,8 +417,9 @@ def _platform_to_dict(platform: Platform, real_available: bool) -> dict:
              "caption_max_mentions": None, "aspect": None}
     if platform is Platform.INSTAGRAM:
         rules.update(
-            extensions=[e for e in extensions if EXPECTED_TYPE[e] == "JPEG"],
+            extensions=sorted([e for e in extensions if EXPECTED_TYPE[e] == "JPEG"] + [".mp4", ".mov"]),
             max_image_bytes=min(MAX_IMAGE_BYTES, instagram_rules.MAX_IMAGE_BYTES),
+            max_video_bytes=MAX_VIDEO_BYTES,
             caption_max_chars=instagram_rules.MAX_CAPTION_CHARS,
             caption_max_hashtags=instagram_rules.MAX_HASHTAGS,
             caption_max_mentions=instagram_rules.MAX_MENTIONS,
@@ -419,6 +464,7 @@ def job_to_dict(record: JobRecord, *, detail: bool = False) -> dict:
         "job_id": record.job_id,
         "created_at": record.created_at.isoformat(),
         "stem": record.stem,
+        "media_name": record.media_name,
         "mode": str(record.mode),
         "status": str(record.status),
         "errors": list(record.errors),
@@ -428,7 +474,6 @@ def job_to_dict(record: JobRecord, *, detail: bool = False) -> dict:
     if detail:
         data |= {
             "platform": str(record.platform),
-            "media_name": record.media_name,
             "caption_name": record.caption_name,
             "media_sha256": record.media_sha256,
             "caption_sha256": record.caption_sha256,
@@ -486,3 +531,26 @@ def _recovery_to_dict(recovery: Recovery) -> dict:
         "notes": list(recovery.notes),
         "destination": recovery.destination,
     }
+
+
+def _copy_to_temp(stream: BinaryIO, suffix: str, max_bytes: int) -> tuple[Path, bool]:
+    """Stream ``stream`` into a temporary file, stopping one byte past ``max_bytes``.
+
+    Returns the file's path and whether it went over the limit. The caller deletes the file.
+    """
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+        path = Path(handle.name)
+        written = 0
+        while chunk := stream.read(1024 * 1024):
+            written += len(chunk)
+            if written > max_bytes:
+                return path, True
+            handle.write(chunk)
+    return path, False
+
+
+def _write_temp(data: bytes, suffix: str) -> Path:
+    """Write ``data`` to a temporary file and return its path. The caller deletes the file."""
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+        handle.write(data)
+        return Path(handle.name)

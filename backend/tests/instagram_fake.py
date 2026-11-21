@@ -31,7 +31,8 @@ def graph_error(status: int, code: int, subcode: int | None = None, message: str
 
 DEFAULTS = {
     "limit": json_response(200, {"data": [{"quota_usage": 2, "config": {"quota_total": 50, "quota_duration": 86400}}]}),
-    "create": json_response(200, {"id": CONTAINER_ID}),
+    "create": json_response(200, {"id": CONTAINER_ID, "uri": f"https://rupload.facebook.com/v27.0/{CONTAINER_ID}"}),
+    "upload": json_response(200, {"success": True}),
     "status": json_response(200, {"status_code": "FINISHED", "id": CONTAINER_ID}),
     "publish": json_response(200, {"id": MEDIA_ID}),
     "media": json_response(200, {"data": []}),
@@ -70,6 +71,8 @@ class FakeGraph:
 
 
 def _operation(request: httpx.Request) -> str:
+    if request.url.host == "rupload.facebook.com":
+        return "upload"
     assert request.url.host == "graph.facebook.com", request.url  # D48: the System User token works here only.
     parts = request.url.path.strip("/").split("/")  # ["v27.0", <id>, <edge>?]
     assert parts[0] == "v27.0", request.url.path
