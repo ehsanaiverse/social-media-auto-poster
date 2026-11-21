@@ -49,6 +49,16 @@ python -m social_media_auto_poster.main resolve <id> --failed   # settle a NEEDS
 
 Each command has `--help`. Exit codes and options are described in the root README and in `CLAUDE.md`.
 
+## Preparing a Reel video
+
+A phone video often lacks two things Instagram requires: the `moov` atom at the front (faststart) and no edit lists. `scripts\prepare-reel.ps1` re-muxes it with ffmpeg into `data\Instagram\incoming\<Name>.mp4`; the source video is never changed or deleted.
+
+```powershell
+.\scripts\prepare-reel.ps1 -Source "C:\Users\me\Downloads\clip.mp4" -Name reel2
+```
+
+Then write `data\Instagram\incoming\reel2.txt` and run `python -m social_media_auto_poster.main run --platform instagram` (or add it in the dashboard). ffmpeg is a manual prerequisite for this developer script only: install it with `winget install Gyan.FFmpeg` and reopen the terminal. It is not a dependency of the application.
+
 ## Local API
 
 The dashboard in `frontend/` talks to a small local API, in `backend/app/`. It uses the same functions as the commands above, so a run from the API is the same run. It is optional: the commands work without it.

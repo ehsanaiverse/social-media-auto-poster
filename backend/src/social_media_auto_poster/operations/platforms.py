@@ -2,7 +2,8 @@
 
 A platform's pure post rules (no token, no network) are in ``platforms/rules.py``. This
 registry holds the parts that need settings, credentials or a client: building the real
-publisher and the token warnings for a real schedule. Only LinkedIn is registered.
+publisher and the token warnings for a real schedule. LinkedIn and Instagram are registered;
+Facebook is not (it has folders only).
 
 The registry never decides whether a run is real. ``real_publisher`` is called only by a run
 whose mode is already REAL, and that comes only from ``--real`` on the command line or the
@@ -26,7 +27,7 @@ __all__ = ["ADAPTERS", "PlatformAdapter", "UnsupportedPlatform", "adapter_for", 
 
 class PlatformAdapter(Protocol):
     platform: Platform
-    real_available: bool  # Whether a real publisher may be built at all (Instagram: False until D48, D49).
+    real_available: bool  # Whether a real publisher may be built at all (LinkedIn D39, Instagram D48).
     records_references: bool  # Its publisher records a reference before publishing (Instagram, D1).
     confirmation_phrase: str  # Typed in the API to publish for real to this platform, and only to it (D48).
 
@@ -47,7 +48,7 @@ class PlatformAdapter(Protocol):
         ...
 
 
-# Instagram is registered for simulated use only (D49, step D2): its adapter's real_available is False.
+# Both adapters can publish for real (Instagram since D48; D49 covered only its simulated step).
 ADAPTERS: dict[Platform, PlatformAdapter] = {
     Platform.LINKEDIN: linkedin_ops.ADAPTER,
     Platform.INSTAGRAM: instagram_ops.ADAPTER,

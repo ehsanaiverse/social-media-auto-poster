@@ -1,6 +1,6 @@
 # Social Media Auto-Poster
 
-A local, folder-driven Python application for publishing image + caption posts to social media through official APIs. It publishes to a personal LinkedIn profile today; other platforms are added only after their integrations are separately planned and validated.
+A local, folder-driven Python application for publishing image + caption posts to social media through official APIs. It publishes to a personal LinkedIn profile and to Instagram today; other platforms are added only after their integrations are separately planned and validated.
 
 The Python application lives in **`backend/`**; its setup, commands, tests, and sandbox tester are summarised in [backend/README.md](backend/README.md). A local FastAPI API (`backend/app/`, started with `python -m app` from `backend/`) and a React dashboard (`frontend/`) are built; see [backend/README.md](backend/README.md#local-api) for how to run them. The API is optional and binds to `127.0.0.1` only.
 
@@ -14,7 +14,7 @@ The Python application lives in **`backend/`**; its setup, commands, tests, and 
 
 ## Non-goals for now
 
-There is no continuous folder watcher, scheduler, or OAuth login flow (the LinkedIn token is created by hand; see "Real mode" below). By default every run is simulated: the simulator does not contact a platform and its result is not confirmation of publication. Real publishing to LinkedIn happens only with `run --real` (or the dashboard's confirmed real run).
+There is no continuous folder watcher or OAuth login flow (the LinkedIn token is created by hand; Instagram uses a System User token; see "Real mode" below). Scheduling exists (D46): Windows Task Scheduler runs `run --real --scheduled` every 15 minutes; see "Scheduling". By default every run is simulated: the simulator does not contact a platform and its result is not confirmation of publication. Real publishing to LinkedIn or Instagram happens only with `run --real` (or the dashboard's confirmed real run).
 
 ## Current status
 
@@ -33,7 +33,7 @@ There is no continuous folder watcher, scheduler, or OAuth login flow (the Linke
 - A job database (`backend\database\app.db`, SQLite, via `storage/`): every processed post is recorded with SHA-256 hashes of its image and caption, so the same content is never processed twice.
 - Crash recovery: at the start of every `run`, jobs left half-published by a crash are resolved (see `RECOVERED` below).
 - Graph checkpoints (`backend\database\langgraph_checkpoints.db`, a separate SQLite file): each step of a job is saved before the next one starts, so a run that crashed **after** publishing is finished by the next run instead of being marked `NEEDS_REVIEW` (see `RESUMED` below). A crash during the publish itself is never retried.
-- Nine commands (`python -m social_media_auto_poster.main <command>`): `run` processes every complete post once (simulated, or real with `--real`; `--scheduled` publishes due scheduled posts), the read-only `scan` (with duplicate check) and `jobs` (history), `resolve` for jobs that need review, `linkedin-check` for the LinkedIn token and setup, and `schedule`, `unschedule`, `reconfirm` and the read-only `schedules` for scheduled posts. See "How to use" and "Scheduling" below.
+- Ten commands (`python -m social_media_auto_poster.main <command>`): `run` processes every complete post once (simulated, or real with `--real`; `--scheduled` publishes due scheduled posts), the read-only `scan` (with duplicate check) and `jobs` (history), `resolve` for jobs that need review, `linkedin-check` and `instagram-check` for each platform's token and setup, and `schedule`, `unschedule`, `reconfirm` and the read-only `schedules` for scheduled posts. See "How to use" and "Scheduling" below.
 - A local API (`backend/app/`, FastAPI) and a React dashboard (`frontend/`) that call the same functions as the commands. Both are optional.
 - Unit, integration and API tests under `backend/tests/`. Decisions are recorded in `docs/decisions.md`.
 
@@ -75,6 +75,8 @@ backend/                           The Python project
   tests/unit/, tests/integration/, tests/api/   Unit tests; full-graph and end-to-end run tests; API tests
   tests/test_patch_targets.py      Checks that every test patch reaches the code it means to change
   scripts/app.py                   Interactive sandbox tester
+  scripts/register-schedule-task.ps1  Registers the 15-minute scheduled-run task
+  scripts/prepare-reel.ps1         Re-muxes a video reel-ready with ffmpeg (manual dev tool)
   data/                            Local platform content; ignored by Git
     LinkedIn/{incoming,archive,failed}/   (and Facebook/, Instagram/)
   database/, logs/, sandbox/       Job database and checkpoints, run log, tester sandbox; ignored by Git
@@ -82,6 +84,8 @@ frontend/                          React dashboard (Vite, TypeScript)
 docs/decisions.md                  Decision records
 docs/api-plan.md                   Local API plan and endpoints
 docs/linkedin-api-notes.md         What LinkedIn's official docs say, with sources
+docs/instagram-api-notes.md        What Instagram's official docs say, with sources
+docs/instagram-plan.md             Historical multi-platform plan (simulated-only; superseded by D48 and D51)
 docs/milestone-4-review.md         Milestone 4 review and known limitations
 ```
 
@@ -105,7 +109,15 @@ backend/data/Instagram/incoming/launch-reel.mp4
 backend/data/Instagram/incoming/launch-reel.txt
 ```
 
-The video must be 3 seconds to 15 minutes, at most 300 MB, at most 1,920 pixels wide, with an aspect ratio from 0.01 to 10, and its `moov` atom (metadata) before `mdat` (media data) with no edit lists — what a normal phone export or `ffmpeg` produces. Reels are uploaded straight to Meta in chunks (no Backblaze B2 needed); images are unchanged. LinkedIn refuses video ("video not supported on LinkedIn"). The dashboard accepts a video upload of up to 300 MB for Instagram and labels the post as a Reel in the queue and history.
+The video must be 3 seconds to 15 minutes, at most 300 MB (300,000,000 bytes), at most 1,920 pixels wide, with an aspect ratio from 0.01 to 10, and its `moov` atom (metadata) before `mdat` (media data) with no edit lists — what a normal phone export or `ffmpeg` produces. Reels are uploaded straight to Meta in chunks (no Backblaze B2 needed); images are unchanged. LinkedIn refuses video ("video not supported on LinkedIn"). The dashboard accepts a video upload of up to 300 MB for Instagram and labels the post as a Reel in the queue and history.
+
+`backend/scripts/prepare-reel.ps1` makes a phone video ready for those checks: it re-muxes it with ffmpeg (faststart, edit lists removed) into `backend\data\Instagram\incoming\<Name>.mp4`, leaving the source video untouched. Run it from anywhere:
+
+```powershell
+.\backend\scripts\prepare-reel.ps1 -Source "C:\Users\me\Downloads\clip.mp4" -Name reel2
+```
+
+Then write `reel2.txt` next to it. ffmpeg is a manual prerequisite for this developer script only — install it with `winget install Gyan.FFmpeg` — and is not a dependency of the application.
 
 ## Windows setup
 

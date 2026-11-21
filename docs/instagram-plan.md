@@ -1,5 +1,7 @@
 # Plan: multi-platform refactor and Instagram (simulated)
 
+> **Historical note (2026-11-21):** this is the simulated-only plan as written on 2026-11-19, kept for the record. It is not a description of the current code: **D48** accepted real Instagram publishing (images via the B2 media host, then Reels) and **D51** added Instagram Reels (direct resumable upload, 300,000,000-byte limit). Where this document says "simulated only", "not registered" or "future", read that as the state when it was written.
+
 **Status:** plan only, 2026-11-19. Nothing here is built. Real Instagram publishing and the R2 media host are **future** work, blocked on the presigned-URL spike and on D48 being accepted (`docs/instagram-api-notes.md`, section 13). Simulated Instagram (steps A–F) is allowed by **D49**; real Instagram stays forbidden until D48 is accepted.
 
 **Labels:** **[existing]** is how the code works today (checked against the source on 2026-11-19). **[proposed]** is what this plan would build. **[future]** is out of scope until the spike and D48.

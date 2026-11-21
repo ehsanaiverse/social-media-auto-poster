@@ -450,14 +450,14 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
     - Edit lists: forbidden (any `elst` or `edts` atom in track/moov is rejected).
     - Duration: 3 s–15 min (from `mvhd` timescale and duration, v0 and v1).
     - Dimensions: width ≤ 1,920 and aspect ratio 0.01–10 (from visual `tkhd`, v0 and v1).
-    - Size: ≤ 300 MB.
+    - Size: ≤ 300 MB — exactly 300,000,000 bytes (decimal MB, not 300 MiB = 314,572,800 bytes). The backend constant (`MAX_VIDEO_BYTES`), intake, API rules, and the dashboard all use this one value; user-facing text says "300 MB".
     - Codec, fps, and bitrate are left to Meta.
   - **Publishing (graph.facebook.com, no Backblaze B2):**
     - Publishing flow:
       1. Quota check via `content_publishing_limit`.
       2. `POST /{ig-user-id}/media` with `media_type=REELS`, `upload_type=resumable`, and caption.
       3. Commit container ID through `record(container_id)`.
-      4. `POST` to returned URI on `rupload.facebook.com` with headers `Authorization: OAuth <token>`, `offset: 0`, `file_size`. Stream chunks and compute SHA-256 while sending.
+      4. `POST` to returned URI on `rupload.facebook.com` with headers `Authorization: OAuth <token>`, `offset: 0`, `file_size`, and `Content-Length`. Stream chunks and compute SHA-256 while sending. `Content-Length` matters: without it httpx sends the body chunked (no length).
       5. If the streamed hash differs from the recorded job hash → `FAILED`, never publish.
       6. If upload errors (network or HTTP failure) → `FAILED`.
       7. Poll container status until `FINISHED` (bounded ~10 min, injected sleep).
@@ -472,5 +472,6 @@ Commits: 2.1 `5237e69`, 2.2 `24c73d7`, dev tools `04ce5cb`, 2.3 `d30dc71`, 2.4 `
   - Checking container ID commitment and polling for FINISHED before calling `media_publish` guarantees the post is ready and crash recovery is consistent.
 - **Consequences:**
   - Instagram supports both feed images (via S3/B2) and Reels (via direct resumable upload).
+  - The first real Reel was published and verified live on Instagram.
   - LinkedIn rejects video in intake and validation (`"video not supported on LinkedIn"`), so `platforms/linkedin/` is unchanged and its publisher is never reached.
   - Memory consumption stays constant regardless of video size up to 300 MB.
